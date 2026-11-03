@@ -8,31 +8,29 @@
 _minted*
 mef90version.h
 .vscode
-.code-workspace
 
-!!! Root-level temp files (canonical copies are in subdirectories)
-*.F90
-*.inc
-*.h
-*.py
-*.json
-*.yml
-*.yaml
+!!! Root-level temp files only (use leading / to anchor to repo root)
+/src_*.F90
+/FlowCtx.F90
+/HeatXferCtx.F90
+/src_*.h
+/bench.py
+/patch_makefile.py
+/fetch_buildyml.py
+/get_all.py
+/download_fix.py
+
+!!! Python scripts (dev helpers, not part of source tree)
+/*.py
+
+!!! Build artifact yamls at root (canonical ones are in .github/workflows/)
+/*.yml
+/*.yaml
 !.github/workflows/*.yml
 !.github/workflows/*.yaml
-*.docx
-*.code-workspace
-src_include.mk
-build_fixed.yml
-src_build.yml
 
-!!! Old root-level Makefile fragments (use subdirectory Makefiles)
-Makefile_MEF90
-Makefile_m_DefMech
-Makefile_m_Flow
-Makefile_m_HeatXfer
-Makefile_vDef
-Makefile.include_MEF90
-Makefile.include_m_DefMech
-Makefile.include_m_Flow
-Makefile.include_m_HeatXfer
+!!! Other root-level junk
+/*.docx
+/*.code-workspace
+/src_include.mk
+/*.json

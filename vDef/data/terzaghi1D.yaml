@@ -1,0 +1,118 @@
+# ============================================================================
+# Terzaghi 1D Consolidation — Water-Force Coupled Benchmark
+# Analytical solution: p(z,t) = (4σ₀/π) Σ [(-1)^n/(2n+1)] cos((2n+1)πz/2H) exp(-(2n+1)²π²c_v t / 4H²)
+# c_v = k/(μ·S) — consolidation coefficient; Biot coupling f_p = -α·∇p
+#
+# Geometry: Beam1x10-tri3 — 1m(W) × 10m(H) plane-strain strip
+#   cs0001 = domain (TRI3, y=0→10, plane-strain z=0)
+#   cs0010 = top boundary (BAR2, y=10) — drained, p=0 Dirichlet
+#   cs0020 = bottom boundary (BAR2, y=0) — impermeable (natural BC), fixed u=0
+#
+# Time scale: k_min=5e-11 m², μ=1e-3 Pa·s, S=4.6e-10 Pa⁻¹
+#   c_v = 5e-11/(1e-3 × 4.6e-10) ≈ 109 m²/s
+#   H²/c_v = 100/109 ≈ 0.92 s → 51 steps × 0.02s span T=0→2.17 (well beyond consolidation)
+#   T = c_v·t/H² → at t=1.0s, T≈1.09 (Terzaghi decay ~63% complete)
+# ============================================================================
+
+verbose: 2
+time:
+    min: 0.0
+    max: 1.0
+    numstep: 51
+    interpolation: quadratic
+
+# ----------- HEAT TRANSFER (disabled) -----------
+heatxfer:
+    timestepping:
+        type: null
+
+# ----------- DEFECT MECHANICS (quasi-static poroelasticity) -----------
+defmech:
+    timestepping:
+        type: quasistatic
+    solver:
+        type: AltMin
+    disp:
+        addNullSpace: true
+    disp_offset: 3
+    damage_offset: 2
+
+# ----------- DARCY FLOW (Biot coupled) -----------
+# Option names without 'flow_' prefix (PetscBagSetName='flow' provides namespace)
+flow:
+    timestepping_type: transient
+    perm_min: 5.0e-11               # k_min [m²] — T=c_v·t/H² ≈ 1 at t=1s
+    perm_max: 1.0e-09               # k_max [m²] — 20× broken
+    viscosity: 1.0e-03             # μ [Pa·s] — water
+    storativity: 4.6e-10            # S [Pa⁻¹]
+    biot_coeff: 1.0                 # α = 1.0 — full Biot coupling
+    residual_damage: 0.0
+    p0: 0.0                         # initial pore pressure = 0
+    source_scaling: CST
+    bc_pressure_scaling: CST
+    pressure_atol: 1.0e-08
+    pressure_rtol: 1.0e-05
+    pressure_maxit: 500
+    pressure_offset: 1
+    source_offset: 2
+
+# ================================================================
+# CELL SET OPTIONS — combined material + DefMech + Flow per set
+# cs0001/cs0010/cs0020 are mesh labels (Beam1x10-tri3 mesh cell block IDs)
+# ================================================================
+
+# ----------- cs0001: Domain (TRI3, 1m × 10m strip) -----------
+# Poroelastic material: E=1GPa, ν=0.25, plane-strain
+# Gravity body force (0, -9.81, 0) m/s² → baseForce snapshot
+# No Flow BC here (domain interior)
+cs0001:
+    # ------ Material properties (DefMech) ------
+    hookeslaw:
+        type: Isotropic
+        YoungsModulus: 1.0e9
+        PoissonRatio: 0.25
+        planeStress: false
+    fracturetoughness: 27000.0
+    residualstiffness: 1.0e-03
+    internalLength: 0.2
+
+    # ------ DefMech options ------
+    damage:
+        type: AT2
+    plasticity:
+        type: NONE
+    unilateralContact:
+        type: HydrostaticDeviatoric
+    # Gravity body force → captured as baseForce (DefMechCtx%force)
+    Force: 0, -9.81, 0
+
+    # ------ Flow options ------
+    source: 0.0                     # no well injection
+    perm_override: 0.0              # use global perm_min/perm_max
+    storativity_override: -1        # use global S
+    flowBC: false                   # domain interior, no pressure BC
+
+# ----------- cs0010: Top boundary (y = 10, drained surface) -----------
+# Plane-strain symmetry: fix out-of-plane z only (u_z = 0)
+# Flow Dirichlet BC: p = 0 (atmospheric — fully drained)
+cs0010:
+    displacementBC: 0, 0, 1
+    boundaryDisplacement: 0, 0, 0
+    damageBC: 0
+    boundaryDamage: 0
+    # ------ Flow Dirichlet BC on this surface ------
+    source: 0.0
+    flowBC: true
+    bc_pressure: 0.0
+
+# ----------- cs0020: Bottom boundary (y = 0, rigid foundation) -----------
+# Full displacement fix (0, 0, 0) — no-slip impermeable base
+# No-flow by default (natural Neumann BC)
+cs0020:
+    displacementBC: 1, 1, 1
+    boundaryDisplacement: 0, 0, 0
+    damageBC: 0
+    boundaryDamage: 0
+    # ------ Flow: natural Neumann (no explicit BC) ------
+    source: 0.0
+    flowBC: false

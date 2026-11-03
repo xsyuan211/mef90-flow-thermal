@@ -1,0 +1,4 @@
+MEF90_FLOW_OBJS = ${MEF90_DIR}/objs/${PETSC_ARCH}/m_MEF90_Flow.o              \
+                  ${MEF90_DIR}/objs/${PETSC_ARCH}/m_MEF90_FlowAssembly2D.o    \
+                  ${MEF90_DIR}/objs/${PETSC_ARCH}/m_MEF90_FlowAssembly3D.o    \
+                  ${MEF90_DIR}/objs/${PETSC_ARCH}/m_MEF90_FlowCtx.o
