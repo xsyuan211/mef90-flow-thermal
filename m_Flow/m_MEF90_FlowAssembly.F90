@@ -2,6 +2,7 @@
 Module MEF90_APPEND(m_MEF90_FlowAssembly,MEF90_DIM)D
 #include "finclude/petscdef.h"
 #include "finclude/petscbagdef.h"
+#include "finclude/petscts.h"
    Use m_MEF90
    Use m_MEF90_FlowCtx
    Use m_MEF90_DiffusionInterface   !!! Reuse Bourdin's well-tested diffusion assembly
@@ -48,7 +49,7 @@ Contains
 #define __FUNCT__ "MEF90FlowOperator"
 
    Subroutine MEF90FlowOperator(snesPressure,x,residual,FlowCtx,ierr)
-      Type(SNES),Intent(IN)                              :: snesPressure
+      PetscInt,Intent(IN)                                :: snesPressure   ! SNES opaque handle; unused inside
       Type(Vec),Intent(IN)                               :: x
       Type(Vec),Intent(INOUT)                            :: residual
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
@@ -63,7 +64,7 @@ Contains
       Type(MEF90_ELEMENT_SCAL),Dimension(:),Pointer   :: elem
       Type(MEF90Element_Type)                            :: elemType
       Type(MEF90_MATS)                                   :: A_cell
-      PetscReal,Dimension(1)                              :: permCell, sourceCell
+      PetscReal,Dimension(:),Pointer                      :: permCell, sourceCell
 
       !!! Create sections
       Call SectionRealDuplicate(FlowCtx%DMScalSec,pSec,ierr);CHKERRQ(ierr)
@@ -145,7 +146,7 @@ Contains
 #define __FUNCT__ "MEF90FlowBilinearForm"
 
    Subroutine MEF90FlowBilinearForm(snesPressure,x,Jac,PreJac,residualMode,FlowCtx,ierr)
-      Type(SNES),Intent(IN)                              :: snesPressure
+      PetscInt,Intent(IN)                                :: snesPressure   ! SNES opaque handle; unused inside
       Type(Vec),Intent(IN)                               :: x
       Type(Mat),Intent(INOUT)                            :: Jac, PreJac
       PetscReal,Intent(IN)                               :: residualMode
@@ -160,7 +161,7 @@ Contains
       Type(MEF90Element_Type)                            :: elemType
       Type(MEF90_MATS)                                   :: A_cell
       Type(SectionReal)                                  :: permFieldSec
-      PetscReal,Dimension(1)                              :: permCell
+      PetscReal,Dimension(:),Pointer                      :: permCell
 
       Call MatZeroEntries(Jac,ierr);CHKERRQ(ierr)
 
@@ -266,7 +267,7 @@ Contains
       Type(MEF90_ELEMENT_SCAL),Dimension(:),Pointer      :: elem
       Type(MEF90Element_Type)                            :: elemType
       Type(MEF90_MATS)                                   :: A_cell
-      PetscReal,Dimension(1)                              :: permCell
+      PetscReal,Dimension(:),Pointer                      :: permCell
       PetscReal                                          :: energyCell, workCell
 
       Energy = 0.0_Kr
@@ -382,7 +383,7 @@ Contains
       Type(IS)                                            :: VertexSetGlobalIS, setIS, cellSetIS
       PetscInt,dimension(:),Pointer                        :: setID, cellIDs, dofList
       PetscInt                                            :: set, nVal
-      PetscReal,Dimension(:)                              :: resPtr, bcPtr
+      PetscReal,Allocatable                               :: resPtr(:), bcPtr(:)
       Type(MEF90FlowCellSetOptions_Type),pointer          :: cellSetOptions
       Type(MEF90FlowVertexSetOptions_Type),pointer        :: vertexSetOptions
 
@@ -561,7 +562,7 @@ Contains
       Type(IS)                                           :: CellSetGlobalIS, cellSetIS, bcIS, VertexSetGlobalIS, setIS
       PetscInt,dimension(:),Pointer                      :: setID, dofList
       PetscInt                                           :: set, nVal
-      PetscReal,Dimension(:)                             :: val
+      PetscReal,Allocatable                              :: val(:)
 
       Call VecSet(boundaryPressure,0.0_Kr,ierr);CHKERRQ(ierr)
 
@@ -678,7 +679,7 @@ Contains
       Type(MEF90FlowCellSetOptions_Type),pointer         :: cellSetOptions
       Type(MEF90_ELEMENT_SCAL),Dimension(:),Pointer       :: elem
       Type(MEF90Element_Type)                             :: elemType
-      PetscReal,Dimension(1)                              :: SCell
+      PetscReal,Dimension(:),Pointer                      :: SCell
       PetscReal                                           :: S_avg
       Type(MEF90_MATS)                                    :: A_zero
 
@@ -744,9 +745,13 @@ Contains
       Type(MEF90FlowCellSetOptions_Type),pointer         :: cellSetOptions
       Type(MEF90_ELEMENT_SCAL),Dimension(:),Pointer       :: elem
       Type(MEF90Element_Type)                             :: elemType
-      PetscReal,Dimension(1)                              :: SCell
+      PetscReal,Dimension(:),Pointer                      :: SCell
       PetscReal                                           :: lambda_val
       Type(MEF90_MATS)                                    :: A_zero
+      Type(SectionReal)                                   :: storativitySec
+
+      Call SectionRealDuplicate(FlowCtx%cellDMScalSec,storativitySec,ierr);CHKERRQ(ierr)
+      Call SectionRealToVec(storativitySec,FlowCtx%cellDMScalScatter,SCATTER_REVERSE,FlowCtx%storativity,ierr);CHKERRQ(ierr)
 
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -765,7 +770,7 @@ Contains
                Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
                Do cell = 1, size(cellID)
                   Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr)
-                  Call SectionRealRestrict(FlowCtx%storativity,cellID(cell),SCell,ierr);CHKERRQ(ierr)
+                  Call SectionRealRestrict(storativitySec,cellID(cell),SCell,ierr);CHKERRQ(ierr)
                   lambda_val = a * SCell(1)
                   !!! K += 0*∇ + λ·BFB   (lambda term only → mass matrix)
                   Call MEF90DiffusionBilinearFormSet(Jac,FlowCtx%DM,singleIS, &
@@ -787,6 +792,7 @@ Contains
       Call MatAssemblyEnd(PreJac,MAT_FINAL_ASSEMBLY,ierr);CHKERRQ(ierr)
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
       Call ISDestroy(CellSetGlobalIS,ierr)
+      Call SectionRealDestroy(storativitySec,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowAddStorageMassMatrix
 
 
