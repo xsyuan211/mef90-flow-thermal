@@ -1,5 +1,6 @@
 #include "../MEF90/mef90.inc"
 Module MEF90_APPEND(m_MEF90_FlowAssembly,MEF90_DIM)D
+#include "finclude/petscts.h"
 #include "finclude/petscdef.h"
 #include "finclude/petscbagdef.h"
    Use m_MEF90
