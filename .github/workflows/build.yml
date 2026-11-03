@@ -103,6 +103,30 @@ jobs:
           export PETSC_ARCH=linux-gcc-openmpi-mef90-O
           ls $PETSC_DIR/conf/variables
           ls $PETSC_ARCH/conf/petscrules 2>&1 || echo "!! NO petscrules !!"
+      - name: Debug PETSc TS module
+        run: |
+          export PETSC_DIR=$HOME/petsc-3.3-mef90
+          export PETSC_ARCH=linux-gcc-openmpi-mef90-O
+          echo "===== petscconf.h PETSC_USE_FORTRAN_DATATYPES ====="
+          grep -i "PETSC_USE_FORTRAN_DATATYPES" $PETSC_ARCH/include/petscconf.h 2>&1 || echo "NOT FOUND in petscconf.h"
+          echo ""
+          echo "===== ALL petscts.mod files ====="
+          find $PETSC_DIR $PETSC_ARCH -name "petscts*.mod" -o -name "petsc.mod" 2>&1
+          echo ""
+          echo "===== petsctsdef.h90 content ====="
+          cat $PETSC_DIR/include/finclude/ftn-custom/petsctsdef.h90 2>&1
+          echo ""
+          echo "===== petscdef.h line 18 ====="
+          sed -n '18p' $PETSC_DIR/include/finclude/petscdef.h 2>&1
+          echo ""
+          echo "===== petsctsmod compile grep ====="
+          grep -A2 -B2 "petsctsmod" $PETSC_ARCH/build.log 2>&1 || echo "no build.log"
+          echo ""
+          echo "===== ALL .mod in include dir ====="
+          find $PETSC_ARCH/include -name "*.mod" 2>&1
+          echo ""
+          echo "===== ALL .mod in lib dir ====="
+          find $PETSC_ARCH/lib -name "*.mod" 2>&1 | head -20
       - name: Fix CRLF + Patch Makefiles
         run: |
           find . -type f -name "*.sh" -exec dos2unix -q {} +
