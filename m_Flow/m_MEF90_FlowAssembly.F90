@@ -1,6 +1,5 @@
 #include "../MEF90/mef90.inc"
 Module MEF90_APPEND(m_MEF90_FlowAssembly,MEF90_DIM)D
-#include "finclude/petscts.h"
 #include "finclude/petscdef.h"
 #include "finclude/petscbagdef.h"
    Use m_MEF90
@@ -21,6 +20,8 @@ Module MEF90_APPEND(m_MEF90_FlowAssembly,MEF90_DIM)D
              MEF90FlowSetSourceCst,       &   ! Fill source from cell-set PetscBag
              MEF90FlowComputePressureGradient, & ! Cell-centered ∇p volume average
              MEF90FlowApplyBiotForce          ! Biot f_p = -α∇p → DefMechCtx%force
+
+#include "finclude/petscts.h"          ! TS type must come AFTER Use statements (Fortran rule)
 
 Contains
 
