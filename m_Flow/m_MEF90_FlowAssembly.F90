@@ -2,12 +2,19 @@
 Module MEF90_APPEND(m_MEF90_FlowAssembly,MEF90_DIM)D
 #include "finclude/petscdef.h"
 #include "finclude/petscbagdef.h"
-   Use petsctsdef, Only: TS           !!! TS derived type (PETSC_USE_FORTRAN_DATATYPES mode)
    Use m_MEF90
    Use m_MEF90_FlowCtx
    Use m_MEF90_DiffusionInterface   !!! Reuse Bourdin's well-tested diffusion assembly
    Use m_MEF90_DefMechCtx_Type      !!! Biot coupling: write f_p into DefMechCtx%force
    Implicit none
+
+   !!! Inline TS derived type (PETSc 3.3 --with-fortran-datatypes=1)
+   !!! petscdef.h macro path is skipped; must pull TS from ftn-custom
+#if defined(PETSC_USE_FORTRAN_DATATYPES)
+      type TS
+        PetscFortranAddr:: v
+      end type TS
+#endif
 
    Private
    Public :: MEF90FlowOperator,           &   ! SNES residual callback
