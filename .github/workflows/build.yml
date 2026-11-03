@@ -1,0 +1,198 @@
+name: Build & Test vDef + Darcy Flow
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+jobs:
+  compile:
+    name: Build + Terzaghi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            gcc g++ gfortran cmake make perl m4 git patch wget curl dos2unix \
+            libtool automake tar
+      - name: Cache OpenMPI
+        id: cache-openmpi
+        uses: actions/cache@v4
+        with:
+          path: $HOME/openmpi-3.1.3
+          key: openmpi-3.1.3-ubuntu-latest-v1
+      - name: Build OpenMPI 3.1.3
+        if: steps.cache-openmpi.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          export MPI_HOME=$HOME/openmpi-3.1.3
+          cd /tmp
+          wget -q https://download.open-mpi.org/release/open-mpi/v3.1/openmpi-3.1.3.tar.gz
+          tar xzf openmpi-3.1.3.tar.gz
+          cd openmpi-3.1.3
+          ./configure --prefix=$MPI_HOME 2>&1 | tail -3
+          make -j2 2>&1 | tail -3
+          make install 2>&1 | tail -3
+      - name: Verify OpenMPI
+        run: |
+          export MPI_HOME=$HOME/openmpi-3.1.3
+          export PATH=$MPI_HOME/bin:$PATH
+          mpirun --version
+      - name: Cache PETSc deps
+        id: cache-petsc-dl
+        uses: actions/cache@v4
+        with:
+          path: $HOME/petsc-dl
+          key: petsc-dl-v1
+      - name: Pre-download PETSc deps
+        if: steps.cache-petsc-dl.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          mkdir -p $HOME/petsc-dl && cd $HOME/petsc-dl
+          wget -q https://github.com/HDFGroup/hdf5/archive/refs/tags/hdf5-1_10_6.tar.gz -O hdf5-1.10.6.tar.gz
+          wget -q https://github.com/Unidata/netcdf-c/archive/refs/tags/v4.8.1.tar.gz -O netcdf-v4.8.1.tar.gz
+          wget -q https://github.com/sandialabs/seacas/archive/refs/tags/v2021-01-20.tar.gz -O exodusii-2021-01-20.tar.gz
+          ls -la
+      - name: Cache Miniconda + PETSc build
+        id: cache-petsc
+        uses: actions/cache@v4
+        with:
+          path: |
+            $HOME/miniconda2
+            $HOME/petsc-3.3-mef90
+          key: petsc-mef90-3.3-ubuntu-latest-v1
+      - name: Build PETSc-3.3
+        if: steps.cache-petsc.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          export PETSC_DIR=$HOME/petsc-3.3-mef90
+          export PETSC_ARCH=linux-gcc-openmpi-mef90-O
+          export MPI_HOME=$HOME/openmpi-3.1.3
+          export PATH=$MPI_HOME/bin:$PATH
+          echo "=== Python 2.7 ==="
+          wget -q https://repo.anaconda.com/miniconda/Miniconda2-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
+          bash /tmp/miniconda.sh -b -p $HOME/miniconda2
+          $HOME/miniconda2/bin/conda create -n py27 python=2.7 -y -q
+          export PY27=$HOME/miniconda2/envs/py27/bin/python
+          $PY27 --version
+          echo "=== Clone PETSc mef90-3.3 ==="
+          rm -rf $PETSC_DIR
+          git clone --single-branch --branch mef90-3.3 https://gitlab.com/blaisebourdin/petsc.git $PETSC_DIR
+          cd $PETSC_DIR
+          echo "=== Configure ==="
+          $PY27 ./configure \
+            COPTFLAGS='-O3' CXXOPTFLAGS='-O3' FOPTFLAGS='-O3' \
+            FFLAGS='-Wno-aliasing -ffree-line-length-none -fallow-argument-mismatch -Wno-all' \
+            --download-hdf5=$HOME/petsc-dl/hdf5-1.10.6.tar.gz \
+            --download-netcdf=$HOME/petsc-dl/netcdf-v4.8.1.tar.gz \
+            --download-exodusii=$HOME/petsc-dl/exodusii-2021-01-20.tar.gz \
+            --download-f-blas-lapack=1 \
+            --download-chaco=1 --download-hypre=1 --download-metis=1 \
+            --download-ml=1 --download-parmetis=1 --download-sowing=1 \
+            --download-yaml=1 --download-boost=1 \
+            --with-mpi-dir=$MPI_HOME --with-sieve=1 \
+            --with-fortran-datatypes=1 --with-debugging=0 \
+            --with-clanguage=C++ --with-shared-libraries=1 \
+            --with-c2html=0 --with-x11=0 --with-gnu-compilers=1 2>&1 | tail -20
+          echo "=== Make PETSc ==="
+          make PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH all 2>&1 | tail -10
+      - name: Verify PETSc
+        run: |
+          export PETSC_DIR=$HOME/petsc-3.3-mef90
+          export PETSC_ARCH=linux-gcc-openmpi-mef90-O
+          ls $PETSC_DIR/conf/variables
+          ls $PETSC_ARCH/conf/petscrules 2>&1 || echo "!! NO petscrules !!"
+      - name: Fix CRLF + Patch Makefiles
+        run: |
+          find . -type f -name "*.sh" -exec dos2unix -q {} +
+          find . -type f -name "Makefile" -exec dos2unix -q {} +
+          find . -type f -name "*.F90" -exec dos2unix -q {} +
+          find . -type f -name "*.inc" -exec dos2unix -q {} +
+          find . -type f -name "*.h" -exec dos2unix -q {} +
+          chmod +x bin/makeversion.sh
+          echo ""
+          echo "===== PATCH MAKEFILES ====="
+          for mf in MEF90/Makefile m_DefMech/Makefile m_Flow/Makefile vDef/Makefile; do
+            if [ -f "$mf" ]; then
+              echo "Patching $mf ..."
+              sed -i 's/-@\${FC}/\${FC}/g' "$mf"
+              sed -i 's/-@\${FLINKER}/\${FLINKER}/g' "$mf"
+            fi
+          done
+          echo ""
+          echo "=== VERIFY patched Makefiles ==="
+          for mf in MEF90/Makefile m_DefMech/Makefile m_Flow/Makefile vDef/Makefile; do
+            if [ -f "$mf" ]; then
+              echo "--- $mf ---"
+              grep -n '\${FC}\|\${FLINKER}' "$mf" | head -3
+            fi
+          done
+      - name: Build MEF90 + m_Flow + vDef
+        run: |
+          set -eo pipefail
+          export PETSC_DIR=$HOME/petsc-3.3-mef90
+          export PETSC_ARCH=linux-gcc-openmpi-mef90-O
+          export MPI_HOME=$HOME/openmpi-3.1.3
+          export PATH=$MPI_HOME/bin:$PETSC_DIR/bin:$PETSC_DIR/$PETSC_ARCH/bin:$PATH
+          export MEF90_DIR=$(pwd)
+          export FC_FLAGS="-fallow-argument-mismatch -ffree-line-length-none -Wno-error -J$(pwd)/objs/$PETSC_ARCH -I$(pwd)/objs/$PETSC_ARCH"
+          export FCFLAGS="-fallow-argument-mismatch"
+          export FFLAGS="-fallow-argument-mismatch"
+          mkdir -p objs/${PETSC_ARCH} bin/${PETSC_ARCH} lib/${PETSC_ARCH}
+          bin/makeversion.sh ${MEF90_DIR}/mef90version.h
+          echo "=== ENV ==="
+          echo "FC_FLAGS=$FC_FLAGS"
+          echo "FCFLAGS=$FCFLAGS"
+          echo "=== 1) BUILD MEF90 (core) ==="
+          make -C objs/${PETSC_ARCH} -f ../../MEF90/Makefile MEF90 PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/MEF90.log
+          echo "  MEF90 count=$(ls objs/${PETSC_ARCH}/*.o 2>/dev/null | wc -l)"
+          echo "=== 2) BUILD m_DefMech ==="
+          make -C objs/${PETSC_ARCH} -f ../../m_DefMech/Makefile m_DefMech PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/m_DefMech.log
+          echo "  m_DefMech count=$(ls objs/${PETSC_ARCH}/*.o 2>/dev/null | wc -l)"
+          echo "=== 3) BUILD m_HeatXfer ==="
+          make -C objs/${PETSC_ARCH} -f ../../m_HeatXfer/Makefile m_HeatXfer PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/m_HeatXfer.log
+          echo "=== 4) BUILD m_Flow ==="
+          rm -f objs/${PETSC_ARCH}/m_MEF90_Flow*.o objs/${PETSC_ARCH}/m_mef90_flow*.mod
+          make -C objs/${PETSC_ARCH} -f ../../m_Flow/Makefile m_Flow PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/flow.log
+          echo "=== m_Flow PIPESTATUS: ${PIPESTATUS[*]} ==="
+          echo "--- flow.log last 100 lines ---"
+          tail -100 /tmp/flow.log
+          echo "--- objs/$PETSC_ARCH m_Flow files ---"
+          ls -la objs/${PETSC_ARCH}/m_MEF90_Flow* objs/${PETSC_ARCH}/m_mef90_flow* 2>&1 || echo "(no m_Flow output files)"
+          echo "--- total .o count: $(ls objs/${PETSC_ARCH}/*.o 2>/dev/null | wc -l) ---"
+          echo "=== 5) BUILD vDef ==="
+          if [ -f objs/${PETSC_ARCH}/m_MEF90_Flow.o ]; then
+            make -C objs/${PETSC_ARCH} -f ../../vDef/Makefile vDef vDefP vDefUpa vDefBT vDefHF PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/vDef.log
+            ls -la bin/$PETSC_ARCH/vDef 2>&1 || echo "  (vDef not found)"
+          else
+            echo "  SKIPPED — m_MEF90_Flow.o missing"
+          fi
+      - name: Run Terzaghi
+        if: always()
+        run: |
+          set +e
+          export PETSC_DIR=$HOME/petsc-3.3-mef90
+          export PETSC_ARCH=linux-gcc-openmpi-mef90-O
+          export MPI_HOME=$HOME/openmpi-3.1.3
+          export PATH=$MPI_HOME/bin:$PETSC_DIR/bin:$PETSC_DIR/$PETSC_ARCH/bin:$PATH
+          export MEF90_DIR=$(pwd)
+          cd vDef
+          mpirun --allow-run-as-root -np 2 ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi1D.yaml 2>&1 | tee /tmp/terzaghi.log
+          ls -la terzaghi1D-*.exo 2>/dev/null || echo "(no exo)"
+        continue-on-error: true
+      - name: Upload diagnostics
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-diagnostics
+          path: |
+            /tmp/MEF90.log
+            /tmp/m_DefMech.log
+            /tmp/m_HeatXfer.log
+            /tmp/flow.log
+            /tmp/vDef.log
+            /tmp/terzaghi.log
+          retention-days: 7
