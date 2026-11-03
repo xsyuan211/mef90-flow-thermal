@@ -168,11 +168,15 @@ jobs:
           export FC_FLAGS="-fallow-argument-mismatch -ffree-line-length-none -Wno-error -J$(pwd)/objs/$PETSC_ARCH -I$(pwd)/objs/$PETSC_ARCH -I$PETSC_DIR/include -I$PETSC_DIR/$PETSC_ARCH/include"
           export FCFLAGS="-fallow-argument-mismatch"
           export FFLAGS="-fallow-argument-mismatch"
+          export FCPPFLAGS=""
           mkdir -p objs/${PETSC_ARCH} bin/${PETSC_ARCH} lib/${PETSC_ARCH}
           bin/makeversion.sh ${MEF90_DIR}/mef90version.h
           echo "=== ENV ==="
           echo "FC_FLAGS=$FC_FLAGS"
           echo "FCFLAGS=$FCFLAGS"
+          echo "FCPPFLAGS=$FCPPFLAGS"
+          echo "PETSC_DIR=$PETSC_DIR"
+          echo "PETSC_ARCH=$PETSC_ARCH"
           echo "=== 1) BUILD MEF90 (core) ==="
           make -C objs/${PETSC_ARCH} -f ../../MEF90/Makefile MEF90 PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/MEF90.log
           echo "  MEF90 count=$(ls objs/${PETSC_ARCH}/*.o 2>/dev/null | wc -l)"
