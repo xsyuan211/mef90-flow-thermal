@@ -21,8 +21,6 @@ Module MEF90_APPEND(m_MEF90_FlowAssembly,MEF90_DIM)D
              MEF90FlowComputePressureGradient, & ! Cell-centered ∇p volume average
              MEF90FlowApplyBiotForce          ! Biot f_p = -α∇p → DefMechCtx%force
 
-#include "finclude/petscts.h"          ! TS type must come AFTER Use statements (Fortran rule)
-
 Contains
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
