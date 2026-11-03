@@ -45,10 +45,9 @@ Contains
 !!!  SNES RESIDUAL:  G(p) = DiffusionOperator(p) - SourceRHS  +  Dirichlet BC
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 #undef __FUNCT__
-#define __FUNCT__ "MEF90FlowOperator"
+#define __FUNCT__ "MEF90FlowOperatorCore"
 
-   Subroutine MEF90FlowOperator(snesPressure,x,residual,FlowCtx,ierr)
-      PetscInt,Intent(IN)                                :: snesPressure   ! SNES opaque handle; unused inside
+   Subroutine MEF90FlowOperatorCore(x,residual,FlowCtx,ierr)
       Type(Vec),Intent(IN)                               :: x
       Type(Vec),Intent(INOUT)                            :: residual
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
@@ -135,6 +134,17 @@ Contains
       Call SectionRealDestroy(sourceSec,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(resSec,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(pSec,ierr);CHKERRQ(ierr)
+   End Subroutine MEF90FlowOperatorCore
+
+
+   !!!! SNES callback wrapper — matches PETSc SNESSetFunction signature
+   Subroutine MEF90FlowOperator(snes,x,residual,FlowCtx,ierr)
+      PetscInt,Intent(IN)                                :: snes
+      Type(Vec),Intent(IN)                               :: x
+      Type(Vec),Intent(INOUT)                            :: residual
+      Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
+      PetscErrorCode,Intent(OUT)                         :: ierr
+      Call MEF90FlowOperatorCore(x,residual,FlowCtx,ierr)
    End Subroutine MEF90FlowOperator
 
 
@@ -142,10 +152,9 @@ Contains
 !!!  SNES JACOBIAN:  K = dG/dp = Diffusion Bilinear Form (per-cell varying A)
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 #undef __FUNCT__
-#define __FUNCT__ "MEF90FlowBilinearForm"
+#define __FUNCT__ "MEF90FlowBilinearFormCore"
 
-   Subroutine MEF90FlowBilinearForm(snesPressure,x,Jac,PreJac,residualMode,FlowCtx,ierr)
-      PetscInt,Intent(IN)                                :: snesPressure   ! SNES opaque handle; unused inside
+   Subroutine MEF90FlowBilinearFormCore(x,Jac,PreJac,residualMode,FlowCtx,ierr)
       Type(Vec),Intent(IN)                               :: x
       Type(Mat),Intent(INOUT)                            :: Jac, PreJac
       PetscReal,Intent(IN)                               :: residualMode
@@ -206,6 +215,18 @@ Contains
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
       Call ISDestroy(CellSetGlobalIS,ierr)
       Call SectionRealDestroy(permFieldSec,ierr);CHKERRQ(ierr)
+   End Subroutine MEF90FlowBilinearFormCore
+
+
+   !!!! SNES callback wrapper — matches PETSc SNESSetJacobian signature
+   Subroutine MEF90FlowBilinearForm(snes,x,Jac,PreJac,residualMode,FlowCtx,ierr)
+      PetscInt,Intent(IN)                                :: snes
+      Type(Vec),Intent(IN)                               :: x
+      Type(Mat),Intent(INOUT)                            :: Jac, PreJac
+      PetscReal,Intent(IN)                               :: residualMode
+      Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
+      PetscErrorCode,Intent(OUT)                         :: ierr
+      Call MEF90FlowBilinearFormCore(x,Jac,PreJac,residualMode,FlowCtx,ierr)
    End Subroutine MEF90FlowBilinearForm
 
 
@@ -222,7 +243,7 @@ Contains
       Type(Vec),Intent(INOUT)                            :: F
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
-      Call MEF90FlowOperator(PETSC_NULL_OBJECT,x,F,FlowCtx,ierr)
+      Call MEF90FlowOperatorCore(x,F,FlowCtx,ierr)
       Call MEF90FlowAddStorageToResidual(F,xDot,FlowCtx,ierr)
    End Subroutine MEF90FlowIFunction
 
@@ -239,7 +260,7 @@ Contains
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
       !!! First, assemble steady Darcy Jacobian K = dG/dp
-      Call MEF90FlowBilinearForm(PETSC_NULL_OBJECT,x,Jac,PreJac,1.0_Kr,FlowCtx,ierr)
+      Call MEF90FlowBilinearFormCore(x,Jac,PreJac,1.0_Kr,FlowCtx,ierr)
       !!! Add a·S·M (mass matrix):  K += a·S·BFB
       Call MEF90FlowAddStorageMassMatrix(Jac,PreJac,a,FlowCtx,ierr)
    End Subroutine MEF90FlowIJacobian
