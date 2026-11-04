@@ -2,6 +2,7 @@
 Module MEF90_APPEND(m_MEF90_FlowAssembly,MEF90_DIM)D
 #include "finclude/petscdef.h"
 #include "finclude/petscbagdef.h"
+   Use petsc                              !!! TS/Vec/SNES/etc from PETSc modules
    Use m_MEF90
    Use m_MEF90_FlowCtx
    Use m_MEF90_DiffusionInterface   !!! Reuse Bourdin's well-tested diffusion assembly
