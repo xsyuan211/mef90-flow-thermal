@@ -191,24 +191,12 @@ jobs:
           ls $PETSC_DIR/$PETSC_ARCH/include/*.mod 2>&1 | wc -l
           ls $PETSC_DIR/$PETSC_ARCH/include/*.mod 2>&1
           echo "--- 5. Test A: gfortran direct Use petsctsdef ---"
-          cat > /tmp/test_ts.f90 << 'EOF'
-program test_ts
-  use petsctsdef, only: TS
-  implicit none
-  type(TS) :: ts
-  print *, "TS works!"
-end program
-EOF
+          printf 'program test_ts\n  use petsctsdef, only: TS\n  implicit none\n  type(TS) :: ts\n  print *, "TS works!"\nend program\n' > /tmp/test_ts.f90
+          cat /tmp/test_ts.f90
           /home/runner/openmpi-3.1.3/bin/mpif90 $FC_FLAGS -I$PETSC_DIR/$PETSC_ARCH/include -J/tmp /tmp/test_ts.f90 -o /tmp/test_ts 2>&1; echo "TEST_A_EXIT=$?"
           echo "--- 6. Test B: Use petsc transitively ---"
-          cat > /tmp/test_ts2.f90 << 'EOF'
-program test_ts2
-  use petsc
-  implicit none
-  type(TS) :: ts
-  print *, "TS via petsc works!"
-end program
-EOF
+          printf 'program test_ts2\n  use petsc\n  implicit none\n  type(TS) :: ts\n  print *, "TS via petsc works!"\nend program\n' > /tmp/test_ts2.f90
+          cat /tmp/test_ts2.f90
           /home/runner/openmpi-3.1.3/bin/mpif90 $FC_FLAGS -I$PETSC_DIR/$PETSC_ARCH/include -J/tmp /tmp/test_ts2.f90 -o /tmp/test_ts2 2>&1; echo "TEST_B_EXIT=$?"
           echo "--- 7. petscdef.h content around TS ---"
           grep -n "TS\|petscts\|FORTRAN_DATATYPES" $PETSC_DIR/include/finclude/petscdef.h 2>&1 | head -20
