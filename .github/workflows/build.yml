@@ -165,10 +165,10 @@ jobs:
           export MPI_HOME=$HOME/openmpi-3.1.3
           export PATH=$MPI_HOME/bin:$PETSC_DIR/bin:$PETSC_DIR/$PETSC_ARCH/bin:$PATH
           export MEF90_DIR=$(pwd)
-          export FC_FLAGS="-fallow-argument-mismatch -ffree-line-length-none -Wno-error -J$(pwd)/objs/$PETSC_ARCH -I$(pwd)/objs/$PETSC_ARCH -I$PETSC_DIR/include -I$PETSC_DIR/$PETSC_ARCH/include"
+          export FC_FLAGS="-fallow-argument-mismatch -ffree-line-length-none -Wno-error -J$(pwd)/objs/$PETSC_ARCH -I$(pwd)/objs/$PETSC_ARCH -I$PETSC_DIR/$PETSC_ARCH/include"
+          export FCPPFLAGS="-I$PETSC_DIR/include -I$PETSC_DIR/include/finclude"
           export FCFLAGS="-fallow-argument-mismatch"
           export FFLAGS="-fallow-argument-mismatch"
-          export FCPPFLAGS=""
           mkdir -p objs/${PETSC_ARCH} bin/${PETSC_ARCH} lib/${PETSC_ARCH}
           bin/makeversion.sh ${MEF90_DIR}/mef90version.h
           echo "=== FORCE PETSc .mod INTO objs/ (ensure gfortran finds correct versions first) ==="
@@ -214,30 +214,26 @@ jobs:
           echo ""
 
           echo "=== 1) BUILD MEF90 (core) ==="
+          cp -f $PETSC_DIR/$PETSC_ARCH/include/*.mod objs/${PETSC_ARCH}/
           make -C objs/${PETSC_ARCH} -f ../../MEF90/Makefile MEF90 \
             PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR \
-            FC_FLAGS="$FC_FLAGS" FCPPFLAGS="" FFLAGS="" FPPFLAGS="" F90FLAGS="" FCFLAGS="" \
+            FC_FLAGS="$FC_FLAGS" FCPPFLAGS="$FCPPFLAGS" FFLAGS="" FPPFLAGS="" F90FLAGS="" FCFLAGS="" \
             2>&1 | tee /tmp/MEF90.log
           echo "  MEF90 count=$(ls objs/${PETSC_ARCH}/*.o 2>/dev/null | wc -l)"
           echo "=== 2) BUILD m_DefMech ==="
-          make -C objs/${PETSC_ARCH} -f ../../m_DefMech/Makefile m_DefMech PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/m_DefMech.log
+          cp -f $PETSC_DIR/$PETSC_ARCH/include/*.mod objs/${PETSC_ARCH}/
+          make -C objs/${PETSC_ARCH} -f ../../m_DefMech/Makefile m_DefMech PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" FCPPFLAGS="$FCPPFLAGS" 2>&1 | tee /tmp/m_DefMech.log
           echo "  m_DefMech count=$(ls objs/${PETSC_ARCH}/*.o 2>/dev/null | wc -l)"
           echo "=== 3) BUILD m_HeatXfer ==="
-          make -C objs/${PETSC_ARCH} -f ../../m_HeatXfer/Makefile m_HeatXfer PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/m_HeatXfer.log
+          cp -f $PETSC_DIR/$PETSC_ARCH/include/*.mod objs/${PETSC_ARCH}/
+          make -C objs/${PETSC_ARCH} -f ../../m_HeatXfer/Makefile m_HeatXfer PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" FCPPFLAGS="$FCPPFLAGS" 2>&1 | tee /tmp/m_HeatXfer.log
           echo "=== 4) BUILD m_Flow ==="
+          cp -f $PETSC_DIR/$PETSC_ARCH/include/*.mod objs/${PETSC_ARCH}/
           rm -f objs/${PETSC_ARCH}/m_MEF90_Flow*.o objs/${PETSC_ARCH}/m_mef90_flow*.mod
-          echo "--- PETSc .mod sanity check ---"
-          ls -la $PETSC_DIR/$PETSC_ARCH/include/petscts*.mod 2>&1 || echo "!! NO petscts*.mod in ARCH include !!"
-          ls -la $PETSC_DIR/$PETSC_ARCH/include/petsc*.mod 2>&1 | head -10
-          echo "--- gfortran module search paths test ---"
-          echo "  Compile path will include: -Jobjs -Iobjs -I$PETSC_DIR/include -I$PETSC_DIR/$PETSC_ARCH/include"
-          find $PETSC_DIR -name "petsctsdef.mod" 2>&1
-          echo "--- objs/$PETSC_ARCH .mod files ---"
-          ls objs/${PETSC_ARCH}/*.mod 2>&1 | head -20
           make -C objs/${PETSC_ARCH} -f ../../m_Flow/Makefile m_Flow \
             PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR \
-            FC_FLAGS="$FC_FLAGS" FCPPFLAGS="" FFLAGS="" FPPFLAGS="" F90FLAGS="" FCFLAGS="" \
-            2>&1 | tee /tmp/flow.log
+            FC_FLAGS="$FC_FLAGS" FCPPFLAGS="$FCPPFLAGS" FFLAGS="" FPPFLAGS="" F90FLAGS="" FCFLAGS="" \
+            2>&1 | tee /tmp/flow.log || { echo "=== FLOW.LOG LAST 50 LINES ==="; tail -50 /tmp/flow.log; exit 1; }
           echo "=== m_Flow PIPESTATUS: ${PIPESTATUS[*]} ==="
           echo "--- flow.log last 100 lines ---"
           tail -100 /tmp/flow.log
