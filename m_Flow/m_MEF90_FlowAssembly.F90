@@ -2,8 +2,6 @@
 Module MEF90_APPEND(m_MEF90_FlowAssembly,MEF90_DIM)D
 #include "finclude/petscdef.h"
 #include "finclude/petscbagdef.h"
-   Use petsc
-   Use petsctsdef, Only: TS   !!! Direct import of TS derived type — bypasses petsc.mod/fdefMechCtx_Type transitively
    Use m_MEF90
    Use m_MEF90_FlowCtx
    Use m_MEF90_DiffusionInterface   !!! Reuse Bourdin's well-tested diffusion assembly

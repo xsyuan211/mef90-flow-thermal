@@ -130,6 +130,24 @@ jobs:
           echo "===== petsctsdef.h90 content ====="
           cat $PETSC_DIR/include/finclude/ftn-custom/petsctsdef.h90 2>&1
           echo ""
+          echo "===== petscdef.h FULL content ====="
+          cat $PETSC_DIR/include/finclude/petscdef.h 2>&1
+          echo ""
+          echo "===== petsctsdef.h FULL content ====="
+          cat $PETSC_DIR/include/finclude/petsctsdef.h 2>&1
+          echo ""
+          echo "===== petscbagdef.h FULL content ====="
+          cat $PETSC_DIR/include/finclude/petscbagdef.h 2>&1
+          echo ""
+          echo "===== ALL files in finclude/ ====="
+          ls -la $PETSC_DIR/include/finclude/ 2>&1
+          echo ""
+          echo "===== GREP 'TS' in ALL .h in finclude/ ====="
+          grep -rn 'TS\b\|#define TS' $PETSC_DIR/include/finclude/ 2>&1 | head -40
+          echo ""
+          echo "===== GREP 'PetscFortranAddr' in finclude/ ====="
+          grep -rn 'PetscFortranAddr' $PETSC_DIR/include/finclude/ 2>&1 | head -20
+          echo ""
           echo "===== petscdef.h line 18 ====="
           sed -n '18p' $PETSC_DIR/include/finclude/petscdef.h 2>&1
       - name: Fix CRLF + Patch Makefiles
