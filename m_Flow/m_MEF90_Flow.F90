@@ -1,10 +1,19 @@
 #include "../MEF90/mef90.inc"
 Module m_MEF90_Flow
 #include "finclude/petscdef.h"
-   Use petsc                              !!! TS/Vec/SNES/etc from PETSc modules
    Use m_MEF90
    Use m_MEF90_FlowCtx
    Use m_MEF90_DefMechCtx     !!! NEW: for MEF90DefMechCtx_Type reference
+
+   !!! INLINE TS TYPE — petsc.mod/petscts.mod TS resolution fails
+   !!! despite working in FlowCtx/HeatXfer/vDef.
+#ifdef TS
+#undef TS                       !!! Kill any macro from petscdef.h
+#endif
+   Type TS
+      Integer(PetscFortranAddr) :: handle
+   End Type TS
+
    Use m_MEF90_FlowAssembly2D, &   !!! NEW: bridge to 2D dimmed assembly template
       MEF90FlowOperator2D               => MEF90FlowOperator, &
       MEF90FlowBilinearForm2D           => MEF90FlowBilinearForm, &
