@@ -350,6 +350,25 @@ jobs:
             FC_FLAGS="$FC_FLAGS" FCPPFLAGS="$FCPPFLAGS" FFLAGS="" FPPFLAGS="" F90FLAGS="" FCFLAGS="" \
             2>&1 | tee /tmp/MEF90.log
           echo "  MEF90 count=$(ls objs/${PETSC_ARCH}/*.o 2>/dev/null | wc -l)"
+          echo ""
+          echo "=== MINI TEST A: Compile minimal 'Use m_MEF90 + Type(TS)' NO MEF90_DIM ==="
+          printf '#include "finclude/petscdef.h"\nprogram mini_a\n  Use m_MEF90\n  implicit none\n  type(TS) :: tsObj\n  print *, "A-OK"\nend program\n' > /tmp/mini_a.f90
+          echo "Source:"; cat /tmp/mini_a.f90
+          /home/runner/openmpi-3.1.3/bin/mpif90 $FC_FLAGS $FCPPFLAGS -I${MEF90_DIR}/MEF90 -I$(pwd)/objs/${PETSC_ARCH} \
+            /tmp/mini_a.f90 -o /tmp/mini_a 2>&1; echo "MINI_A_EXIT=$?"
+          echo ""
+          echo "=== MINI TEST B: Same + -DMEF90_DIM=2 ==="
+          printf '#include "finclude/petscdef.h"\nprogram mini_b\n  Use m_MEF90\n  implicit none\n  type(TS) :: tsObj\n  print *, "B-OK"\nend program\n' > /tmp/mini_b.f90
+          echo "Source:"; cat /tmp/mini_b.f90
+          /home/runner/openmpi-3.1.3/bin/mpif90 $FC_FLAGS $FCPPFLAGS -I${MEF90_DIR}/MEF90 -I$(pwd)/objs/${PETSC_ARCH} -DMEF90_DIM=2 \
+            /tmp/mini_b.f90 -o /tmp/mini_b 2>&1; echo "MINI_B_EXIT=$?"
+          echo ""
+          echo "=== MINI TEST C: FlowCtx body + -DMEF90_DIM=2 (no Private) ==="
+          printf 'Module mini_c\n#include "finclude/petscdef.h"\n  Use m_MEF90\n  implicit none\n  type(TS) :: tsMember\nend Module\n' > /tmp/mini_c.f90
+          echo "Source:"; cat /tmp/mini_c.f90
+          /home/runner/openmpi-3.1.3/bin/mpif90 $FC_FLAGS $FCPPFLAGS -I${MEF90_DIR}/MEF90 -I$(pwd)/objs/${PETSC_ARCH} -DMEF90_DIM=2 \
+            -c /tmp/mini_c.f90 -o /tmp/mini_c.o 2>&1; echo "MINI_C_EXIT=$?"
+          echo ""
           echo "=== 2) BUILD m_DefMech ==="
           cp -f $PETSC_DIR/$PETSC_ARCH/include/*.mod objs/${PETSC_ARCH}/
           make -C objs/${PETSC_ARCH} -f ../../m_DefMech/Makefile m_DefMech PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" FCPPFLAGS="$FCPPFLAGS" 2>&1 | tee /tmp/m_DefMech.log
