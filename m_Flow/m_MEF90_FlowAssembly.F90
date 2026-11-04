@@ -6,16 +6,6 @@ Module MEF90_APPEND(m_MEF90_FlowAssembly,MEF90_DIM)D
    Use m_MEF90_FlowCtx
    Use m_MEF90_DiffusionInterface   !!! Reuse Bourdin's well-tested diffusion assembly
    Use m_MEF90_DefMechCtx_Type      !!! Biot coupling: write f_p into DefMechCtx%force
-
-   !!! INLINE TS TYPE — petsc.mod/petscts.mod TS resolution fails in this module
-   !!! despite working in FlowCtx/HeatXfer/vDef. ts is Intent(IN) opaque handle
-   !!! never dereferenced — we only need compiler to accept Type(TS).
-#ifdef TS
-#undef TS                       !!! Kill any macro from petscdef.h
-#endif
-   Type TS
-      Integer(PetscFortranAddr) :: handle
-   End Type TS
    Implicit none
 
    Private
