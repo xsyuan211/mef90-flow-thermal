@@ -174,27 +174,49 @@ jobs:
 
           echo ""
           echo "=============================================="
-          echo "=== PATCH PETSc conf/variables + conf/rules ==="
+          echo "=== PATCH PETSc conf/variables + petscvariables ==="
           echo "=============================================="
+
           echo "--- Before: conf/variables key lines ---"
-          grep -n "PETSC_ARCH\|FCPPFLAGS\|FC_FLAGS\|FC=" $PETSC_DIR/conf/variables 2>&1 | head -15
+          grep -n "FCPPFLAGS\|PETSC_FCPPFLAGS\|include.*petscvariables" $PETSC_DIR/conf/variables 2>&1 | head -10
           echo ""
-          echo "--- Patching conf/variables ---"
+
+          # 1. Patch conf/variables — 放在 include 之后确保覆盖
           cp $PETSC_DIR/conf/variables $PETSC_DIR/conf/variables.bak
           sed -i 's/^PETSC_ARCH *= *.*/PETSC_ARCH = linux-gcc-openmpi-mef90-O/' $PETSC_DIR/conf/variables
-          sed -i '/^FCPPFLAGS/d' $PETSC_DIR/conf/variables
-          echo "FCPPFLAGS = -DPETSC_USE_FORTRAN_DATATYPES=1 -DPETSC_USE_REAL_DOUBLE=1 -I$PETSC_DIR/include -I$PETSC_DIR/include/finclude -I$PETSC_DIR/$PETSC_ARCH/include" >> $PETSC_DIR/conf/variables
+          # 删除所有 FCPPFLAGS / PETSC_FCPPFLAGS 定义
+          sed -i '/^[[:space:]]*FCPPFLAGS[[:space:]]*=/d' $PETSC_DIR/conf/variables
+          sed -i '/^[[:space:]]*PETSC_FCPPFLAGS[[:space:]]*=/d' $PETSC_DIR/conf/variables
+          sed -i '/^[[:space:]]*PETSC_FC_INCLUDES[[:space:]]*=/d' $PETSC_DIR/conf/variables
+          # 在 include petscvariables 行后面插入我们的 FCPPFLAGS
+          sed -i "/include.*petscvariables/a FCPPFLAGS = -DPETSC_USE_FORTRAN_DATATYPES=1 -DPETSC_USE_REAL_DOUBLE=1 -I$PETSC_DIR/include -I$PETSC_DIR/include/finclude -I$PETSC_DIR/$PETSC_ARCH/include" $PETSC_DIR/conf/variables
+          echo "--- After conf/variables (FCPPFLAGS + include lines) ---"
+          grep -n "FCPPFLAGS\|include.*petscvariables" $PETSC_DIR/conf/variables 2>&1 | head -10
           echo ""
-          echo "--- After: conf/variables key lines ---"
-          grep -n "PETSC_ARCH\|FCPPFLAGS\|FC_FLAGS\|FC=" $PETSC_DIR/conf/variables 2>&1 | head -15
+
+          # 2. Patch petscvariables 本身 — 这才是真正的配置源！
+          echo "--- Before petscvariables (FCPPFLAGS lines) ---"
+          ls -la $PETSC_DIR/$PETSC_ARCH/conf/petscvariables 2>&1
+          grep -n "FCPPFLAGS\|PETSC_FCPPFLAGS\|PETSC_FC_INCLUDES\|FPP_FLAGS" $PETSC_DIR/$PETSC_ARCH/conf/petscvariables 2>&1 | head -10
+          cp $PETSC_DIR/$PETSC_ARCH/conf/petscvariables $PETSC_DIR/$PETSC_ARCH/conf/petscvariables.bak
+          sed -i '/^[[:space:]]*FCPPFLAGS[[:space:]]*=/d' $PETSC_DIR/$PETSC_ARCH/conf/petscvariables
+          sed -i '/^[[:space:]]*PETSC_FCPPFLAGS[[:space:]]*=/d' $PETSC_DIR/$PETSC_ARCH/conf/petscvariables
+          sed -i '/^[[:space:]]*PETSC_FC_INCLUDES[[:space:]]*=/d' $PETSC_DIR/$PETSC_ARCH/conf/petscvariables
+          echo "FCPPFLAGS = -DPETSC_USE_FORTRAN_DATATYPES=1 -DPETSC_USE_REAL_DOUBLE=1 -I$PETSC_DIR/include -I$PETSC_DIR/include/finclude -I$PETSC_DIR/$PETSC_ARCH/include" >> $PETSC_DIR/$PETSC_ARCH/conf/petscvariables
+          echo "FC_FLAGS = -fallow-argument-mismatch -ffree-line-length-none -Wno-error -J$(pwd)/objs/$PETSC_ARCH -I$(pwd)/objs/$PETSC_ARCH -I$PETSC_DIR/$PETSC_ARCH/include" >> $PETSC_DIR/$PETSC_ARCH/conf/petscvariables
+          echo "--- After petscvariables (FCPPFLAGS + FC_FLAGS) ---"
+          grep -n "FCPPFLAGS\|FC_FLAGS\|FCFLAGS" $PETSC_DIR/$PETSC_ARCH/conf/petscvariables 2>&1 | head -10
           echo ""
+
+          # 3. Patch conf/rules
           echo "--- Patching conf/rules ---"
           if [ -f "$PETSC_DIR/conf/rules" ]; then
             cp $PETSC_DIR/conf/rules $PETSC_DIR/conf/rules.bak
             sed -i 's/^PETSC_ARCH *= *.*/PETSC_ARCH = linux-gcc-openmpi-mef90-O/' $PETSC_DIR/conf/rules
-            sed -i '/^FCPPFLAGS *=/d' $PETSC_DIR/conf/rules
+            sed -i '/^[[:space:]]*FCPPFLAGS[[:space:]]*=/d' $PETSC_DIR/conf/rules
+            sed -i '/^[[:space:]]*PETSC_FCPPFLAGS[[:space:]]*=/d' $PETSC_DIR/conf/rules
             echo "FCPPFLAGS = -DPETSC_USE_FORTRAN_DATATYPES=1 -DPETSC_USE_REAL_DOUBLE=1 -I$PETSC_DIR/include -I$PETSC_DIR/include/finclude -I$PETSC_DIR/$PETSC_ARCH/include" >> $PETSC_DIR/conf/rules
-            grep -n "FCPPFLAGS" $PETSC_DIR/conf/rules | head -5
+            grep -n "FCPPFLAGS" $PETSC_DIR/conf/rules | head -3
           fi
           echo "=============================================="
 
