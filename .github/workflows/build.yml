@@ -171,6 +171,10 @@ jobs:
           export FCPPFLAGS=""
           mkdir -p objs/${PETSC_ARCH} bin/${PETSC_ARCH} lib/${PETSC_ARCH}
           bin/makeversion.sh ${MEF90_DIR}/mef90version.h
+          echo "=== FORCE PETSc .mod INTO objs/ (ensure gfortran finds correct versions first) ==="
+          cp -f $PETSC_DIR/$PETSC_ARCH/include/*.mod objs/${PETSC_ARCH}/
+          echo "  Copied $(ls $PETSC_DIR/$PETSC_ARCH/include/*.mod | wc -l) PETSc .mod files into objs"
+          echo "  petsctsdef.mod size: $(ls -la objs/${PETSC_ARCH}/petsctsdef.mod 2>&1)"
           echo "=== ENV ==="
           echo "FC_FLAGS=$FC_FLAGS"
           echo "FCFLAGS=$FCFLAGS"
