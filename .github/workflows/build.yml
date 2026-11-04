@@ -177,8 +177,55 @@ jobs:
           echo "FCPPFLAGS=$FCPPFLAGS"
           echo "PETSC_DIR=$PETSC_DIR"
           echo "PETSC_ARCH=$PETSC_ARCH"
+
+          echo ""
+          echo "========== TS MODULE DIAGNOSTIC TEST =========="
+          set +e
+          echo "--- 1. petsctsdef.mod exists? ---"
+          ls -la $PETSC_DIR/$PETSC_ARCH/include/petsctsdef.mod 2>&1
+          echo "--- 2. petscts.mod exists? ---"
+          ls -la $PETSC_DIR/$PETSC_ARCH/include/petscts.mod 2>&1
+          echo "--- 3. petsc.mod exists? ---"
+          ls -la $PETSC_DIR/$PETSC_ARCH/include/petsc.mod 2>&1
+          echo "--- 4. ALL .mod files in ARCH/include ---"
+          ls $PETSC_DIR/$PETSC_ARCH/include/*.mod 2>&1 | wc -l
+          ls $PETSC_DIR/$PETSC_ARCH/include/*.mod 2>&1
+          echo "--- 5. Test A: gfortran direct Use petsctsdef ---"
+          cat > /tmp/test_ts.f90 << 'EOF'
+program test_ts
+  use petsctsdef, only: TS
+  implicit none
+  type(TS) :: ts
+  print *, "TS works!"
+end program
+EOF
+          /home/runner/openmpi-3.1.3/bin/mpif90 $FC_FLAGS -I$PETSC_DIR/$PETSC_ARCH/include -J/tmp /tmp/test_ts.f90 -o /tmp/test_ts 2>&1; echo "TEST_A_EXIT=$?"
+          echo "--- 6. Test B: Use petsc transitively ---"
+          cat > /tmp/test_ts2.f90 << 'EOF'
+program test_ts2
+  use petsc
+  implicit none
+  type(TS) :: ts
+  print *, "TS via petsc works!"
+end program
+EOF
+          /home/runner/openmpi-3.1.3/bin/mpif90 $FC_FLAGS -I$PETSC_DIR/$PETSC_ARCH/include -J/tmp /tmp/test_ts2.f90 -o /tmp/test_ts2 2>&1; echo "TEST_B_EXIT=$?"
+          echo "--- 7. petscdef.h content around TS ---"
+          grep -n "TS\|petscts\|FORTRAN_DATATYPES" $PETSC_DIR/include/finclude/petscdef.h 2>&1 | head -20
+          echo "--- 8. conf/variables PETSC_ARCH line ---"
+          grep -n "PETSC_ARCH" $PETSC_DIR/conf/variables 2>&1 | head -10
+          echo "--- 9. Raw gfortran search: find .mod in ARCH/include ---"
+          nm $PETSC_DIR/$PETSC_ARCH/include/petsctsdef.mod 2>&1 | head -5 || echo "(nm not available)"
+          strings $PETSC_DIR/$PETSC_ARCH/include/petsctsdef.mod 2>&1 | grep -i "TS\|ts" | head -5 || echo "(strings not available)"
+          set -e
+          echo "========== END DIAGNOSTIC =========="
+          echo ""
+
           echo "=== 1) BUILD MEF90 (core) ==="
-          make -C objs/${PETSC_ARCH} -f ../../MEF90/Makefile MEF90 PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/MEF90.log
+          make -C objs/${PETSC_ARCH} -f ../../MEF90/Makefile MEF90 \
+            PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR \
+            FC_FLAGS="$FC_FLAGS" FCPPFLAGS="" FFLAGS="" FPPFLAGS="" F90FLAGS="" FCFLAGS="" \
+            2>&1 | tee /tmp/MEF90.log
           echo "  MEF90 count=$(ls objs/${PETSC_ARCH}/*.o 2>/dev/null | wc -l)"
           echo "=== 2) BUILD m_DefMech ==="
           make -C objs/${PETSC_ARCH} -f ../../m_DefMech/Makefile m_DefMech PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/m_DefMech.log
