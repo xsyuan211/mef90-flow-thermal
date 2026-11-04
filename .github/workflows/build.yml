@@ -187,7 +187,18 @@ jobs:
           make -C objs/${PETSC_ARCH} -f ../../m_HeatXfer/Makefile m_HeatXfer PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/m_HeatXfer.log
           echo "=== 4) BUILD m_Flow ==="
           rm -f objs/${PETSC_ARCH}/m_MEF90_Flow*.o objs/${PETSC_ARCH}/m_mef90_flow*.mod
-          make -C objs/${PETSC_ARCH} -f ../../m_Flow/Makefile m_Flow PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/flow.log
+          echo "--- PETSc .mod sanity check ---"
+          ls -la $PETSC_DIR/$PETSC_ARCH/include/petscts*.mod 2>&1 || echo "!! NO petscts*.mod in ARCH include !!"
+          ls -la $PETSC_DIR/$PETSC_ARCH/include/petsc*.mod 2>&1 | head -10
+          echo "--- gfortran module search paths test ---"
+          echo "  Compile path will include: -Jobjs -Iobjs -I$PETSC_DIR/include -I$PETSC_DIR/$PETSC_ARCH/include"
+          find $PETSC_DIR -name "petsctsdef.mod" 2>&1
+          echo "--- objs/$PETSC_ARCH .mod files ---"
+          ls objs/${PETSC_ARCH}/*.mod 2>&1 | head -20
+          make -C objs/${PETSC_ARCH} -f ../../m_Flow/Makefile m_Flow \
+            PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR \
+            FC_FLAGS="$FC_FLAGS" FCPPFLAGS="" FFLAGS="" FPPFLAGS="" F90FLAGS="" FCFLAGS="" \
+            2>&1 | tee /tmp/flow.log
           echo "=== m_Flow PIPESTATUS: ${PIPESTATUS[*]} ==="
           echo "--- flow.log last 100 lines ---"
           tail -100 /tmp/flow.log
