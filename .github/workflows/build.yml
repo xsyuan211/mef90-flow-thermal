@@ -256,9 +256,15 @@ jobs:
           grep -n "TS\|petscts\|FORTRAN_DATATYPES" $PETSC_DIR/include/finclude/petscdef.h 2>&1 | head -20
           echo "--- 8. conf/variables PETSC_ARCH line ---"
           grep -n "PETSC_ARCH" $PETSC_DIR/conf/variables 2>&1 | head -10
-          echo "--- 9. Raw gfortran search: find .mod in ARCH/include ---"
-          nm $PETSC_DIR/$PETSC_ARCH/include/petsctsdef.mod 2>&1 | head -5 || echo "(nm not available)"
-          strings $PETSC_DIR/$PETSC_ARCH/include/petsctsdef.mod 2>&1 | grep -i "TS\|ts" | head -5 || echo "(strings not available)"
+          echo "--- 9. petscconf.h FORTRAN_DATATYPES ---"
+          grep -n "FORTRAN_DATATYPES\|FORTRAN_ADDR" $PETSC_DIR/include/petscconf.h 2>&1 | head -10
+          grep -n "FORTRAN_DATATYPES\|FORTRAN_ADDR" $PETSC_DIR/$PETSC_ARCH/include/petscconf.h 2>&1 | head -10
+          echo "--- 10. mpif90 -E preprocess FlowAssembly.F90 and grep TS ---"
+          /home/runner/openmpi-3.1.3/bin/mpif90 -E $FC_FLAGS $FCPPFLAGS -I${MEF90_DIR}/MEF90 -DMEF90_DIM=2 \
+            ${MEF90_DIR}/m_Flow/m_MEF90_FlowAssembly.F90 2>&1 | grep -iE "^\s*Type\(|^\s*type\(|TS|ts.*subroutine|Subroutine.*TS" | head -20
+          echo "--- 11. mpif90 -E preprocess FlowCtx.F90 and grep TS ---"
+          /home/runner/openmpi-3.1.3/bin/mpif90 -E $FC_FLAGS $FCPPFLAGS -I${MEF90_DIR}/MEF90 \
+            ${MEF90_DIR}/m_Flow/m_MEF90_FlowCtx.F90 2>&1 | grep -iE "^\s*Type\(|^\s*type\(|TS|ts.*type" | head -20
           set -e
           echo "========== END DIAGNOSTIC =========="
           echo ""
