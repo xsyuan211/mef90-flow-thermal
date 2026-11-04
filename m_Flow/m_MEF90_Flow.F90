@@ -2,6 +2,7 @@
 Module m_MEF90_Flow
 #include "finclude/petscdef.h"
    Use petsc
+   Use petsctsdef, Only: TS   !!! Direct import of TS derived type
    Use m_MEF90
    Use m_MEF90_FlowCtx
    Use m_MEF90_DefMechCtx     !!! NEW: for MEF90DefMechCtx_Type reference
