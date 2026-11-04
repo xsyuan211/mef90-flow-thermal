@@ -171,6 +171,34 @@ jobs:
           export FFLAGS="-fallow-argument-mismatch"
           mkdir -p objs/${PETSC_ARCH} bin/${PETSC_ARCH} lib/${PETSC_ARCH}
           bin/makeversion.sh ${MEF90_DIR}/mef90version.h
+
+          echo ""
+          echo "=============================================="
+          echo "=== PATCH PETSc conf/variables + conf/rules ==="
+          echo "=============================================="
+          echo "--- Before: conf/variables key lines ---"
+          grep -n "PETSC_ARCH\|FCPPFLAGS\|FC_FLAGS\|FC=" $PETSC_DIR/conf/variables 2>&1 | head -15
+          echo ""
+          echo "--- Patching conf/variables ---"
+          cp $PETSC_DIR/conf/variables $PETSC_DIR/conf/variables.bak
+          sed -i 's/^PETSC_ARCH *= *.*/PETSC_ARCH = linux-gcc-openmpi-mef90-O/' $PETSC_DIR/conf/variables
+          sed -i '/^FCPPFLAGS/d' $PETSC_DIR/conf/variables
+          echo "FCPPFLAGS = -DPETSC_USE_FORTRAN_DATATYPES=1 -DPETSC_USE_REAL_DOUBLE=1 -I$PETSC_DIR/include -I$PETSC_DIR/include/finclude -I$PETSC_DIR/$PETSC_ARCH/include" >> $PETSC_DIR/conf/variables
+          echo ""
+          echo "--- After: conf/variables key lines ---"
+          grep -n "PETSC_ARCH\|FCPPFLAGS\|FC_FLAGS\|FC=" $PETSC_DIR/conf/variables 2>&1 | head -15
+          echo ""
+          echo "--- Patching conf/rules ---"
+          if [ -f "$PETSC_DIR/conf/rules" ]; then
+            cp $PETSC_DIR/conf/rules $PETSC_DIR/conf/rules.bak
+            sed -i 's/^PETSC_ARCH *= *.*/PETSC_ARCH = linux-gcc-openmpi-mef90-O/' $PETSC_DIR/conf/rules
+            sed -i '/^FCPPFLAGS *=/d' $PETSC_DIR/conf/rules
+            echo "FCPPFLAGS = -DPETSC_USE_FORTRAN_DATATYPES=1 -DPETSC_USE_REAL_DOUBLE=1 -I$PETSC_DIR/include -I$PETSC_DIR/include/finclude -I$PETSC_DIR/$PETSC_ARCH/include" >> $PETSC_DIR/conf/rules
+            grep -n "FCPPFLAGS" $PETSC_DIR/conf/rules | head -5
+          fi
+          echo "=============================================="
+
+          echo ""
           echo "=== FORCE PETSc .mod INTO objs/ (ensure gfortran finds correct versions first) ==="
           cp -f $PETSC_DIR/$PETSC_ARCH/include/*.mod objs/${PETSC_ARCH}/
           echo "  Copied $(ls $PETSC_DIR/$PETSC_ARCH/include/*.mod | wc -l) PETSc .mod files into objs"
