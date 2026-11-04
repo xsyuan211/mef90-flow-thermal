@@ -1,6 +1,7 @@
 #include "../MEF90/mef90.inc"
 Module m_MEF90_Flow
 #include "finclude/petscdef.h"
+#undef TS   !!! Kill petscdef.h's '#define TS PetscFortranAddr' macro — it macro-expands Type(TS) into Type(PetscFortranAddr), breaking PETSc module-provided TS derived type resolution
    Use m_MEF90
    Use m_MEF90_FlowCtx
    Use m_MEF90_DefMechCtx     !!! NEW: for MEF90DefMechCtx_Type reference
