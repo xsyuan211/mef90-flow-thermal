@@ -147,24 +147,24 @@ module m_vDefDefault
                                                          PETSC_FALSE,   & ! Has BC
                                                          0.0_Kr)          ! boundaryTemp
 
-!!! NEW: Flow (Darcy pressure) default options — Phase 1
+!!! NEW: Flow (Darcy pressure) default options - Phase 1
    Type(MEF90FlowGlobalOptions_Type),Parameter    :: vDefFlowDefaultGlobalOptions = MEF90FlowGlobalOptions_Type( &
                                                          MEF90Flow_timeSteppingTypeSteadyState, & ! timeSteppingType (steady Darcy)
                                                          PETSC_FALSE,    & ! addNullSpace
                                                          1.0e-20_Kr,     & ! permeabilityMin  (k_min, 1e-20 m^2 ~ 10 mD)
                                                          1.0e-14_Kr,     & ! permeabilityMax  (k_max, 1e-14 m^2 ~ 1000 D)
-                                                         1.0e-3_Kr,      & ! dynamicViscosity (mu_ref, water at 20°C, T_ref=293K)
-                                                         4.6e-10_Kr,     & ! storativity S = (1/Kf + φ/Ks) ~ 4.6e-10 Pa^-1
+                                                         1.0e-3_Kr,      & ! dynamicViscosity (mu_ref, water at 20 degC, T_ref=293K)
+                                                         4.6e-10_Kr,     & ! storativity S = (1/Kf + phi/Ks) ~ 4.6e-10 Pa^-1
                                                          0.0_Kr,         & ! initialPressure p0
-                                                         0.0_Kr,         & ! residualDamage (damage < this → k = k_min only)
-                                                         0.0_Kr,         & ! biotCoefficient α (0 = no Biot coupling, set 1.0 for full poroelasticity)
-                                                         PETSC_FALSE,    & ! temperatureDependViscosity (μ(T) coupling off by default)
+                                                         0.0_Kr,         & ! residualDamage (damage < this -> k = k_min only)
+                                                         0.0_Kr,         & ! biotCoefficient alpha (0 = no Biot coupling, set 1.0 for full poroelasticity)
+                                                         PETSC_FALSE,    & ! temperatureDependViscosity (mu(T) coupling off by default)
                                                          293.0_Kr,       & ! referenceTemperature T_ref (K)
                                                          600.0_Kr,       & ! sutherlandConstant C=600K (water-like default; air~120K)
                                                          5100.0_Kr,      & ! arrheniusActivationEnergy Ea/R (water~5100K; air~110K)
                                                          PETSC_FALSE,    & ! useArrheniusViscosity (.false.=Sutherland liquid)
-                                                         PETSC_FALSE,    & ! enableFlowAdvection (v·∇T off by default)
-                                                         1000.0_Kr,      & ! fluidDensity ρ_f (kg/m^3, water default)
+                                                         PETSC_FALSE,    & ! enableFlowAdvection (v.gradT off by default)
+                                                         1000.0_Kr,      & ! fluidDensity rho_f (kg/m^3, water default)
                                                          1,              & ! pressureOffset (EXO)
                                                          1,              & ! sourceOffset
                                                          0,              & ! boundaryPressureOffset
@@ -186,6 +186,6 @@ module m_vDefDefault
                                                          [0.0_Kr,0.0_Kr,0.0_Kr]) ! advectionVector (gravity)
    Type(MEF90FlowVertexSetOptions_Type),Parameter :: vDefFlowDefaultVertexSetOptions = MEF90FlowVertexSetOptions_Type( &
                                                          PETSC_FALSE,     & ! Has BC
-                                                         0.0_Kr)          & ! boundaryPressure
+                                                         0.0_Kr)            ! boundaryPressure
 
 end module m_vDefDefault
