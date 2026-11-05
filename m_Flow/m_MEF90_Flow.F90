@@ -258,7 +258,7 @@ Contains
                End Do
                vGauss = vGauss + elem(cell)%Gauss_C(iGauss) * damageGauss
             End Do
-            vGauss = vGauss / elem(cell)%volume
+            vGauss = vGauss / Sum(elem(cell)%Gauss_C)
 
             !!! Apply residual damage floor
             If (vGauss < gOpt%residualDamage) vGauss = gOpt%residualDamage
@@ -365,8 +365,8 @@ Contains
       Call SNESSetJacobian(SNESPressure,PETSC_NULL_OBJECT,PETSC_NULL_OBJECT, &
            MEF90FlowBilinearForm,FlowCtx,ierr);CHKERRQ(ierr)
       Call SNESSetFunction(SNESPressure,residual,MEF90FlowOperator,FlowCtx,ierr);CHKERRQ(ierr)
-      Call SNESSetConvergence(SNESPressure,gOpt%pressureRTol,gOpt%pressureATol, &
-           PETSC_DEFAULT_REAL,gOpt%pressureMaxIt,ierr);CHKERRQ(ierr)
+      Call SNESSetTolerances(SNESPressure,gOpt%pressureATol,gOpt%pressureRTol, &
+           PETSC_DEFAULT_DOUBLE_PRECISION,gOpt%pressureMaxIt,PETSC_DEFAULT_INTEGER,ierr);CHKERRQ(ierr)
       Call PetscObjectSetName(SNESPressure,"SNESPressure",ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowCreateSNES
 
@@ -509,7 +509,7 @@ Contains
                End Do
                TCell = TCell + elem(cell)%Gauss_C(iGauss) * TGauss
             End Do
-            TCell = TCell / elem(cell)%volume
+            TCell = TCell / Sum(elem(cell)%Gauss_C)
 
             !!! Clamp
             If (TCell < TMin) TCell = TMin

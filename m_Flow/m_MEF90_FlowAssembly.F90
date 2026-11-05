@@ -139,7 +139,7 @@ Contains
 
    !!!! SNES callback wrapper — matches PETSc SNESSetFunction signature
    Subroutine MEF90FlowOperator(snes,x,residual,FlowCtx,ierr)
-      PetscInt,Intent(IN)                                :: snes
+      Type(SNES),Intent(IN)                                :: snes
       Type(Vec),Intent(IN)                               :: x
       Type(Vec),Intent(INOUT)                            :: residual
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
@@ -220,7 +220,7 @@ Contains
 
    !!!! SNES callback wrapper — matches PETSc SNESSetJacobian signature
    Subroutine MEF90FlowBilinearForm(snes,x,Jac,PreJac,residualMode,FlowCtx,ierr)
-      PetscInt,Intent(IN)                                :: snes
+      Type(SNES),Intent(IN)                                :: snes
       Type(Vec),Intent(IN)                               :: x
       Type(Mat),Intent(INOUT)                            :: Jac, PreJac
       PetscReal,Intent(IN)                               :: residualMode
