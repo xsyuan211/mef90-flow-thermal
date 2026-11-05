@@ -55,6 +55,8 @@ Module m_MEF90_Flow
              MEF90FlowComputePressureGradient,& !!! Cell-centered ∇p volume average
              MEF90FlowApplyBiotForce           !!! Biot f_p = -α·∇p → DefMechCtx%force
 
+Contains
+
 !!! --------------------------------------------------------------------------------
 !!!  Wrapper functions — dispatch 2D vs 3D based on mesh dimension (HeatXfer pattern)
 !!! --------------------------------------------------------------------------------
@@ -194,8 +196,6 @@ Module m_MEF90_Flow
       End If
    End Subroutine MEF90FlowSetTransients
 
-Contains
-
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 !!!  Update permeability field from damage field and global options
 !!!  k(v) = k_min + (k_max - k_min) * max(v, residual_damage)
@@ -213,12 +213,13 @@ Contains
       Type(MEF90FlowCellSetOptions_Type),pointer         :: cellOpt
       Type(MEF90_ELEMENT_SCAL),Dimension(:),Pointer     :: elem
       Type(MEF90Element_Type)                             :: elemType
-      Type(IS)                                            :: CellSetGlobalIS, setIS, setIdx
+      Type(IS)                                            :: CellSetGlobalIS, setIS
+      PetscInt,dimension(:),Pointer                       :: setIdx
       PetscInt,dimension(:),Pointer                       :: setID
       PetscInt                                            :: set, cell
       PetscReal                                           :: damageGauss, vGauss, k_v, k_eff
       PetscReal,Dimension(:),Pointer                      :: dmgPtr
-      PetscReal,Dimension(1)                              :: permPtr, muPtr
+      PetscReal,Dimension(:),Pointer                     :: permPtr, muPtr
       PetscInt                                            :: iDoF, iGauss, QuadratureOrder
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
@@ -305,11 +306,12 @@ Contains
 
       Type(MEF90FlowGlobalOptions_Type),pointer          :: gOpt
       Type(MEF90FlowCellSetOptions_Type),pointer         :: cellOpt
-      Type(IS)                                            :: CellSetGlobalIS, setIS, setIdx
+      Type(IS)                                            :: CellSetGlobalIS, setIS
+      PetscInt,dimension(:),Pointer                       :: setIdx
       PetscInt,dimension(:),Pointer                       :: setID
       PetscInt                                            :: set, cell
       PetscReal                                           :: S_eff
-      PetscReal,Dimension(1)                              :: Sptr
+      PetscReal,Dimension(:),Pointer                      :: Sptr
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -457,13 +459,14 @@ Contains
       Type(MEF90FlowCellSetOptions_Type),pointer         :: cellOpt
       Type(MEF90_ELEMENT_SCAL),Dimension(:),Pointer       :: elem
       Type(MEF90Element_Type)                             :: elemType
-      Type(IS)                                            :: CellSetGlobalIS, setIS, setIdx
+      Type(IS)                                            :: CellSetGlobalIS, setIS
+      PetscInt,dimension(:),Pointer                       :: setIdx
       PetscInt,dimension(:),Pointer                       :: setID
       PetscInt                                            :: set, cell, iDoF, iGauss, QuadratureOrder
       PetscReal                                           :: TCell, TGauss, TRef, TMin, TMax
       PetscReal                                           :: mu_ref, C, Ea_over_R, T_dimless
       PetscReal,Dimension(:),Pointer                      :: TPtr
-      PetscReal,Dimension(1)                              :: muPtr
+      PetscReal,Dimension(:),Pointer                      :: muPtr
 
       !!! Must have temperature-enabled (HeatXfer active + shared pointer)
       If (.NOT. Associated(DefMechCtx%temperature)) Return
@@ -561,12 +564,13 @@ Contains
       Type(MEF90FlowGlobalOptions_Type),pointer          :: gOpt
       Type(MEF90FlowCellSetOptions_Type),pointer         :: cellOpt
       Type(SectionReal)                                    :: permFieldSec, gradpSec, vSec
-      Type(IS)                                            :: CellSetGlobalIS, setIS, setIdx
+      Type(IS)                                            :: CellSetGlobalIS, setIS
+      PetscInt,dimension(:),Pointer                       :: setIdx
       PetscInt,dimension(:),Pointer                       :: setID
       PetscInt                                            :: set, cell, dim
-      PetscReal,Dimension(1)                              :: permCell
+      PetscReal,Dimension(:),Pointer                      :: permCell
       PetscReal,Dimension(:),Pointer                      :: gradpPtr, vPtr
-      PetscReal,Dimension(MEF90_DIM)                      :: gravityContrib
+      PetscReal,Dimension(3)                              :: gravityContrib
       PetscBool                                           :: hasGravity
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
