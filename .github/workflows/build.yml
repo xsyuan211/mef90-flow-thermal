@@ -297,29 +297,24 @@ jobs:
           echo ""
           echo "Lines 45-70 (TS member region):"
           sed -n '45,70p' /tmp/fc_pp.f90
-          set -e
-          echo "========== END STEP-10 DIAGNOSTIC =========="
-
-          echo ""
-          echo "=============================================="
           echo "=== STEP-14 ADDITIONAL: PP with ACTUAL make env ==="
           echo "=============================================="
           echo "=== 1. Get ACTUAL FCPPFLAGS from petscvariables (post-patch) ==="
           echo "petscvariables FCPPFLAGS line:"
-          grep 'FCPPFLAGS' $PETSC_DIR/$PETSC_ARCH/conf/petscvariables | tail -1
+          grep 'FCPPFLAGS' $PETSC_DIR/$PETSC_ARCH/conf/petscvariables | tail -1 || true
           echo "conf/rules FCPPFLAGS line:"
-          grep 'FCPPFLAGS' $PETSC_DIR/conf/rules | tail -1
+          grep 'FCPPFLAGS' $PETSC_DIR/conf/rules | tail -1 || true
           echo "conf/variables FCPPFLAGS line:"
-          grep 'FCPPFLAGS' $PETSC_DIR/conf/variables | tail -1
+          grep 'FCPPFLAGS' $PETSC_DIR/conf/variables | tail -1 || true
           echo ""
           echo "=== 2. Preprocess FlowAssembly WITH -DMEF90_DIM=2 (actual make arg) ==="
           echo "Command: mpif90 -E FC_FLAGS FCPPFLAGS -DMEF90_DIM=2 -I MEF90/MEF90 FlowAssembly.F90"
           /home/runner/openmpi-3.1.3/bin/mpif90 -E $FC_FLAGS $FCPPFLAGS -I${MEF90_DIR}/MEF90 -DMEF90_DIM=2 \
             ${MEF90_DIR}/m_Flow/m_MEF90_FlowAssembly.F90 > /tmp/fa2d_pp.f90 2>&1
           echo "--- GREP Type(TS) in preprocessed ---"
-          grep -in 'Type\s*(\s*TS\s*)' /tmp/fa2d_pp.f90 | head -10
+          grep -in 'Type\s*(\s*TS\s*)' /tmp/fa2d_pp.f90 | head -10 || true
           echo "--- GREP PetscFortranAddr in preprocessed ---"
-          grep -in 'PetscFortranAddr' /tmp/fa2d_pp.f90 | head -10
+          grep -in 'PetscFortranAddr' /tmp/fa2d_pp.f90 | head -10 || true
           echo "--- GREP ALL 'TS' lines around TS callbacks ---"
           sed -n '235,260p' /tmp/fa2d_pp.f90
           echo ""
@@ -327,9 +322,9 @@ jobs:
           /home/runner/openmpi-3.1.3/bin/mpif90 -E $FC_FLAGS $FCPPFLAGS -I${MEF90_DIR}/MEF90 \
             ${MEF90_DIR}/m_Flow/m_MEF90_FlowCtx.F90 > /tmp/fc_pp.f90 2>&1
           echo "--- GREP Type(TS) in preprocessed ---"
-          grep -in 'Type\s*(\s*TS\s*)' /tmp/fc_pp.f90 | head -10
+          grep -in 'Type\s*(\s*TS\s*)' /tmp/fc_pp.f90 | head -10 || true
           echo "--- GREP PetscFortranAddr in preprocessed ---"
-          grep -in 'PetscFortranAddr' /tmp/fc_pp.f90 | head -10
+          grep -in 'PetscFortranAddr' /tmp/fc_pp.f90 | head -10 || true
           echo "--- Show TS member region ---"
           sed -n '40,65p' /tmp/fc_pp.f90
           echo ""
@@ -337,7 +332,7 @@ jobs:
           /home/runner/openmpi-3.1.3/bin/mpif90 -E $FC_FLAGS $FCPPFLAGS -I${MEF90_DIR}/MEF90 -DMEF90_DIM=2 \
             ${MEF90_DIR}/m_Flow/m_MEF90_FlowCtx.F90 > /tmp/fc_dim2_pp.f90 2>&1
           echo "--- GREP Type(TS) in preprocessed ---"
-          grep -in 'Type\s*(\s*TS\s*)' /tmp/fc_dim2_pp.f90 | head -10
+          grep -in 'Type\s*(\s*TS\s*)' /tmp/fc_dim2_pp.f90 | head -10 || true
           echo "--- Show TS member region ---"
           sed -n '40,65p' /tmp/fc_dim2_pp.f90
           echo "=== END STEP-14 ADDITIONAL ==="
