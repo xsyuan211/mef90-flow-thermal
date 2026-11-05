@@ -2,7 +2,6 @@
 Module m_MEF90_Flow
 #include "finclude/petscdef.h"
    Use petsc
-   Use petsctsdef, Only: TS   !!! Direct import of TS derived type
    Use m_MEF90
    Use m_MEF90_FlowCtx
    Use m_MEF90_DefMechCtx     !!! NEW: for MEF90DefMechCtx_Type reference
@@ -97,8 +96,8 @@ Module m_MEF90_Flow
 
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowIFunction"
-   Subroutine MEF90FlowIFunction(ts,t,x,xDot,F,FlowCtx,ierr)
-      Type(TS),Intent(IN)                                :: ts
+   Subroutine MEF90FlowIFunction(tsHandle,t,x,xDot,F,FlowCtx,ierr)
+      Type(TS),Intent(IN)                                :: tsHandle
       PetscReal,Intent(IN)                               :: t
       Type(Vec),Intent(IN)                               :: x, xDot
       Type(Vec),Intent(INOUT)                            :: F
@@ -107,16 +106,16 @@ Module m_MEF90_Flow
       PetscInt                                           :: dim
       Call DMMeshGetDimension(FlowCtx%DM,dim,ierr);CHKERRQ(ierr)
       If (dim == 2) Then
-         Call MEF90FlowIFunction2D(ts,t,x,xDot,F,FlowCtx,ierr)
+         Call MEF90FlowIFunction2D(tsHandle,t,x,xDot,F,FlowCtx,ierr)
       Else If (dim == 3) Then
-         Call MEF90FlowIFunction3D(ts,t,x,xDot,F,FlowCtx,ierr)
+         Call MEF90FlowIFunction3D(tsHandle,t,x,xDot,F,FlowCtx,ierr)
       End If
    End Subroutine MEF90FlowIFunction
 
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowIJacobian"
-   Subroutine MEF90FlowIJacobian(ts,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
-      Type(TS),Intent(IN)                                :: ts
+   Subroutine MEF90FlowIJacobian(tsHandle,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
+      Type(TS),Intent(IN)                                :: tsHandle
       PetscReal,Intent(IN)                               :: t
       Type(Vec),Intent(IN)                               :: x, xDot
       PetscReal,Intent(IN)                               :: a
@@ -126,9 +125,9 @@ Module m_MEF90_Flow
       PetscInt                                           :: dim
       Call DMMeshGetDimension(FlowCtx%DM,dim,ierr);CHKERRQ(ierr)
       If (dim == 2) Then
-         Call MEF90FlowIJacobian2D(ts,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
+         Call MEF90FlowIJacobian2D(tsHandle,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
       Else If (dim == 3) Then
-         Call MEF90FlowIJacobian3D(ts,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
+         Call MEF90FlowIJacobian3D(tsHandle,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
       End If
    End Subroutine MEF90FlowIJacobian
 

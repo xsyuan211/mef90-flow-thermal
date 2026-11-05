@@ -236,8 +236,8 @@ Contains
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowIFunction"
 
-   Subroutine MEF90FlowIFunction(ts,t,x,xDot,F,FlowCtx,ierr)
-      Type(TS),Intent(IN)                                :: ts
+   Subroutine MEF90FlowIFunction(tsHandle,t,x,xDot,F,FlowCtx,ierr)
+      Type(TS),Intent(IN)                                :: tsHandle
       PetscReal,Intent(IN)                               :: t
       Type(Vec),Intent(IN)                               :: x, xDot
       Type(Vec),Intent(INOUT)                            :: F
@@ -251,8 +251,8 @@ Contains
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowIJacobian"
 
-   Subroutine MEF90FlowIJacobian(ts,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
-      Type(TS),Intent(IN)                                :: ts
+   Subroutine MEF90FlowIJacobian(tsHandle,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
+      Type(TS),Intent(IN)                                :: tsHandle
       PetscReal,Intent(IN)                               :: t
       Type(Vec),Intent(IN)                               :: x, xDot
       PetscReal,Intent(IN)                               :: a
