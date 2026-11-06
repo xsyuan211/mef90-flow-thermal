@@ -166,7 +166,7 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-06 21:25，CI #48 库 ABI 冲突修复后）
+## 进度跟踪（更新 2026-11-06 22:00，CI #49 程序首次启动后）
 
 **代码进度**
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
@@ -176,12 +176,16 @@
 - 合计：8 项功能已落地，12 项待做
 
 **提交 / CI 状态**
-- 已提交 **`bd3c1f8`**（8 文件 +523 / −49）、**`1972820`**（构建修复）、**`c4732e0`**（库路径），均推送到 `origin/main`（基线 `2e49c2e`）。`.trae/`、`.workbuddy/` 属工具数据，未入库。
+- 已提交 **`bd3c1f8`**（8 文件 +523 / −49）、**`1972820`**（构建修复）、**`c4732e0`**（库路径）、**`981433b`**（库 ABI），均推送到 `origin/main`（基线 `2e49c2e`）。`.trae/`、`.workbuddy/` 属工具数据，未入库。
 - CI run **#46 = failure**（构建层）：vDef 未链接。真实根因 `vDef/m_vDefDefault.F90:154:59 Error: Invalid character in name`；#45 日志有逐字相同错误 → vDef 自 Flow 默认值块加入起从未构建成功，历史 success 全是假绿。
 - CI run **#47 = failure**（运行层，12:38 UTC）：**所有 15 个构建步骤 success**，`vDef.log` / `flow.log` / `MEF90.log` / `m_DefMech.log` / `m_HeatXfer.log` 均无 error，vDef、vDefBT、vDefHF 等全部成功链接 → **闸门 1/2/3.1 的 Fortran 代码首次完整编译通过**（`flow.log` 仅一条 `PetscObjectSetName` type-mismatch warning）。唯一失败是 `Run Terzaghi`：`libmetis.so: cannot open shared object file`，mpirun exit 127。
 - **#47 运行期根因**：PETSc 3.3 以 `--with-shared-libraries=1 --download-metis=1` 配置，链接行 `-L$PETSC_DIR/$PETSC_ARCH/lib -lmetis -lparmetis -lHYPRE -lexodus -lhdf5 ...`，但 `Run Terzaghi` 步骤从未设置 `LD_LIBRARY_PATH`，动态加载器找不到该目录。与 Fortran 代码无关。
 - CI run **#48 = failure**（运行层，13:09 UTC）：构建仍全部 success；`c4732e0` 加的 `LD_LIBRARY_PATH` 让 `libmetis.so` 等 PETSc 库全部解析成功，但**误把 `$HOME/miniconda2/lib` 也加了进去**，其自带的旧 `libstdc++.so.6` 抢在系统 gcc 13 之前 → `version GLIBCXX_3.4.32 / 3.4.29 not found`（`libpetsc.so`、`libml.so.13` 需要），`libtinfo.so.6` 也让 bash 报 no-version-information。新增的 `ldd` 自检准确拦下并 `exit 1`，**仍未运行到任何物理求解**。
 - **#48 修复**：移除 miniconda 库目录（它只服务于 PETSc configure 的 Python 2.7，运行时不需要）；`EXTRA_LIB_DIRS` 改为**追加在末尾**并排除 arch lib 自身，保证 bundled 运行时永不覆盖系统库；`ldd` 断言改为区分「库缺失」与「ABI 版本不匹配」，并打印实际解析到的 `libstdc++`/`libgcc_s`/`libz`/`libtinfo`。
+- CI run **#49 = failure**（13:48 UTC）：库环境**全部打通** —— `ldd-vDef.log` 22 行无 `not found`，`libstdc++.so.6` / `libgcc_s.so.1` / `libz.so.1` 均解析到 `/lib/x86_64-linux-gnu`。**vDef 首次真正启动**：打印 MEF90 全局选项（`time_interpolation=linear`、`time_min=0`、`time_max=1`、`time_numstep=51`、`file_format=EXOSingle`），yaml 解析成功。随后在打开几何文件时中止：`Magic value is '../.'` / `Error opening EXO file data/Beam1x10-tri3.gen` / MPI_ABORT 65。
+- **#49 根因**：`vDef/data/*.gen` 是 **34~37 字节的文本指针**，内容仅 `../../TestMeshes/Beam1x10-tri3.gen` —— 原本是 symlink，在 Windows checkout 时被物化为普通文本并已提交进仓库（全仓库共 20 个同类假指针，分布在 `vDef/data`、`HeatXfer/data`、`ThermoElasticity/data`）。真实二进制网格在 `TestMeshes/`，magic `CDF\002`。CI 的 `Fix CRLF` 只处理 `*.F90`/`*.h`/`Makefile`/`*.sh`，**不会破坏 `.gen` 二进制**。
+- **#49 修复**：`vDef/data/` 4 个 `.gen` 用 `TestMeshes/` 真实网格替换（blob 与源文件哈希完全一致 → Git 复用，仓库体积不增加）；新增 `.gitattributes` 声明 `*.gen binary`；CI 加通用指针自愈（检测 magic，非 `CDF\001/002/005`/HDF5 时从 `../TestMeshes/` 恢复）+ 运行前 geometry magic 硬断言 + `Error opening EXO file` 精确诊断。
+- **网格标签核对通过**：真实 `Beam1x10-tri3.gen` 的 `eb_prop1 = [1, 10, 20]`，block1 = 600 个 TRI3 域单元、block2/3 = 各 5 个 BAR2 边界单元，与 `terzaghi1D.yaml` 的 `cs0001`/`cs0010`/`cs0020` 完全一致。
 - 本地无 PETSc 编译链；所有「验收」栏目前均为**代码审查级通过，非运行验证**。
 
 **本次复核发现（A / B 已修 18:35；C 已修 19:10；D 为既有改动）**
@@ -270,7 +274,7 @@
 4. `pressurePreviousStep` 全项目**无任何消费者**（只在 FlowCtx 里创建 / 初值 / 销毁）；本轮新增的 `VecCopy(pressure → pressurePreviousStep)` 目前是死写，保留给闸门 4 的平流 / Biot 消费者。
 5. transient 下 p 每时间步只解一次、AltMin 内 k(v) 刷新但 p 冻结 → staggered 近似，非完整 Biot 固结。
 
-**状态（21:25 更新）**：#46 定位构建层、#47 确认全量编译通过、#48 排除库缺失但暴露 ABI 冲突。三次失败均在**代码之外**；`c4732e0` 之后的库路径修复待推送，由 #49 复验。3.1 瞬态求解至今**仍未真正运行过一次**。
+**状态（22:00 更新）**：#46 语法 → #47 库缺失 → #48 库 ABI → #49 假网格指针，四轮失败全在**代码之外**。#49 已让 vDef 首次启动并成功解析 yaml，但尚未进入 Flow/TS 求解。网格修复待推送，由 #50 复验。
 
 ## CI #46 诊断结论与修复（19:55，首次真实反馈）
 
@@ -331,3 +335,31 @@ libgcc_s.so.1 / libz.so.1 / libtinfo.so.6 也全部来自 miniconda2/lib
 4. PyYAML 解析（15 steps）、提取 `run` 块 `bash -n`、`git diff --check` 均通过。
 
 **仍待 #49 定论**：`Gate 3.1: transient Darcy TS created`（yaml 枚举）、`Gate 3.1: step`（TSSolve 推进）、SNES/KSP 收敛原因、`vDef/data/Beam1x10-tri3_out.gen` 是否产出。**#49 才是 3.1 数值求解的首次真实运行**；3.2 的 Terzaghi 解析解比对必须等该文件。
+
+## CI #49 诊断结论与修复（22:00，程序首次启动 / 假网格指针）
+
+**日志来源**：`build-diagnostics` artifact（#49 id `13506732051`，9718 bytes，比 #48 的 7112 大约多 2.6 KB → 程序真的产生了输出）。
+
+| 阶段 | 结论 |
+|---|---|
+| 编译 | 5 个编译日志与 #47/#48 完全一致，无 error |
+| `ldd-vDef.log` | **22 行、无 `not found`**；`libmetis` / `libparmetis` / `libexodus` / `libhdf5` / `libml` / `libnetcdf` / `libyaml` 全部解析到 PETSc arch lib；`libstdc++.so.6` / `libgcc_s.so.1` / `libz.so.1` 解析到 `/lib/x86_64-linux-gnu` → **#47/#48 的库问题彻底解决** |
+| `terzaghi.log`（78 行） | vDef **首次真正启动**：打印版权头、`geometry file: data/Beam1x10-tri3.gen`、`result file: data/Beam1x10-tri3_out.gen`，以及 `PetscBag` 全局选项（`time_interpolation=linear`、`time_min=0`、`time_max=1`、`time_numstep=51`、`time_skip=0`、`file_format=EXOSingle`）→ **yaml 解析成功、时间轴符合 51×0.02s 设计** |
+| 中止点 | `Could not recognize ... valid Exodus/NetCDF file variant. Magic value is '../.'` → `Error opening EXO file` → `MPI_ABORT ... errorcode 65` |
+
+**根因**：`vDef/data/Beam1x10-tri3.gen` 不是网格，而是 **34 字节文本**，内容只有 `../../TestMeshes/Beam1x10-tri3.gen`。这些文件原本是 symlink，在 Windows（未启用 `core.symlinks`）上被物化为含目标路径的普通文本文件后提交进仓库。全仓库共 **20 个**同类假指针：`vDef/data`（4）、`HeatXfer/data`（4，指向 `TestMeshes`）、`ThermoElasticity/data`（12，指向 `HeatXfer/data`，属二级指针）。真实二进制在 `TestMeshes/`，`Beam1x10-tri3.gen` 为 21332 字节、magic `CDF\002`（NetCDF classic 64-bit offset）。
+
+**修复**
+1. `vDef/data/` 下 4 个 `.gen` 用 `TestMeshes/` 的真实网格按字节替换；`git hash-object` 显示 4 个文件与源 blob 哈希完全相同（`148bf0f0ea` / `60821ce21a` / `7ffde604ad` / `39f41502d6`），Git 会复用 blob，**仓库体积不增加**。
+2. 新增 `.gitattributes`：`*.gen binary`，防止今后任何平台的换行转换误伤二进制网格。
+3. CI `Run Terzaghi` 加通用自愈：遍历 `vDef/data/*.gen`，前 4 字节不是 `CDF\001/002/005` 或 HDF5 signature 时从 `../TestMeshes/<basename>` 恢复；随后对 `data/Beam1x10-tri3.gen` 做 magic 硬断言，失败立即 `exit 1`。
+4. 新增 `Error opening EXO file` / `Could not recognize ... valid Exodus` 精确诊断，优于泛化的 `MPI_ABORT` 关键词命中。
+5. 确认 `Fix CRLF + Patch Makefiles` 步骤的 `dos2unix` 只作用于 `*.sh` / `Makefile` / `*.F90` / `*.inc` / `*.h`，**不会破坏 `.gen` 二进制**。
+
+**网格标签核对（scipy.io.netcdf_file 读真实文件）**
+- `eb_prop1 = [1, 10, 20]`，`num_el_blk=3`；`num_el_in_blk1=600 / num_nod_per_el1=3`（TRI3 域），`num_el_in_blk2=5 / num_nod_per_el2=2`（BAR2 顶面），`num_el_in_blk3=5 / num_nod_per_el3=2`（BAR2 底面）。
+- 与 `terzaghi1D.yaml` 的 `cs0001`（domain）、`cs0010`（top, `flowBC: true`）、`cs0020`（bottom）**完全对应**，无需改配置。
+
+**仍待 #50 定论**：`Gate 3.1: transient Darcy TS created`（Flow 枚举 `Transient` 是否解析成功）、`Gate 3.1: step`（TSSolve 是否推进）、SNES/KSP 收敛原因、`vDef/data/Beam1x10-tri3_out.gen` 是否产出。**#50 才可能首次进入 3.1 的瞬态数值求解**；3.2 的 Terzaghi 解析解比对必须等该文件。
+
+**遗留（非阻塞，留给闸门 4）**：其余 16 个假指针 `.gen` 仍在 `HeatXfer/data` / `ThermoElasticity/data`，本次 CI 自愈逻辑只覆盖 `vDef/data`。

@@ -424,6 +424,31 @@ jobs:
             export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$EXTRA_LIB_DIRS"
           fi
           cd vDef
+          # Many data/*.gen entries in this repo are TEXT POINTERS: they were
+          # symlinks to ../../TestMeshes/*.gen, materialized as plain text on
+          # Windows checkouts. Exodus needs a real NetCDF/HDF5 file; magic must
+          # be CDF\001 / CDF\002 / CDF\005 or the HDF5 signature.
+          echo "=== validating vDef/data/*.gen meshes ==="
+          for g in data/*.gen; do
+            [ -f "$g" ] || continue
+            magic=$(head -c 4 "$g" | od -An -tx1 | tr -d ' \n')
+            case "$magic" in
+              43444601|43444602|43444605|89484446) echo "  OK        $g ($magic)" ;;
+              *) src="../TestMeshes/$(basename "$g")"
+                 if [ -f "$src" ] && [ "$(head -c 3 "$src" | od -An -tx1 | tr -d ' \n')" = "434446" ]; then
+                   cp -f "$src" "$g"
+                   echo "  RESTORED  $g from $src"
+                 else
+                   echo "  FAIL: $g is a text pointer and $src is not a valid Exodus mesh"
+                   exit 1
+                 fi ;;
+            esac
+          done
+          geom_magic=$(head -c 3 data/Beam1x10-tri3.gen | od -An -tx1 | tr -d ' \n')
+          if [ "$geom_magic" != "434446" ]; then
+            echo "=== FAIL: geometry data/Beam1x10-tri3.gen is not an Exodus/NetCDF file (magic=$geom_magic) ==="
+            exit 1
+          fi
           if [ ! -x ../bin/$PETSC_ARCH/vDef ]; then
             echo "=== FAIL: vDef executable not found; the build step did not produce a binary ==="
             exit 1
@@ -450,6 +475,11 @@ jobs:
           echo "    -prefix data/Beam1x10-tri3 -> geometry data/Beam1x10-tri3.gen, result data/Beam1x10-tri3_out.gen"
           ls -la data/Beam1x10-tri3_out.gen 2>/dev/null || echo "(no _out.gen result file)"
           find . -maxdepth 2 \( -name '*_out.gen' -o -name '*.exo' \) -printf '%p %s bytes\n' 2>/dev/null | head -20
+          if grep -q "Error opening EXO file\|Could not recognize.*valid Exodus" /tmp/terzaghi.log; then
+            echo "=== FAIL: Exodus geometry could not be opened ==="
+            grep -n "Exodus Library\|Error opening EXO\|Magic value" /tmp/terzaghi.log | head -10
+            exit 1
+          fi
           if grep -q "error while loading shared libraries" /tmp/terzaghi.log; then
             echo "=== FAIL: shared library could not be loaded at runtime ==="
             grep -n "error while loading shared libraries" /tmp/terzaghi.log | head -10
