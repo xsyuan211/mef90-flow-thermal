@@ -581,6 +581,13 @@ Contains
            'biot_coeff','Biot poroelastic coefficient α (0 = no coupling)',ierr);CHKERRQ(ierr)
 
       !!! Thermal→Flow coupling: μ(T)
+      !!! CRITICAL (CI #50): registration order MUST match the field order of
+      !!! MEF90FlowGlobalOptions_Type byte-for-byte. PetscBag writes each value
+      !!! at bag->data + bag->offset, and PetscBagGetData casts bag->data back
+      !!! to the Fortran derived type. A Bool/Real swap or a missing field
+      !!! shifts every later field (EXO offsets and solver tolerances) by
+      !!! several bytes, so gOpt reads garbage. The old code swapped
+      !!! arrheniusActivationEnergy/useArrheniusViscosity and omitted 3 fields.
       Call PetscBagRegisterBool (bag,FlowGlobalOptions%temperatureDependViscosity, &
            default%temperatureDependViscosity,'temp_dep_viscosity', &
            'Enable temperature-dependent viscosity μ(T)',ierr);CHKERRQ(ierr)
@@ -590,12 +597,12 @@ Contains
       Call PetscBagRegisterReal(bag,FlowGlobalOptions%sutherlandConstant, &
            default%sutherlandConstant,'sutherland_C', &
            'Sutherland constant C (K); air~120, water~600',ierr);CHKERRQ(ierr)
-      Call PetscBagRegisterBool (bag,FlowGlobalOptions%useArrheniusViscosity, &
-           default%useArrheniusViscosity,'use_arrhenius', &
-           'Use Arrhenius instead of Sutherland for μ(T)',ierr);CHKERRQ(ierr)
       Call PetscBagRegisterReal(bag,FlowGlobalOptions%arrheniusActivationEnergy, &
            default%arrheniusActivationEnergy,'Ea_over_R', &
            'Arrhenius Ea/R (K); air~110, water~5100',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterBool (bag,FlowGlobalOptions%useArrheniusViscosity, &
+           default%useArrheniusViscosity,'use_arrhenius', &
+           'Use Arrhenius instead of Sutherland for μ(T)',ierr);CHKERRQ(ierr)
 
       !!! Flow→Thermal advection coupling
       Call PetscBagRegisterBool (bag,FlowGlobalOptions%enableFlowAdvection, &
@@ -605,13 +612,16 @@ Contains
            default%fluidDensity,'fluid_rho', &
            'Fluid density ρ_f (kg/m^3) for buoyancy term',ierr);CHKERRQ(ierr)
 
-      !!! I/O offsets & scalings
+      !!! I/O offsets & scalings — all 10 PetscInt fields, in declaration order
       Call PetscBagRegisterInt (bag,FlowGlobalOptions%pressureOffset,default%pressureOffset, &
            'pressure_offset','EXO file offset for pressure',ierr);CHKERRQ(ierr)
       Call PetscBagRegisterInt (bag,FlowGlobalOptions%sourceOffset,default%sourceOffset, &
            'source_offset','EXO file offset for source term',ierr);CHKERRQ(ierr)
       Call PetscBagRegisterInt (bag,FlowGlobalOptions%boundaryPressureOffset,default%boundaryPressureOffset, &
            'boundary_pressure_offset','EXO offset for boundary pressure',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterInt (bag,FlowGlobalOptions%pressurePreviousStepOffset, &
+           default%pressurePreviousStepOffset,'pressure_previous_step_offset', &
+           'EXO offset for pressure at previous step',ierr);CHKERRQ(ierr)
       Call PetscBagRegisterInt (bag,FlowGlobalOptions%permFieldOffset,default%permFieldOffset, &
            'perm_field_offset','EXO offset for permeability field k(v)/mu',ierr);CHKERRQ(ierr)
       Call PetscBagRegisterInt (bag,FlowGlobalOptions%darcyVelocityOffset,default%darcyVelocityOffset, &
@@ -620,6 +630,11 @@ Contains
            default%sourceScaling,'source_scaling','Source term scaling law',ierr);CHKERRQ(ierr)
       Call PetscBagRegisterEnum(bag,FlowGlobalOptions%boundaryPressureScaling,MEF90ScalingList, &
            default%boundaryPressureScaling,'bc_pressure_scaling','Boundary pressure scaling',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterEnum(bag,FlowGlobalOptions%pressurePreviousStepScaling,MEF90ScalingList, &
+           default%pressurePreviousStepScaling,'pressure_previous_step_scaling', &
+           'Scaling law for pressure at previous step',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterEnum(bag,FlowGlobalOptions%pressureScaling,MEF90ScalingList, &
+           default%pressureScaling,'pressure_scaling','Scaling law for pressure',ierr);CHKERRQ(ierr)
 
       !!! Solver params
       Call PetscBagRegisterReal(bag,FlowGlobalOptions%pressureATol,default%pressureATol, &

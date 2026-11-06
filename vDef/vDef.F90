@@ -133,15 +133,24 @@ Program vDef
    MEF90HeatXferCtx%MaterialPropertiesBag => MEF90DefMechCtx%MaterialPropertiesBag
 
    !!! NEW: Create Flow (Darcy) context after DefMechCtx
+   !!! IMPORTANT: MEF90FlowUpdatePerm reads DefMechCtx%DMScalSec (the damage
+   !!! SectionReal), which is not created until MEF90DefMechCtxSetSections
+   !!! below. Calling it here dereferences an uninitialised section handle and
+   !!! segfaults on every rank (CI #50). Both coefficient updates are therefore
+   !!! deferred until right after the DefMech vectors exist.
+   Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 01 FlowCtxCreate\n",ierr);CHKERRQ(ierr)
    Call MEF90FlowCtxCreate(MEF90FlowCtx,Mesh,MEF90Ctx,ierr);CHKERRQ(ierr)
+   Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 02 FlowCtxSetFromOptions\n",ierr);CHKERRQ(ierr)
    Call MEF90FlowCtxSetFromOptions(MEF90FlowCtx,PETSC_NULL_CHARACTER,vDefFlowDefaultGlobalOptions, &
                                      vDefFlowDefaultCellSetOptions,vDefFlowDefaultVertexSetOptions,ierr)
+   Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 03 FlowBagGetData\n",ierr);CHKERRQ(ierr)
    Call PetscBagGetDataMEF90FlowCtxGlobalOptions(MEF90FlowCtx%GlobalOptionsBag,MEF90FlowGlobalOptions,ierr);CHKERRQ(ierr)
+   Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 04 FlowSetSections\n",ierr);CHKERRQ(ierr)
    Call MEF90FlowCtxSetSections(MEF90FlowCtx,ierr);CHKERRQ(ierr)
+   Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 05 FlowCreateVectors\n",ierr);CHKERRQ(ierr)
    Call MEF90FlowCtxCreateVectors(MEF90FlowCtx,ierr);CHKERRQ(ierr)
    Call VecDuplicate(MEF90FlowCtx%pressure,residualPressure,ierr);CHKERRQ(ierr)
-   Call MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
-   Call MEF90FlowUpdateStorativity(MEF90FlowCtx,ierr);CHKERRQ(ierr)
+   Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 06 FlowCreateSNES\n",ierr);CHKERRQ(ierr)
    Call MEF90FlowCreateSNES(MEF90FlowCtx,snesPressure,residualPressure,ierr);CHKERRQ(ierr)
 
    !!! Create time array from global options
@@ -170,6 +179,16 @@ Program vDef
    !!! Create sections, vectors, and solvers for DefMech Context
    Call MEF90DefMechCtxSetSections(MEF90DefMechCtx,ierr)
    Call MEF90DefMechCtxCreateVectors(MEF90DefMechCtx,ierr)
+
+   !!! Gate 3.1 / CI #50: the Flow coefficients may only be assembled now that
+   !!! DefMechCtx%DMScalSec exists. MEF90FlowUpdatePerm restricts the damage
+   !!! field from that section; MEF90FlowUpdateStorativity fills S once before
+   !!! the first TSSolve. Both used to be called 30 lines too early and crashed.
+   Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 07 FlowUpdatePerm (after DefMech sections)\n",ierr);CHKERRQ(ierr)
+   Call MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
+   Call MEF90FlowUpdateStorativity(MEF90FlowCtx,ierr);CHKERRQ(ierr)
+   Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 08 Flow coefficients ready\n",ierr);CHKERRQ(ierr)
+
    Call VecDuplicate(MEF90DefMechCtx%displacement,displacementAltMinOld,ierr);CHKERRQ(ierr)
    Call VecDuplicate(MEF90DefMechCtx%displacement,residualDisp,ierr);CHKERRQ(ierr)
    Call PetscObjectSetName(residualDisp,"residualDisp",ierr);CHKERRQ(ierr)

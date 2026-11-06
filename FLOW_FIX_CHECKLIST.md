@@ -166,7 +166,7 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-06 22:00，CI #49 程序首次启动后）
+## 进度跟踪（更新 2026-11-06 22:55，CI #50 首次进入 Fortran 初始化后 SEGV）
 
 **代码进度**
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
@@ -186,6 +186,8 @@
 - **#49 根因**：`vDef/data/*.gen` 是 **34~37 字节的文本指针**，内容仅 `../../TestMeshes/Beam1x10-tri3.gen` —— 原本是 symlink，在 Windows checkout 时被物化为普通文本并已提交进仓库（全仓库共 20 个同类假指针，分布在 `vDef/data`、`HeatXfer/data`、`ThermoElasticity/data`）。真实二进制网格在 `TestMeshes/`，magic `CDF\002`。CI 的 `Fix CRLF` 只处理 `*.F90`/`*.h`/`Makefile`/`*.sh`，**不会破坏 `.gen` 二进制**。
 - **#49 修复**：`vDef/data/` 4 个 `.gen` 用 `TestMeshes/` 真实网格替换（blob 与源文件哈希完全一致 → Git 复用，仓库体积不增加）；新增 `.gitattributes` 声明 `*.gen binary`；CI 加通用指针自愈（检测 magic，非 `CDF\001/002/005`/HDF5 时从 `../TestMeshes/` 恢复）+ 运行前 geometry magic 硬断言 + `Error opening EXO file` 精确诊断。
 - **网格标签核对通过**：真实 `Beam1x10-tri3.gen` 的 `eb_prop1 = [1, 10, 20]`，block1 = 600 个 TRI3 域单元、block2/3 = 各 5 个 BAR2 边界单元，与 `terzaghi1D.yaml` 的 `cs0001`/`cs0010`/`cs0020` 完全一致。
+- CI run **#50 = failure**（14:02–14:39 UTC）：**程序完整启动并读完整个输入 deck**（426 行日志），随后两个 rank 同时 `Caught signal number 11 SEGV`；`Gate 3.1` 自检行一条都没有。这是**首个根因位于 Fortran 代码内部**的失败，前四轮（#46~#49）都在构建/环境层。
+- **#50 根因（静态定论）**：`vDef/vDef.F90` 原本在 `:143` 调 `MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx)`，而该例程 `m_MEF90_Flow.F90:259` 读 `DefMechCtx%DMScalSec`；这个 damage SectionReal 要到 `:170 MEF90DefMechCtxSetSections` 才创建 → 解引用未初始化句柄。另发现 `m_MEF90_FlowCtx.F90` 的 Global PetscBag 只注册 26 项 / 类型有 29 字段，且第 13/14 项 Real/Bool 颠倒、漏 3 个 scaling/offset 字段 → 第 20 项起所有 EXO offset 与容差全部错位读成垃圾值。两处均已修复，详见文末「CI #50 诊断结论与修复」。
 - 本地无 PETSc 编译链；所有「验收」栏目前均为**代码审查级通过，非运行验证**。
 
 **本次复核发现（A / B 已修 18:35；C 已修 19:10；D 为既有改动）**
@@ -363,3 +365,41 @@ libgcc_s.so.1 / libz.so.1 / libtinfo.so.6 也全部来自 miniconda2/lib
 **仍待 #50 定论**：`Gate 3.1: transient Darcy TS created`（Flow 枚举 `Transient` 是否解析成功）、`Gate 3.1: step`（TSSolve 是否推进）、SNES/KSP 收敛原因、`vDef/data/Beam1x10-tri3_out.gen` 是否产出。**#50 才可能首次进入 3.1 的瞬态数值求解**；3.2 的 Terzaghi 解析解比对必须等该文件。
 
 **遗留（非阻塞，留给闸门 4）**：其余 16 个假指针 `.gen` 仍在 `HeatXfer/data` / `ThermoElasticity/data`，本次 CI 自愈逻辑只覆盖 `vDef/data`。
+
+## CI #50 诊断结论与修复（22:55，首个 Fortran 代码内部根因）
+
+**日志来源**：`build-diagnostics` artifact（#50 id `13511785681`，12920 bytes；`terzaghi.log` 426 行 / 34307 bytes）。
+
+| 阶段 | 结论 |
+|---|---|
+| 编译 | 5 个编译日志与 #47~#49 一致，无 error；`flow.log` 仍只有 `PetscObjectSetName(SNES/TS)` 的 type-mismatch warning |
+| `ldd-vDef.log` | 22 行、零 `not found`，系统运行时全部解析到 `/lib/x86_64-linux-gnu` → 库环境已彻底稳定 |
+| `terzaghi.log` 1–355 行 | **整个输入 deck 读取完成**：MEF90 全局选项、DefMech global + 3×cell set、HeatXfer global + 3×cell set、3×MatProp2D 材料属性全部正常打印，几何/结果文件路径正确 |
+| `terzaghi.log` 357–426 行 | rank 1 与 rank 0 同时 `Caught signal number 11 SEGV`，`MPI_ABORT errorcode 59`；**没有任何 `Gate 3.1` 自检行** → 崩溃在 `vDef.F90:136–165` 的 Flow 初始化链路，未进入时间步循环 |
+| CI 判定 | 泛化的 `abort` / `petsc error` 关键词扫描命中，但没给出代码位置 |
+
+**根因 1（P0，SEGV 直接原因）— 初始化顺序错**
+`vDef.F90:143` 过早调用 `MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx)`。该例程在 `m_Flow/m_MEF90_Flow.F90:259` 执行
+`Call SectionRealRestrictClosure(DefMechCtx%DMScalSec,FlowCtx%DM,setIdx(cell),elemType%numDof,dmgPtr,ierr)`，
+而 `DefMechCtx%DMScalSec` 由 `MEF90DefMechCtxSetSections`（`m_DefMech/m_MEF90_DefMechCtx.F90:555`）创建，在主程序 `:170` 才调用 —— 相差约 30 行，读的是未初始化句柄。DefMech/HeatXfer 的材料打印恰好在 `:131` 结束，与日志 355 行完美吻合。
+
+**根因 2（P0，内存布局错位）— PetscBag 注册顺序 ≠ 派生类型字段顺序**
+`MEF90FlowGlobalOptions_Type` 有 **29** 个字段，`PetscBagRegisterMEF90FlowCtxGlobalOptions` 只注册 **26** 项：
+- 第 13/14 项把 `arrheniusActivationEnergy`(PetscReal, 8B) 与 `useArrheniusViscosity`(PetscBool, 4B) 写反；
+- 漏掉 `pressurePreviousStepOffset`、`pressurePreviousStepScaling`、`pressureScaling`；
+- 从第 20 项起所有 EXO offset / scaling / solver tolerance 逐字节错位，且尾部 3 个字段是未初始化内存。
+
+PETSc bag 按 `bag->data + bag->offset` 顺序写值，`PetscBagGetData` 再把 `bag->data` 强转成 Fortran 派生类型指针，因此注册顺序必须与字段声明**逐字节一致**。`CellSet`（7 字段 / 9 注册，`advectionVector(1:3)` 拆 3 项）与 `VertexSet`（2/2）核对后确认无误。
+
+**修复**
+1. `vDef/vDef.F90`：把 `MEF90FlowUpdatePerm` + `MEF90FlowUpdateStorativity` 从 Flow 初始化段移到 `MEF90DefMechCtxSetSections` / `MEF90DefMechCtxCreateVectors` **之后**（首次 TSSolve 之前仍会装配好系数）；`MEF90FlowCreateSNES` / `MEF90FlowCreateTS` 不依赖这两个向量，可留在原处。
+2. `vDef/vDef.F90`：在初始化链插入 8 条 `Gate 3.1: init 01..08` 分段追踪日志，#51 若再崩可直接定位到具体 Call。
+3. `m_Flow/m_MEF90_FlowCtx.F90`：Global bag 注册按类型定义重排为 **29 项、顺序完全一致**（补齐 3 个漏项，新增 `pressure_previous_step_offset` / `pressure_previous_step_scaling` / `pressure_scaling` 三个选项名）。自动脚本复核结果：`Global 29/29 identical_order=True`，`VertexSet 2/2 True`，`CellSet 7/9 且前 7 项无 mismatch（数组三分量）`。
+4. `vDef/data/terzaghi1D.yaml`：补 `pressure_previous_step_offset: 6`，避免其默认值 `2` 与 `source_offset: 2` 撞 EXO 列。
+5. `.github/workflows/build.yml`：新增 `Caught signal number 11 SEGV` 精确分支，打印**最后到达的 Gate 3.1 trace 编号**，不再只给泛化 "runtime failure signature"。
+
+**校验**：PyYAML（15 steps）、提取 `run` 块 `bash -n`、`git diff --check`、Fortran 块配对（HEAD/WORK 均为 0 bad / 0 unclosed）、行宽（编译用 `-ffree-line-length-none`，超长行均为既有行）全部通过。
+
+**仍待 #51 定论**：8 条 init trace 能否全部走完、`Gate 3.1: transient Darcy TS created`（Flow 枚举 `Transient` 是否解析）、`Gate 3.1: step`（TSSolve 推进）、SNES/KSP 收敛、`vDef/data/Beam1x10-tri3_out.gen` 是否产出。**#51 才可能首次进入 3.1 的瞬态数值求解**；3.2 的 Terzaghi 解析解比对必须等该文件。
+
+**下一轮可能的遗留点（静态可见，未处理）**：`MEF90FlowUpdatePerm` 会对 `cs0010`/`cs0020` 这两个 BAR2 边界 cell set 调 `MEF90Element_Create`（与 TRI3 域单元同路径）；若 #51 在此报错，需按边界块跳过体积分。另 `pressurePreviousStep` 全项目仍无消费者，`VecCopy` 是死写（闸门 4）。
