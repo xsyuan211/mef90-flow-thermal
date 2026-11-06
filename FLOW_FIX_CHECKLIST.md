@@ -166,7 +166,7 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-06 20:45，CI #47 编译首次通过后）
+## 进度跟踪（更新 2026-11-06 21:25，CI #48 库 ABI 冲突修复后）
 
 **代码进度**
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
@@ -176,10 +176,12 @@
 - 合计：8 项功能已落地，12 项待做
 
 **提交 / CI 状态**
-- 已提交 **`bd3c1f8`**（8 文件 +523 / −49）与 **`1972820`**（构建修复），均推送到 `origin/main`（基线 `2e49c2e`）。`.trae/`、`.workbuddy/` 属工具数据，未入库。
+- 已提交 **`bd3c1f8`**（8 文件 +523 / −49）、**`1972820`**（构建修复）、**`c4732e0`**（库路径），均推送到 `origin/main`（基线 `2e49c2e`）。`.trae/`、`.workbuddy/` 属工具数据，未入库。
 - CI run **#46 = failure**（构建层）：vDef 未链接。真实根因 `vDef/m_vDefDefault.F90:154:59 Error: Invalid character in name`；#45 日志有逐字相同错误 → vDef 自 Flow 默认值块加入起从未构建成功，历史 success 全是假绿。
 - CI run **#47 = failure**（运行层，12:38 UTC）：**所有 15 个构建步骤 success**，`vDef.log` / `flow.log` / `MEF90.log` / `m_DefMech.log` / `m_HeatXfer.log` 均无 error，vDef、vDefBT、vDefHF 等全部成功链接 → **闸门 1/2/3.1 的 Fortran 代码首次完整编译通过**（`flow.log` 仅一条 `PetscObjectSetName` type-mismatch warning）。唯一失败是 `Run Terzaghi`：`libmetis.so: cannot open shared object file`，mpirun exit 127。
-- **运行期根因**：PETSc 3.3 以 `--with-shared-libraries=1 --download-metis=1` 配置，链接行 `-L$PETSC_DIR/$PETSC_ARCH/lib -lmetis -lparmetis -lHYPRE -lexodus -lhdf5 ...`，但 `Run Terzaghi` 步骤从未设置 `LD_LIBRARY_PATH`，动态加载器找不到该目录。与 Fortran 代码无关。
+- **#47 运行期根因**：PETSc 3.3 以 `--with-shared-libraries=1 --download-metis=1` 配置，链接行 `-L$PETSC_DIR/$PETSC_ARCH/lib -lmetis -lparmetis -lHYPRE -lexodus -lhdf5 ...`，但 `Run Terzaghi` 步骤从未设置 `LD_LIBRARY_PATH`，动态加载器找不到该目录。与 Fortran 代码无关。
+- CI run **#48 = failure**（运行层，13:09 UTC）：构建仍全部 success；`c4732e0` 加的 `LD_LIBRARY_PATH` 让 `libmetis.so` 等 PETSc 库全部解析成功，但**误把 `$HOME/miniconda2/lib` 也加了进去**，其自带的旧 `libstdc++.so.6` 抢在系统 gcc 13 之前 → `version GLIBCXX_3.4.32 / 3.4.29 not found`（`libpetsc.so`、`libml.so.13` 需要），`libtinfo.so.6` 也让 bash 报 no-version-information。新增的 `ldd` 自检准确拦下并 `exit 1`，**仍未运行到任何物理求解**。
+- **#48 修复**：移除 miniconda 库目录（它只服务于 PETSc configure 的 Python 2.7，运行时不需要）；`EXTRA_LIB_DIRS` 改为**追加在末尾**并排除 arch lib 自身，保证 bundled 运行时永不覆盖系统库；`ldd` 断言改为区分「库缺失」与「ABI 版本不匹配」，并打印实际解析到的 `libstdc++`/`libgcc_s`/`libz`/`libtinfo`。
 - 本地无 PETSc 编译链；所有「验收」栏目前均为**代码审查级通过，非运行验证**。
 
 **本次复核发现（A / B 已修 18:35；C 已修 19:10；D 为既有改动）**
@@ -268,7 +270,7 @@
 4. `pressurePreviousStep` 全项目**无任何消费者**（只在 FlowCtx 里创建 / 初值 / 销毁）；本轮新增的 `VecCopy(pressure → pressurePreviousStep)` 目前是死写，保留给闸门 4 的平流 / Biot 消费者。
 5. transient 下 p 每时间步只解一次、AltMin 内 k(v) 刷新但 p 冻结 → staggered 近似，非完整 Biot 固结。
 
-**状态（20:45 更新）**：CI #46 定位到构建层、#47 确认**全量编译通过**并暴露运行期共享库问题。库路径修复已写入工作区，待提交推送后由 #48 复验；#48 是 3.1 瞬态求解逻辑的**首次真实运行**。
+**状态（21:25 更新）**：#46 定位构建层、#47 确认全量编译通过、#48 排除库缺失但暴露 ABI 冲突。三次失败均在**代码之外**；`c4732e0` 之后的库路径修复待推送，由 #49 复验。3.1 瞬态求解至今**仍未真正运行过一次**。
 
 ## CI #46 诊断结论与修复（19:55，首次真实反馈）
 
@@ -309,3 +311,23 @@
 5. YAML 用 PyYAML 解析通过（15 steps）；提取 `run` 块经 `bash -n` 语法校验通过；`git diff --check` 干净。
 
 **仍待 #48 定论**：`Gate 3.1: transient Darcy TS created`（yaml 枚举是否生效）、`Gate 3.1: step`（TSSolve 是否推进）、SNES/KSP 收敛原因、`vDef/data/Beam1x10-tri3_out.gen` 是否产出。3.2 的解析解比对必须等该文件。
+
+## CI #48 诊断结论与修复（21:25，LD_LIBRARY_PATH 引入的 ABI 冲突）
+
+**现象**：`c4732e0` 加了 `LD_LIBRARY_PATH` 后，`ldd` 显示 `libmetis.so`、`libparmetis.so`、`libexoIIv2for32.so.2`、`libhdf5.so.103`、`libyaml-0.so.2`、`libnetcdf.so.19` 等**全部解析成功**（上一轮 #47 的 `libmetis.so` 缺失已解决），但新增三行 ABI 错误：
+
+```
+libpetsc.so / libml.so.13 需要 version `GLIBCXX_3.4.32' (and 3.4.29) not found
+libstdc++.so.6 => /home/runner/miniconda2/lib/libstdc++.so.6
+libgcc_s.so.1 / libz.so.1 / libtinfo.so.6 也全部来自 miniconda2/lib
+```
+
+**根因**：`$HOME/miniconda2/lib` 是上一轮我为了"覆盖 Python 运行时"加进去的，实际只服务于 PETSc configure 阶段的 Python 2.7，**运行 vDef 完全不需要**。Miniconda2 自带的 `libstdc++.so.6` 比 runner 系统 gcc 13 旧，被 `LD_LIBRARY_PATH` 优先加载后屏蔽了系统的 `GLIBCXX_3.4.32`，导致 PETSc/ML 无法加载。同时 `libtinfo.so.6` 让 bash 报 `no version information available`。这是 CI 环境问题，与 Fortran 代码、TS 逻辑无关；也被上一轮加的 `ldd` 硬自检准确拦下（未启动 mpirun）。
+
+**修复（`.github/workflows/build.yml`）**
+1. `LD_LIBRARY_PATH` 只保留 `$PETSC_DIR/$PETSC_ARCH/lib:$MPI_HOME/lib`，**彻底移除 `$HOME/miniconda2/lib`**，并在注释里写明禁止再加的原因。
+2. `EXTRA_LIB_DIRS`（`find` 收集 externalpackages 下含 `.so` 的目录）从**拼在最前面**改为**追加在末尾**，并用 `grep -v -x` 排除 arch lib 自身；保证任何 bundled 系统运行时都不会覆盖 `/usr/lib/x86_64-linux-gnu`。#48 的日志显示 find 实际只返回 arch/lib 一个目录，过滤后为空。
+3. `ldd` 断言正则由宽泛的 `not found` 收紧为 `=> not found|version .* not found|error while loading shared libraries`，区分「库缺失」与「ABI 版本不匹配」；新增打印实际解析到的 `libstdc++`/`libgcc_s`/`libz`/`libtinfo` 便于复核。
+4. PyYAML 解析（15 steps）、提取 `run` 块 `bash -n`、`git diff --check` 均通过。
+
+**仍待 #49 定论**：`Gate 3.1: transient Darcy TS created`（yaml 枚举）、`Gate 3.1: step`（TSSolve 推进）、SNES/KSP 收敛原因、`vDef/data/Beam1x10-tri3_out.gen` 是否产出。**#49 才是 3.1 数值求解的首次真实运行**；3.2 的 Terzaghi 解析解比对必须等该文件。

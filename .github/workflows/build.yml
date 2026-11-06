@@ -411,11 +411,18 @@ jobs:
           # PETSc 3.3 is configured --with-shared-libraries=1; all -lmetis,
           # -lparmetis, -lHYPRE, -lexodus, -lhdf5 ... resolve from the arch lib
           # dir at link time, so the dynamic loader needs the same dir at run time.
-          export LD_LIBRARY_PATH="$PETSC_DIR/$PETSC_ARCH/lib:$MPI_HOME/lib:$HOME/miniconda2/lib:${LD_LIBRARY_PATH:-}"
+          # NEVER add $HOME/miniconda2/lib here: its bundled libstdc++.so.6,
+          # libgcc_s, libz and libtinfo predate the system gcc 13 runtime used
+          # to build PETSc and cause "version GLIBCXX_3.4.32 not found".
+          export LD_LIBRARY_PATH="$PETSC_DIR/$PETSC_ARCH/lib:$MPI_HOME/lib"
           # Defensive: --download-* packages sometimes leave .so files in
-          # externalpackages subdirs. Add every dir that actually holds one.
-          EXTRA_LIB_DIRS=$(find "$PETSC_DIR/$PETSC_ARCH" -name 'lib*.so*' -printf '%h\n' 2>/dev/null | sort -u | tr '\n' ':')
-          export LD_LIBRARY_PATH="${EXTRA_LIB_DIRS}${LD_LIBRARY_PATH}"
+          # externalpackages subdirs. Append them LAST so any bundled copy of a
+          # system runtime can never shadow /usr/lib/x86_64-linux-gnu.
+          EXTRA_LIB_DIRS=$(find "$PETSC_DIR/$PETSC_ARCH" -name 'lib*.so*' -printf '%h\n' 2>/dev/null \
+            | sort -u | grep -v -x "$PETSC_DIR/$PETSC_ARCH/lib" | tr '\n' ':' | sed 's/:$//')
+          if [ -n "$EXTRA_LIB_DIRS" ]; then
+            export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$EXTRA_LIB_DIRS"
+          fi
           cd vDef
           if [ ! -x ../bin/$PETSC_ARCH/vDef ]; then
             echo "=== FAIL: vDef executable not found; the build step did not produce a binary ==="
@@ -425,11 +432,13 @@ jobs:
           echo "$LD_LIBRARY_PATH"
           echo "=== ldd ../bin/$PETSC_ARCH/vDef ==="
           ldd ../bin/$PETSC_ARCH/vDef 2>&1 | tee /tmp/ldd-vDef.log
-          if grep -q "not found" /tmp/ldd-vDef.log; then
-            echo "=== FAIL: unresolved shared libraries; check LD_LIBRARY_PATH above ==="
-            grep "not found" /tmp/ldd-vDef.log
+          if grep -Eq "=> not found|version .* not found|error while loading shared libraries" /tmp/ldd-vDef.log; then
+            echo "=== FAIL: unresolved or ABI-incompatible shared libraries; check LD_LIBRARY_PATH above ==="
+            grep -E "=> not found|version .* not found|error while loading shared libraries" /tmp/ldd-vDef.log
             exit 1
           fi
+          echo "=== system runtime libraries resolved for vDef ==="
+          grep -E "libstdc\+\+|libgcc_s|libz\.so|libtinfo" /tmp/ldd-vDef.log || true
           mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D.yaml 2>&1 | tee /tmp/terzaghi.log
