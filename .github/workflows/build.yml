@@ -483,7 +483,7 @@ jobs:
           if grep -q "Caught signal number 11 SEGV" /tmp/terzaghi.log; then
             echo "=== FAIL: segfault in vDef (initialization or solve) ==="
             echo "=== last Gate 3.1 trace reached (pinpoints the failing call) ==="
-            grep -n "Gate 3.1: init\|Gate 3.1: transient Darcy TS created\|Gate 3.1: step" /tmp/terzaghi.log | tail -15 || true
+            grep -n "Gate 3.1: init\|Gate 3.1: flow enum\|Gate 3.1: transient Darcy TS created\|Gate 3.1: step" /tmp/terzaghi.log | tail -15 || true
             grep -n "Caught signal number 11" /tmp/terzaghi.log | head -4
             exit 1
           fi
@@ -499,6 +499,7 @@ jobs:
           fi
           if ! grep -q "Gate 3.1: transient Darcy TS created" /tmp/terzaghi.log; then
             echo "=== FAIL: transient TS path was NOT activated (yaml enum mismatch?) ==="
+            grep -n "Gate 3.1: flow enum" /tmp/terzaghi.log | head -4 || true
             exit 1
           fi
           if ! grep -q "Gate 3.1: step" /tmp/terzaghi.log; then

@@ -433,6 +433,9 @@ Contains
       Type(IS)                                            :: CellSetGlobalIS, bcIS
       Type(IS)                                            :: VertexSetGlobalIS, setIS, cellSetIS
       PetscInt,dimension(:),Pointer                        :: setID, cellIDs, dofList
+      !!! PETSc 3.3: ISGetIndicesF90 associates this F90 pointer itself and
+      !!! ISRestoreIndicesF90 releases it. Never Allocate/DeAllocate dofList
+      !!! (CI #51: "Attempt to DEALLOCATE unallocated 'doflist'").
       PetscInt                                            :: set, nVal
       PetscReal,Allocatable                               :: resPtr(:), bcPtr(:)
       Type(MEF90FlowCellSetOptions_Type),pointer          :: cellSetOptions
@@ -448,14 +451,14 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),cellSetIS,ierr);CHKERRQ(ierr)
             Call MEF90ISCreateCelltoVertex(FlowCtx%DMScal,PETSC_COMM_WORLD,cellSetIS,bcIS,ierr)
             Call ISGetLocalSize(bcIS,nVal,ierr);CHKERRQ(ierr)
-            Allocate(dofList(nVal),resPtr(nVal),bcPtr(nVal),stat=ierr)
+            Allocate(resPtr(nVal),bcPtr(nVal),stat=ierr)
             Call ISGetIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
             Call VecGetValues(x,nVal,dofList,resPtr,ierr);CHKERRQ(ierr)
             Call VecGetValues(FlowCtx%boundaryPressure,nVal,dofList,bcPtr,ierr);CHKERRQ(ierr)
             resPtr = resPtr - bcPtr    !!! G = x - p_bc on Dirichlet dofs
             Call VecSetValues(residual,nVal,dofList,resPtr,INSERT_VALUES,ierr);CHKERRQ(ierr)
             Call ISRestoreIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
-            DeAllocate(dofList,resPtr,bcPtr)
+            DeAllocate(resPtr,bcPtr)
             Call ISDestroy(bcIS,ierr);CHKERRQ(ierr)
             Call ISDestroy(cellSetIS,ierr);CHKERRQ(ierr)
          End If
@@ -472,14 +475,14 @@ Contains
          If (vertexSetOptions%Has_BC) Then
             Call DMMeshGetStratumIS(FlowCtx%DMScal,'Vertex Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(setIS,nVal,ierr);CHKERRQ(ierr)
-            Allocate(dofList(nVal),resPtr(nVal),bcPtr(nVal),stat=ierr)
+            Allocate(resPtr(nVal),bcPtr(nVal),stat=ierr)
             Call ISGetIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
             Call VecGetValues(x,nVal,dofList,resPtr,ierr);CHKERRQ(ierr)
             Call VecGetValues(FlowCtx%boundaryPressure,nVal,dofList,bcPtr,ierr);CHKERRQ(ierr)
             resPtr = resPtr - bcPtr
             Call VecSetValues(residual,nVal,dofList,resPtr,INSERT_VALUES,ierr);CHKERRQ(ierr)
             Call ISRestoreIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
-            DeAllocate(dofList,resPtr,bcPtr)
+            DeAllocate(resPtr,bcPtr)
             Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
          End If
       End Do
@@ -515,7 +518,6 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),cellIS,ierr);CHKERRQ(ierr)
             Call MEF90ISCreateCelltoVertex(FlowCtx%DMScal,PETSC_COMM_WORLD,cellIS,bcIS,ierr)
             Call ISGetLocalSize(bcIS,nVal,ierr);CHKERRQ(ierr)
-            Allocate(dofList(nVal),stat=ierr)
             Call ISGetIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
             !!! MatZeroRows zeroes rows dofList(1:nVal), sets diagonal = 1.0 (standard Dirichlet Jacobian pattern)
             Call MatZeroRows(Jac,nVal,dofList,1.0_Kr,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
@@ -523,7 +525,6 @@ Contains
             Call ISRestoreIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
             Call ISDestroy(bcIS,ierr);CHKERRQ(ierr)
             Call ISDestroy(cellIS,ierr);CHKERRQ(ierr)
-            DeAllocate(dofList)
          End If
       End Do
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
@@ -538,13 +539,11 @@ Contains
          If (vertexSetOptions%Has_BC) Then
             Call DMMeshGetStratumIS(FlowCtx%DMScal,'Vertex Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(setIS,nVal,ierr);CHKERRQ(ierr)
-            Allocate(dofList(nVal),stat=ierr)
             Call ISGetIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
             Call MatZeroRows(Jac,nVal,dofList,1.0_Kr,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
             Call MatZeroRows(PreJac,nVal,dofList,1.0_Kr,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
             Call ISRestoreIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
             Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
-            DeAllocate(dofList)
          End If
       End Do
       Call ISRestoreIndicesF90(VertexSetGlobalIS,setID,ierr);CHKERRQ(ierr)
@@ -625,13 +624,13 @@ Contains
          If (cellSetOptions%Has_BC) Then
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),cellSetIS,ierr);CHKERRQ(ierr)
             Call MEF90ISCreateCelltoVertex(FlowCtx%DMScal,PETSC_COMM_WORLD,cellSetIS,bcIS,ierr)
-            Call ISGetSize(bcIS,nVal,ierr);CHKERRQ(ierr)
-            Allocate(dofList(nVal),val(nVal),stat=ierr)
+            Call ISGetLocalSize(bcIS,nVal,ierr);CHKERRQ(ierr)
+            Allocate(val(nVal),stat=ierr)
             Call ISGetIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
             val = cellSetOptions%boundaryPressure
             Call VecSetValues(boundaryPressure,nVal,dofList,val,INSERT_VALUES,ierr);CHKERRQ(ierr)
             Call ISRestoreIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
-            DeAllocate(dofList,val)
+            DeAllocate(val)
             Call ISDestroy(bcIS,ierr);CHKERRQ(ierr)
             Call ISDestroy(cellSetIS,ierr);CHKERRQ(ierr)
          End If
@@ -646,13 +645,13 @@ Contains
          Call PetscBagGetDataMEF90FlowCtxVertexSetOptions(FlowCtx%VertexSetOptionsBag(set),vertexSetOptions,ierr);CHKERRQ(ierr)
          If (vertexSetOptions%Has_BC) Then
             Call DMMeshGetStratumIS(FlowCtx%DMScal,'Vertex Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
-            Call ISGetSize(setIS,nVal,ierr);CHKERRQ(ierr)
-            Allocate(dofList(nVal),val(nVal),stat=ierr)
+            Call ISGetLocalSize(setIS,nVal,ierr);CHKERRQ(ierr)
+            Allocate(val(nVal),stat=ierr)
             Call ISGetIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
             val = vertexSetOptions%boundaryPressure
             Call VecSetValues(boundaryPressure,nVal,dofList,val,INSERT_VALUES,ierr);CHKERRQ(ierr)
             Call ISRestoreIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
-            DeAllocate(dofList,val)
+            DeAllocate(val)
             Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
          End If
       End Do

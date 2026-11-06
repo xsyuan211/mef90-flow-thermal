@@ -15,6 +15,10 @@
 # ============================================================================
 
 verbose: 2
+# CI #51 belt-and-braces: if a PETSc 3.3 YAML build flattens the 'flow:' block
+# without its prefix, this top-level alias still activates the transient enum.
+# The Flow bag itself reads -flow_timestepping_type (prefix 'flow_').
+timestepping_type: Transient
 time:
     min: 0.0
     max: 1.0

@@ -731,10 +731,13 @@ Contains
 
       Call PetscBagGetDataMEF90CtxGlobalOptions(FlowCtx%MEF90Ctx%GlobalOptionsBag,MEF90CtxGlobalOptions,ierr);CHKERRQ(ierr)
 
-      !!! Global bag — YAML top-level key is 'flow:' (PetscBagSetName='flow')
-      !!! Prefix intentionally empty; option names are 'perm_min', 'biot_coeff', etc.
+      !!! Global bag — YAML top-level key is 'flow:' → option names are
+      !!! '-flow_timestepping_type', '-flow_perm_min', ... exactly like
+      !!! DefMech ('DefMech_*') and HeatXfer ('heatxfer_*'). The empty prefix
+      !!! used before CI #51 made EVERY Flow global option fall back to its
+      !!! default (SteadyState, p0=0, k_min=1e-20), so the TS path was disabled.
       Call PetscBagRegisterMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag, &
-           'flow','',defaultGlobalOptions,ierr);CHKERRQ(ierr)
+           'flow','flow_',defaultGlobalOptions,ierr);CHKERRQ(ierr)
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
 
       !!! Cell set bags — per-set prefix + EXO elem type auto-detection (DefMech pattern)

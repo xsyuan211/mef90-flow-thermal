@@ -166,7 +166,7 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-06 22:55，CI #50 首次进入 Fortran 初始化后 SEGV）
+## 进度跟踪（更新 2026-11-07 06:10，CI #51 首次进入数值阶段）
 
 **代码进度**
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
@@ -188,6 +188,7 @@
 - **网格标签核对通过**：真实 `Beam1x10-tri3.gen` 的 `eb_prop1 = [1, 10, 20]`，block1 = 600 个 TRI3 域单元、block2/3 = 各 5 个 BAR2 边界单元，与 `terzaghi1D.yaml` 的 `cs0001`/`cs0010`/`cs0020` 完全一致。
 - CI run **#50 = failure**（14:02–14:39 UTC）：**程序完整启动并读完整个输入 deck**（426 行日志），随后两个 rank 同时 `Caught signal number 11 SEGV`；`Gate 3.1` 自检行一条都没有。这是**首个根因位于 Fortran 代码内部**的失败，前四轮（#46~#49）都在构建/环境层。
 - **#50 根因（静态定论）**：`vDef/vDef.F90` 原本在 `:143` 调 `MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx)`，而该例程 `m_MEF90_Flow.F90:259` 读 `DefMechCtx%DMScalSec`；这个 damage SectionReal 要到 `:170 MEF90DefMechCtxSetSections` 才创建 → 解引用未初始化句柄。另发现 `m_MEF90_FlowCtx.F90` 的 Global PetscBag 只注册 26 项 / 类型有 29 字段，且第 13/14 项 Real/Bool 颠倒、漏 3 个 scaling/offset 字段 → 第 20 项起所有 EXO offset 与容差全部错位读成垃圾值。两处均已修复，详见文末「CI #50 诊断结论与修复」。
+- CI run **#51 = failure**（15:11–15:47 UTC）：`Gate 3.1: init 01..08` 全通过、进入 `Mechanics: step 1`、`_out.gen` 产出 2.79 MB；崩在 `Attempt to DEALLOCATE unallocated 'doflist'`（FlowAssembly:634），且 TS 路径因全局 bag 缺 `flow_` 前缀静默关闭。两处均已修，详见文末「CI #51 诊断结论与修复」。
 - 本地无 PETSc 编译链；所有「验收」栏目前均为**代码审查级通过，非运行验证**。
 
 **本次复核发现（A / B 已修 18:35；C 已修 19:10；D 为既有改动）**
@@ -403,3 +404,30 @@ PETSc bag 按 `bag->data + bag->offset` 顺序写值，`PetscBagGetData` 再把 
 **仍待 #51 定论**：8 条 init trace 能否全部走完、`Gate 3.1: transient Darcy TS created`（Flow 枚举 `Transient` 是否解析）、`Gate 3.1: step`（TSSolve 推进）、SNES/KSP 收敛、`vDef/data/Beam1x10-tri3_out.gen` 是否产出。**#51 才可能首次进入 3.1 的瞬态数值求解**；3.2 的 Terzaghi 解析解比对必须等该文件。
 
 **下一轮可能的遗留点（静态可见，未处理）**：`MEF90FlowUpdatePerm` 会对 `cs0010`/`cs0020` 这两个 BAR2 边界 cell set 调 `MEF90Element_Create`（与 TRI3 域单元同路径）；若 #51 在此报错，需按边界块跳过体积分。另 `pressurePreviousStep` 全项目仍无消费者，`VecCopy` 是死写（闸门 4）。
+
+## CI #51 诊断结论与修复（2026-11-07 06:10，首次进入数值阶段）
+
+**日志来源**：run `42240634507` / job `127969679819` 的完整 job 日志（2906 行），`Run Terzaghi` step failure；artifact `build-diagnostics` id `13518271108`。构建 15 步全部 success，`ldd` 干净，无需再查环境层。
+
+**进展（#50 的修复全部生效）**
+- `Gate 3.1: init 01..08` **8 条全部走完**，`Time values array` 打印 51 个 0→1 的均匀时刻，DefMech/HeatXfer SNES 对象创建完成，`Mechanics: step 1, t=0` 进入主循环。
+- 结果文件 `data/Beam1x10-tri3_out.gen` **已产出 2,789,988 字节**（3.2 的数据源路径确认无误），但只是初始化写出的空/初始场，尚不含瞬态压力演化。
+- 崩溃点：`Alt. Min. step 1` 后两个 rank 同时 `Fortran runtime error: Attempt to DEALLOCATE unallocated 'doflist'`，位置 `m_Flow/m_MEF90_FlowAssembly.F90:634`，mpirun exit 2；CI 在运行时签名扫描处 `exit 1`，后面的 Gate 断言未执行。
+
+**根因 1（P0，直接崩溃）— 误释放 PETSc 托管的 F90 指针**
+`dofList` 声明为 `PetscInt,Dimension(:),Pointer`。PETSc 3.3 的 `ISGetIndicesF90` 自己把这个指针关联到内部数组，`ISRestoreIndicesF90` 再解除关联；代码却先 `Allocate(dofList(nVal))`、restore 后再 `DeAllocate(dofList,...)`，运行时必然报「未分配」并终止。`#51` 是第一次真正走到 `MEF90FlowUpdateboundaryPressure`（`Has_BC` 为真）才暴露；前几轮都在更早的位置中止。同类共 **6 处**：残差 2 处（451/475）、雅可比 2 处（518/541）、边界压力 2 处（629/650）。
+
+**修复**：6 处统一删除 `Allocate(dofList)` / `DeAllocate(dofList)`，只保留对纯 `Allocatable` 辅助数组（`resPtr` / `bcPtr` / `val`）的分配与释放；另把 `MEF90FlowUpdateboundaryPressure` 里剩下的两处 `ISGetSize` 改成 `ISGetLocalSize`，与 A/B 修复对齐，避免 `-np 2` 下读非本地 dof；加注释固化所有权规则。
+
+**根因 2（P0，TS 路径静默关闭）— Flow global bag 缺 `flow_` 选项前缀**
+日志中**没有** `Gate 3.1: transient Darcy TS created`，也没有 `Gate 3.1: step` → `flowTransient = false`，程序走 steady 分支（这也解释了为什么 AltMin 内会调 `SetTransients` 并触发根因 1）。`MEF90FlowCtxSetFromOptions` 注册全局 bag 时传的是 `PetscBagRegisterMEF90FlowCtxGlobalOptions(...,'flow','',...)`，prefix 为空 → bag 只认 `-timestepping_type`；而 yaml 顶层 `flow:` 块按 DefMech / HeatXfer 同样的规则展平成 `-flow_timestepping_type`（日志里 DefMech 打印 `DefMech_TimeStepping_Type`、HeatXfer 打印 `heatxfer_timeStepping_type` 可证）。因此 **Flow 的全部全局选项都取默认值**：`SteadyState`、`p0=0`、`k_min=1e-20`、容差缺省 —— 即使不崩也算不出 Terzaghi 衰减。
+
+**修复**
+1. `m_Flow/m_MEF90_FlowCtx.F90`：全局 bag prefix 由 `''` 改为 `'flow_'`，使 `-flow_timestepping_type` / `-flow_perm_min` / `-flow_p0` 等全部命中。CellSet/VertexSet bag 的 `cs0001_` 前缀本来就与 yaml 一致，不动。
+2. `vDef/vDef.F90`：在 `flowTransient` 赋值后**无条件**打印 `Gate 3.1: flow enum <值> Transient <枚举值> enabled <T/F>`，下轮即使枚举仍不对也能一眼看出，不再静默退化。
+3. `vDef/data/terzaghi1D.yaml`：顶层补 `timestepping_type: Transient` 作为扁平别名双保险（若某 PETSc 3.3 构建不把顶层块名写进 option，仍能激活瞬态）。
+4. `.github/workflows/build.yml`：Gate trace 与「TS 未激活」分支都加 `Gate 3.1: flow enum` 输出，便于下一轮直接读枚举值。
+
+**校验**：`git diff --check` 干净；PyYAML 解析 workflow（15 steps）与 yaml 通过；提取 `Run Terzaghi` 的 `run` 块 `bash -n` 通过；`m_Flow/m_MEF90_FlowAssembly.F90` 已无任何 `Allocate(dofList` / `DeAllocate(dofList` / `ISGetSize(` 残留。
+
+**仍待 #52 定论**：`Gate 3.1: flow enum` 是否为 Transient(=2)、`Gate 3.1: transient Darcy TS created`、`Gate 3.1: step`（TSSolve 推进）、`TSGetConvergedReason` / KSP 收敛、`_out.gen` 内是否出现随时间衰减的 pressure。**#52 才可能首次完成 3.1 的瞬态数值求解**；3.2 的 Terzaghi 解析解比对必须等该文件含真实瞬态压力场。

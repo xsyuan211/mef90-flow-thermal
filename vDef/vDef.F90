@@ -160,6 +160,11 @@ Program vDef
    !!! exists. It is advanced on the time-step level (before AltMin), not inside
    !!! every alternate-minimization iteration. Steady runs keep using snesPressure.
    flowTransient = (MEF90FlowGlobalOptions%timeSteppingType == MEF90Flow_timeSteppingTypeTransient)
+   !!! CI #51: print the enum unconditionally. If the yaml key still fails to
+   !!! resolve, the log shows the actual value instead of silently going steady.
+   Write(IOBuffer,*) 'Gate 3.1: flow enum',MEF90FlowGlobalOptions%timeSteppingType, &
+                     ' Transient',MEF90Flow_timeSteppingTypeTransient,' enabled',flowTransient,'\n'
+   Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
    If (flowTransient) Then
       If (size(time) > 1) Then
          dtFlow0 = time(2) - time(1)
