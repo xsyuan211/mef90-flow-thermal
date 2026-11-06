@@ -148,36 +148,49 @@ module m_vDefDefault
                                                          0.0_Kr)          ! boundaryTemp
 
 !!! NEW: Flow (Darcy pressure) default options - Phase 1
+!!! NOTE: there must be NO ampersand after the closing parenthesis (a trailing
+!!!       & would splice the next Type declaration into this constructor).
+!!!       Decimal literals are used instead of 1.0e-20_Kr style constants.
+!!!       Value order must match MEF90FlowGlobalOptions_Type (29 components):
+!!!       timeSteppingType, addNullSpace, permeabilityMin, permeabilityMax,
+!!!       dynamicViscosity, storativity, initialPressure, residualDamage,
+!!!       biotCoefficient, temperatureDependViscosity, referenceTemperature,
+!!!       sutherlandConstant, arrheniusActivationEnergy, useArrheniusViscosity,
+!!!       enableFlowAdvection, fluidDensity, pressureOffset, sourceOffset,
+!!!       boundaryPressureOffset, pressurePreviousStepOffset, permFieldOffset,
+!!!       darcyVelocityOffset, sourceScaling, boundaryPressureScaling,
+!!!       pressurePreviousStepScaling, pressureScaling, pressureATol,
+!!!       pressureRTol, pressureMaxIt.
    Type(MEF90FlowGlobalOptions_Type),Parameter    :: vDefFlowDefaultGlobalOptions = MEF90FlowGlobalOptions_Type( &
-                                                         MEF90Flow_timeSteppingTypeSteadyState, & ! timeSteppingType (steady Darcy)
-                                                         PETSC_FALSE,    & ! addNullSpace
-                                                         1.0e-20_Kr,     & ! permeabilityMin  (k_min, 1e-20 m^2 ~ 10 mD)
-                                                         1.0e-14_Kr,     & ! permeabilityMax  (k_max, 1e-14 m^2 ~ 1000 D)
-                                                         1.0e-3_Kr,      & ! dynamicViscosity (mu_ref, water at 20 degC, T_ref=293K)
-                                                         4.6e-10_Kr,     & ! storativity S = (1/Kf + phi/Ks) ~ 4.6e-10 Pa^-1
-                                                         0.0_Kr,         & ! initialPressure p0
-                                                         0.0_Kr,         & ! residualDamage (damage < this -> k = k_min only)
-                                                         0.0_Kr,         & ! biotCoefficient alpha (0 = no Biot coupling, set 1.0 for full poroelasticity)
-                                                         PETSC_FALSE,    & ! temperatureDependViscosity (mu(T) coupling off by default)
-                                                         293.0_Kr,       & ! referenceTemperature T_ref (K)
-                                                         600.0_Kr,       & ! sutherlandConstant C=600K (water-like default; air~120K)
-                                                         5100.0_Kr,      & ! arrheniusActivationEnergy Ea/R (water~5100K; air~110K)
-                                                         PETSC_FALSE,    & ! useArrheniusViscosity (.false.=Sutherland liquid)
-                                                         PETSC_FALSE,    & ! enableFlowAdvection (v.gradT off by default)
-                                                         1000.0_Kr,      & ! fluidDensity rho_f (kg/m^3, water default)
-                                                         1,              & ! pressureOffset (EXO)
-                                                         1,              & ! sourceOffset
-                                                         0,              & ! boundaryPressureOffset
-                                                         2,              & ! pressurePreviousStepOffset
-                                                         0,              & ! permFieldOffset
-                                                         0,              & ! darcyVelocityOffset
-                                                         MEF90Scaling_CST, & ! sourceScaling
-                                                         MEF90Scaling_CST, & ! boundaryPressureScaling
-                                                         MEF90Scaling_Linear, & ! pressurePreviousStepScaling
-                                                         MEF90Scaling_CST,    & ! pressureScaling
-                                                         1e-8_Kr,        & ! pressureATol
-                                                         1e-4_Kr,        & ! pressureRTol
-                                                         100)             & ! pressureMaxIt
+                                                         MEF90Flow_timeSteppingTypeSteadyState, &
+                                                         PETSC_FALSE,    &
+                                                         0.00000000000000000001_Kr, &  ! k_min = 1e-20 m^2
+                                                         0.00000000000001_Kr, &        ! k_max = 1e-14 m^2
+                                                         0.001_Kr,      &                ! mu_ref = 1e-3 Pa.s
+                                                         0.00000000046_Kr, &            ! S = 4.6e-10 1/Pa
+                                                         0.0_Kr,         &                ! p0
+                                                         0.0_Kr,         &                ! residualDamage
+                                                         0.0_Kr,         &                ! biotCoefficient
+                                                         PETSC_FALSE,    &                ! temperatureDependViscosity
+                                                         293.0_Kr,       &                ! T_ref
+                                                         600.0_Kr,       &                ! Sutherland C
+                                                         5100.0_Kr,      &                ! Ea/R
+                                                         PETSC_FALSE,    &                ! useArrheniusViscosity
+                                                         PETSC_FALSE,    &                ! enableFlowAdvection
+                                                         1000.0_Kr,      &                ! rho_f
+                                                         1,              &                ! pressureOffset
+                                                         1,              &                ! sourceOffset
+                                                         0,              &                ! boundaryPressureOffset
+                                                         2,              &                ! pressurePreviousStepOffset
+                                                         0,              &                ! permFieldOffset
+                                                         0,              &                ! darcyVelocityOffset
+                                                         MEF90Scaling_CST, &               ! sourceScaling
+                                                         MEF90Scaling_CST, &               ! boundaryPressureScaling
+                                                         MEF90Scaling_Linear, &            ! pressurePreviousStepScaling
+                                                         MEF90Scaling_CST,    &            ! pressureScaling
+                                                         0.00000001_Kr,  &                ! pressureATol = 1e-8
+                                                         0.0001_Kr,      &                ! pressureRTol = 1e-4
+                                                         100)              ! pressureMaxIt
    Type(MEF90FlowCellSetOptions_Type),Parameter   :: vDefFlowDefaultCellSetOptions = MEF90FlowCellSetOptions_Type( &
                                                          -1,              & ! elemTypeShortID (overridden)
                                                          0.0_Kr,          & ! source (volumetric injection/sink)

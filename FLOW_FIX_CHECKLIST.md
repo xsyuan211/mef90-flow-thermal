@@ -166,18 +166,19 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-06 19:10，第二轮静态复核后）
+## 进度跟踪（更新 2026-11-06 19:55，CI #46 首个可信失败后）
 
 **代码进度**
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
 - 闸门 2（可见）：4 / 4
-- 闸门 3（瞬态+符号）：1 / 2（3.1 静态实现 + 二轮正确性修正；3.2 必须运行）
+- 闸门 3（瞬态+符号）：1 / 2（3.1 静态实现 + 二轮正确性修正；**3.1 代码至今从未被编译或运行**；3.2 必须运行）
 - 闸门 4（物理+工程）：0 / 11（4.11 的「CI 可信化」前置已做，主体未动）
 - 合计：8 项功能已落地，12 项待做
 
 **提交 / CI 状态**
-- 7 个文件为**未提交的工作区改动**（+250 / -48），`main` 与 `origin/main` 齐平于 `2e49c2e`（2026-11-05 13:34）。
-- 远程最新 CI 为 run #45（sha `2e49c2e`，success），只验证旧代码；**全部改动从未 push、从未被 CI 编译或运行过**。Run Terzaghi 的 `continue-on-error` 已去掉，并加了错误签名扫描 + Gate 3.1 自检断言，push 后会给出**可信**结论。
+- 已提交 **`bd3c1f8`**（8 个文件，+523 / −49，含清单文档），2026-11-06 19:18 推送到 `origin/main`（基线 `2e49c2e`）。`.trae/`、`.workbuddy/` 属工具数据，未入库。
+- CI run **#46 = failure**（11:44 UTC）。`Build MEF90 + m_Flow + vDef` 显示 success 是**假绿**：该步骤中途 `set +e` 后再未恢复，vDef 编译失败被静默吞掉；`Run Terzaghi` 因二进制不存在报 `mpirun ... unable to launch`（exit 132），随后的 Gate 3.1 自检断言只是连带误报 `transient TS path was NOT activated`。
+- **真实根因**：`vDef/m_vDefDefault.F90:154:59` `Error: Invalid character in name` → `m_vDefDefault.o` 编译失败、vDef 未链接。对比历史 **#45** 的 `build-diagnostics`，有**逐字相同**的错误 → vDef 自 Flow 默认值块加入起从未成功构建，历史 success 全部只证明依赖链可用。
 - 本地无 PETSc 编译链；所有「验收」栏目前均为**代码审查级通过，非运行验证**。
 
 **本次复核发现（A / B 已修 18:35；C 已修 19:10；D 为既有改动）**
@@ -221,7 +222,7 @@
 5. CG + `MAT_SPD`：`MatZeroRows` 后严格对称性存疑，看 `KSPGetConvergedReason`。
 6. 物理近似：transient 下 p 每时间步只解一次，AltMin 内 k(v) 刷新但 p 冻结 → staggered 近似，非完整 Biot 固结。
 
-**状态**：8 项改动全部仍在工作区，**未提交、未推送、未编译、未运行**。
+**状态**：该轮改动已随 `bd3c1f8` 提交并推送；仍**未编译、未运行**，等待 CI run #46。
 
 ## 3.1 第二轮静态复核修正（19:10，仍为零编译 / 零运行）
 
@@ -266,4 +267,22 @@
 4. `pressurePreviousStep` 全项目**无任何消费者**（只在 FlowCtx 里创建 / 初值 / 销毁）；本轮新增的 `VecCopy(pressure → pressurePreviousStep)` 目前是死写，保留给闸门 4 的平流 / Biot 消费者。
 5. transient 下 p 每时间步只解一次、AltMin 内 k(v) 刷新但 p 冻结 → staggered 近似，非完整 Biot 固结。
 
-**状态**：仍是 **7 个文件、+250 / −48，全部未提交、未推送、未编译、未运行**。下一步唯一有效动作是 commit + push 拿一次真实 CI；把 `/tmp/terzaghi.log`、`/tmp/flow.log`、`/tmp/vDef.log` 带回来即可逐条收敛，之后才能进 3.2。
+**状态（19:55 更新）**：CI #46 给出首个可信结论——**失败发生在构建层，3.1 的瞬态代码根本没进入运行**。修复已写入工作区，待提交推送后由 #47 复验。
+
+## CI #46 诊断结论与修复（19:55，首次真实反馈）
+
+**日志来源**：用系统凭据下载 `build-diagnostics` artifact（#46 id `13499247217`、#45 id `13392696105`），逐文件比对。
+
+| 日志 | 结论 |
+|---|---|
+| `MEF90.log` / `m_DefMech.log` / `m_HeatXfer.log` | 无 error，核心库全部编译通过 |
+| `flow.log` | **m_Flow 编译通过**：FlowCtx、FlowAssembly 2D/3D、Flow 全部产出 .o；仅一条 `PetscObjectSetName(SNESPressure)` 与 `tsPressure` 的 type-mismatch warning（`-fallow-argument-mismatch` 已压成警告） |
+| `vDef.log` | **编译失败**：`m_vDefDefault.F90:154:59 Error: Invalid character in name at (1)`，`make: *** [m_vDefDefault.o] Error 1` → vDef 从未链接 |
+| `terzaghi.log` | 仅 10 行：`mpirun ... could not access or execute ../bin/.../vDef`，2 ranks 全部启动失败，exit 132 |
+
+**根因与修复**
+1. **假绿链**：`Build` 步骤在 TS 诊断段 `set +e` 后再未 `set -e`；5) vDef 的 make 用 `| tee` 且无退出码检查，失败被吞；`Run Terzaghi` 的 `if: always()` 于是只面对一个不存在的二进制。→ 修复：5) 加 `|| { tail -80 /tmp/vDef.log; exit 1; }`、`SKIPPED` 分支直接 `exit 1`、末尾硬断言 `test -x bin/$PETSC_ARCH/vDef`；`Run Terzaghi` 启动前先检查可执行文件并打印 `terzaghi.log` 尾部，避免把「二进制缺失」误报成「TS 路径未激活」。
+2. **`m_vDefDefault.F90` 语法错误**：`vDefFlowDefaultGlobalOptions` 块（闸门 2 之前加入、从未编译过）尾部 `100)             & ! pressureMaxIt` 在**闭合括号后留了尾随 `&`**，会把下一条 `Type(MEF90FlowCellSetOptions_Type)...` 声明拼进同一个构造函数；gfortran 回溯把错误报到 `154:59`。→ 修复：删掉该尾随 `&`；同时把 `1.0e-20_Kr` 这类 `<指数>_<kind>` 字面量全部换成等价十进制 `0.00000000000000000001_Kr` 等（与文件内已编译通过的 `0.0_Kr` 同构，规避任何预处理/词法歧义）；29 个值与 `MEF90FlowGlobalOptions_Type` 的 29 个字段顺序逐一核对一致。
+3. **#45 对照**：历史 run #45 的 `vDef.log` 有**逐字相同**的 `154:59` 错误 → 该块加入后 vDef 从未构建成功，之前所有 CI success 只说明 PETSc/OpenMPI 依赖缓存可用。
+4. **仍未验证**：`vDef.F90`（3.1 接线）**从未被编译过**——`m_vDefDefault.o` 先失败，vDef.F90 从未进入编译器。本轮已静态复核其新接口（`TSGetTime` / `TSGetConvergedReason` / `TSSetDuration` / `TSConvergedReason` / `Write(IOBuffer,*)` 等）在项目内均有已编译先例，变量声明齐全，但编译结果只能由 #47 给出。
+5. **3.2 仍不可做**：需先跑出 `vDef/data/Beam1x10-tri3_out.gen`。

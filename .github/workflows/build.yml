@@ -386,11 +386,19 @@ jobs:
           echo "--- total .o count: $(ls objs/${PETSC_ARCH}/*.o 2>/dev/null | wc -l) ---"
           echo "=== 5) BUILD vDef ==="
           if [ -f objs/${PETSC_ARCH}/m_MEF90_Flow.o ]; then
-            make -C objs/${PETSC_ARCH} -f ../../vDef/Makefile vDef vDefP vDefUpa vDefBT vDefHF PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/vDef.log
+            make -C objs/${PETSC_ARCH} -f ../../vDef/Makefile vDef vDefP vDefUpa vDefBT vDefHF PETSC_DIR=$PETSC_DIR PETSC_ARCH=$PETSC_ARCH MEF90_DIR=$MEF90_DIR FC_FLAGS="$FC_FLAGS" 2>&1 | tee /tmp/vDef.log || { echo "=== vDef build FAILED (tail of /tmp/vDef.log) ==="; tail -80 /tmp/vDef.log; exit 1; }
             ls -la bin/$PETSC_ARCH/vDef 2>&1 || echo "  (vDef not found)"
           else
             echo "  SKIPPED — m_MEF90_Flow.o missing"
+            exit 1
           fi
+          echo "=== HARD ASSERT: build artifacts (set +e above must not hide failures) ==="
+          if [ ! -x bin/$PETSC_ARCH/vDef ]; then
+            echo "=== FAIL: vDef executable missing or not executable after build ==="
+            tail -80 /tmp/vDef.log
+            exit 1
+          fi
+          file bin/$PETSC_ARCH/vDef
       - name: Run Terzaghi
         if: always()
         run: |
@@ -401,11 +409,17 @@ jobs:
           export PATH=$MPI_HOME/bin:$PETSC_DIR/bin:$PETSC_DIR/$PETSC_ARCH/bin:$PATH
           export MEF90_DIR=$(pwd)
           cd vDef
+          if [ ! -x ../bin/$PETSC_ARCH/vDef ]; then
+            echo "=== FAIL: vDef executable not found; the build step did not produce a binary ==="
+            exit 1
+          fi
           mpirun --allow-run-as-root -np 2 ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D.yaml 2>&1 | tee /tmp/terzaghi.log
           rc=${PIPESTATUS[0]}
           echo "=== Terzaghi mpirun exit code: $rc ==="
+          echo "=== terzaghi.log (last 120 lines) ==="
+          tail -120 /tmp/terzaghi.log
           echo "=== result files (3.2 analytical-comparison data source) ==="
           echo "    -prefix data/Beam1x10-tri3 -> geometry data/Beam1x10-tri3.gen, result data/Beam1x10-tri3_out.gen"
           ls -la data/Beam1x10-tri3_out.gen 2>/dev/null || echo "(no _out.gen result file)"
