@@ -19,7 +19,7 @@ time:
     min: 0.0
     max: 1.0
     numstep: 51
-    interpolation: quadratic
+    interpolation: linear        # Gate 3.1: BE uses a fixed dt = time(2)-time(1); a uniform grid makes each outer step exactly ONE TS step and matches the Terzaghi analytical solution (was quadratic, which contradicts the 0.02s comment above)
 
 # ----------- HEAT TRANSFER (disabled) -----------
 heatxfer:
@@ -40,14 +40,14 @@ defmech:
 # ----------- DARCY FLOW (Biot coupled) -----------
 # Option names without 'flow_' prefix (PetscBagSetName='flow' provides namespace)
 flow:
-    timestepping_type: transient
+    timestepping_type: Transient        # exact match for MEF90Flow_timeSteppingTypeList(3)='Transient' (gate-3.1 TS path)
     perm_min: 5.0e-11               # k_min [m²] — T=c_v·t/H² ≈ 1 at t=1s
     perm_max: 1.0e-09               # k_max [m²] — 20× broken
     viscosity: 1.0e-03             # μ [Pa·s] — water
     storativity: 4.6e-10            # S [Pa⁻¹]
     biot_coeff: 1.0                 # α = 1.0 — full Biot coupling
     residual_damage: 0.0
-    p0: 0.0                         # initial pore pressure = 0
+    p0: 1.0e5                       # initial pore pressure σ₀ (gate-3 transient decay from this value)
     source_scaling: CST
     bc_pressure_scaling: CST
     pressure_atol: 1.0e-08
@@ -55,6 +55,9 @@ flow:
     pressure_maxit: 500
     pressure_offset: 1
     source_offset: 2
+    boundary_pressure_offset: 3
+    perm_field_offset: 4
+    darcy_velocity_offset: 5
 
 # ================================================================
 # CELL SET OPTIONS — combined material + DefMech + Flow per set
@@ -87,7 +90,7 @@ cs0001:
     Force: 0, -9.81, 0
 
     # ------ Flow options ------
-    source: 0.0                     # no well injection
+    source: 0.0                     # no well injection (gate-2 TEMP source reverted; gate-3 decay starts from p0=1.0e5)
     perm_override: 0.0              # use global perm_min/perm_max
     storativity_override: -1        # use global S
     flowBC: false                   # domain interior, no pressure BC

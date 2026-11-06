@@ -93,6 +93,8 @@ Module m_MEF90_FlowCtx_Type
       PetscInt                         :: sourceOffset
       PetscInt                         :: boundaryPressureOffset
       PetscInt                         :: pressurePreviousStepOffset
+      PetscInt                         :: permFieldOffset
+      PetscInt                         :: darcyVelocityOffset
       PetscInt                         :: sourceScaling
       PetscInt                         :: boundaryPressureScaling
       PetscInt                         :: pressurePreviousStepScaling
@@ -382,16 +384,19 @@ Contains
    Subroutine MEF90FlowCtxCreateVectors(FlowCtx,ierr)
       Type(MEF90FlowCtx_Type),Intent(INOUT)            :: FlowCtx
       PetscErrorCode,Intent(OUT)                        :: ierr
+      Type(MEF90FlowGlobalOptions_Type),pointer         :: gOpt
+
+      Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
 
       Allocate(FlowCtx%pressure,stat=ierr)
       Call DMCreateGlobalVector(FlowCtx%DMScal,FlowCtx%pressure,ierr);CHKERRQ(ierr)
       Call PetscObjectSetName(FlowCtx%pressure,"Pressure",ierr);CHKERRQ(ierr)
-      Call VecSet(FlowCtx%pressure,0.0_Kr,ierr);CHKERRQ(ierr)
+      Call VecSet(FlowCtx%pressure,gOpt%initialPressure,ierr);CHKERRQ(ierr)
 
       Allocate(FlowCtx%pressurePreviousStep,stat=ierr)
       Call DMCreateGlobalVector(FlowCtx%DMScal,FlowCtx%pressurePreviousStep,ierr);CHKERRQ(ierr)
       Call PetscObjectSetName(FlowCtx%pressurePreviousStep,"PressurePreviousStep",ierr);CHKERRQ(ierr)
-      Call VecSet(FlowCtx%pressurePreviousStep,0.0_Kr,ierr);CHKERRQ(ierr)
+      Call VecSet(FlowCtx%pressurePreviousStep,gOpt%initialPressure,ierr);CHKERRQ(ierr)
 
       Allocate(FlowCtx%boundaryPressure,stat=ierr)
       Call DMCreateGlobalVector(FlowCtx%DMScal,FlowCtx%boundaryPressure,ierr);CHKERRQ(ierr)
@@ -605,6 +610,12 @@ Contains
            'pressure_offset','EXO file offset for pressure',ierr);CHKERRQ(ierr)
       Call PetscBagRegisterInt (bag,FlowGlobalOptions%sourceOffset,default%sourceOffset, &
            'source_offset','EXO file offset for source term',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterInt (bag,FlowGlobalOptions%boundaryPressureOffset,default%boundaryPressureOffset, &
+           'boundary_pressure_offset','EXO offset for boundary pressure',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterInt (bag,FlowGlobalOptions%permFieldOffset,default%permFieldOffset, &
+           'perm_field_offset','EXO offset for permeability field k(v)/mu',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterInt (bag,FlowGlobalOptions%darcyVelocityOffset,default%darcyVelocityOffset, &
+           'darcy_velocity_offset','EXO offset for Darcy velocity vector',ierr);CHKERRQ(ierr)
       Call PetscBagRegisterEnum(bag,FlowGlobalOptions%sourceScaling,MEF90ScalingList, &
            default%sourceScaling,'source_scaling','Source term scaling law',ierr);CHKERRQ(ierr)
       Call PetscBagRegisterEnum(bag,FlowGlobalOptions%boundaryPressureScaling,MEF90ScalingList, &

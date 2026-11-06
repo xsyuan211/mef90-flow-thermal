@@ -34,13 +34,18 @@ Program vDef
    PetscReal,Dimension(:),Pointer                     :: thermalEnergySet,heatFluxWorkSet
    PetscReal,Dimension(:),Pointer                     :: elasticEnergySet,surfaceEnergySet,forceWorkSet,cohesiveEnergySet
    PetscReal,Dimension(:),Pointer                     :: elasticEnergy,surfaceEnergy,forceWork,cohesiveEnergy,totalMechanicalEnergy
-   PetscReal,Dimension(:),Pointer                     :: flowEnergy,flowInjectionWork   !!! NEW: Darcy diagnostics
 
    !!!! NEW: Flow (Darcy pressure) context for Phase 1 coupled HM simulation
    Type(MEF90FlowCtx_Type)                           :: MEF90FlowCtx
    Type(MEF90FlowGlobalOptions_Type),Pointer          :: MEF90FlowGlobalOptions
    Type(SNES)                                         :: snesPressure
    Type(Vec)                                          :: residualPressure
+   !!! Gate 3.1 — transient Darcy pressure solver (only created when
+   !!! MEF90FlowGlobalOptions%timeSteppingType == Transient)
+   Type(TS)                                           :: tsPressure
+   TSConvergedReason                                  :: tsPressureConvergedReason
+   Logical                                            :: flowTransient
+   PetscReal                                          :: tFlowEnd, dtFlow0
 
    SNESConvergedReason                                :: snesDispConvergedReason
    Type(Vec)                                          :: residualDisp
@@ -141,6 +146,25 @@ Program vDef
 
    !!! Create time array from global options
    Call MEF90CtxGetTime(MEF90Ctx,time,ierr)
+
+   !!! Gate 3.1 — build the transient Darcy solver ONCE, after the time array
+   !!! exists. It is advanced on the time-step level (before AltMin), not inside
+   !!! every alternate-minimization iteration. Steady runs keep using snesPressure.
+   flowTransient = (MEF90FlowGlobalOptions%timeSteppingType == MEF90Flow_timeSteppingTypeTransient)
+   If (flowTransient) Then
+      If (size(time) > 1) Then
+         dtFlow0 = time(2) - time(1)
+      Else
+         dtFlow0 = 1.0_Kr
+      End If
+      Call MEF90FlowCreateTS(MEF90FlowCtx,tsPressure,residualPressure,time(1),dtFlow0,ierr);CHKERRQ(ierr)
+      !!! Gate 3.1 self-check: if this line is absent from the CI log, the yaml key
+      !!! 'timestepping_type' did not resolve to the Transient enum and the TS path
+      !!! is silently disabled.
+      Write(IOBuffer,*) 'Gate 3.1: transient Darcy TS created, timeSteppingType=', &
+                        MEF90FlowGlobalOptions%timeSteppingType,'\n'
+      Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+   End If
 
 
    !!! Create sections, vectors, and solvers for DefMech Context
@@ -311,7 +335,7 @@ Program vDef
                   !!! Make sure TS does not overstep
                   Call TSGetTime(tsTemp,t,ierr);CHKERRQ(ierr)
                   If (t < time(step)) Then
-                     Call TSAdaptSetStepLimits(tsAdaptTemp,PETSC_DECIDE,(time(step)-time)/2.0_Kr,ierr);CHKERRQ(ierr)
+                     Call TSAdaptSetStepLimits(tsAdaptTemp,PETSC_DECIDE,(time(step)-time(step-1))/2.0_Kr,ierr);CHKERRQ(ierr)
                      !!! Something is up here. 
                      !!! replacing the constant 10000 with a variable leads to divergence of TSAdapt
                      !!! when using gcc
@@ -377,6 +401,31 @@ Program vDef
          Call MEF90DefMechUpdateboundaryDamage(MEF90DefMechCtx%damage,MEF90DefMechCtx,ierr)
          Call PetscLogStagePop(ierr);CHKERRQ(ierr)
 
+         !!! Gate 3.1 — TRANSIENT DARCY: advance p once per time step, BEFORE
+         !!! alternate minimization. p is then frozen during AltMin; only the
+         !!! material field k(v) is refreshed there. This is a staggered
+         !!! approximation (no re-solve of p for every damage update).
+         If (flowTransient) Then
+            Call MEF90FlowUpdateMuFromTemperature(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
+            Call MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
+            Call MEF90FlowSetTransients(MEF90FlowCtx,step,time(step),ierr);CHKERRQ(ierr)
+            Call MEF90FlowUpdateboundaryPressure(MEF90FlowCtx%boundaryPressure,MEF90FlowCtx,ierr);CHKERRQ(ierr)
+            Call TSSetDuration(tsPressure,10000,time(step),ierr);CHKERRQ(ierr)
+            tFlowEnd = time(step)
+            Call TSSolve(tsPressure,MEF90FlowCtx%pressure,tFlowEnd,ierr);CHKERRQ(ierr)
+            Call TSGetConvergedReason(tsPressure,tsPressureConvergedReason,ierr);CHKERRQ(ierr)
+            If (tsPressureConvergedReason < 0) Then
+               Write(IOBuffer,410) "pressure",tsPressureConvergedReason
+               Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+            End If
+            !!! Gate 3.1 self-check: report the TS internal time so the CI log
+            !!! shows whether p was actually advanced on this step.
+            Call TSGetTime(tsPressure,t,ierr);CHKERRQ(ierr)
+            Write(IOBuffer,*) 'Gate 3.1: step',step,' TS time',t,' target',time(step),'\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+            Call VecCopy(MEF90FlowCtx%pressure,MEF90FlowCtx%pressurePreviousStep,ierr);CHKERRQ(ierr)
+         End If
+
          !!! NEW — Phase 2b: snapshot preset forces (gravity etc.) into baseForce
          !!! Biot body force will be superimposed on top each AltMin iteration
          If (Associated(MEF90FlowCtx%baseForce) .AND. Associated(MEF90DefMechCtx%force)) Then
@@ -411,10 +460,15 @@ Program vDef
                         Call MEF90FlowUpdateMuFromTemperature(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
                         !!! StepP: update k(v) (now uses cellMuField if temp_dep_viscosity enabled)
                         Call MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
-                        Call MEF90FlowSetTransients(MEF90FlowCtx,step,MEF90DefMechCtx%analysisTime,ierr)
-                        Call MEF90FlowUpdateboundaryPressure(MEF90FlowCtx%boundaryPressure,MEF90FlowCtx,ierr)
-                        !!! StepP_solve: Darcy pressure
-                        Call SNESSolve(snesPressure,PETSC_NULL_OBJECT,MEF90FlowCtx%pressure,ierr);CHKERRQ(ierr)
+                        !!! Gate 3.1 — in transient mode p was already advanced on the
+                        !!! time-step level; do NOT re-solve it here, and do not re-apply
+                        !!! time scaling / boundary pressure every AltMin iteration.
+                        If (.not. flowTransient) Then
+                           Call MEF90FlowSetTransients(MEF90FlowCtx,step,MEF90DefMechCtx%analysisTime,ierr)
+                           Call MEF90FlowUpdateboundaryPressure(MEF90FlowCtx%boundaryPressure,MEF90FlowCtx,ierr)
+                           !!! StepP_solve: steady Darcy pressure
+                           Call SNESSolve(snesPressure,PETSC_NULL_OBJECT,MEF90FlowCtx%pressure,ierr);CHKERRQ(ierr)
+                        End If
 
                         !!! StepBiot: f_p = -α·∇p → DefMechCtx%force (内部先算 ∇p)
                         Call MEF90FlowApplyBiotForce(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
@@ -495,6 +549,7 @@ Program vDef
                         If (mod(AltMinIter,25) == 0) Then
                            Call PetscLogStagePush(logStageIO,ierr);CHKERRQ(ierr)
                            Call MEF90DefMechViewEXO(MEF90DefMechCtx,step,ierr)
+                           Call MEF90FlowViewEXO(MEF90FlowCtx,step,ierr)
                            Call PetscLogStagePop(ierr);CHKERRQ(ierr)
                         End If
                      End Do AltMin
@@ -564,6 +619,7 @@ Program vDef
             Call MEF90DefMechStress(MEF90DefMechCtx%displacement,MEF90DefMechCtx,MEF90DefMechCtx%stress,ierr)
          End If
          Call MEF90DefMechViewEXO(MEF90DefMechCtx,step,ierr)
+         Call MEF90FlowViewEXO(MEF90FlowCtx,step,ierr)
          Call PetscLogStagePop(ierr);CHKERRQ(ierr)
          !!!
          !!! Save performance log file
@@ -587,6 +643,9 @@ Program vDef
       Call VecDestroy(residualDisp,ierr);CHKERRQ(ierr)
       Call VecDestroy(residualDamage,ierr);CHKERRQ(ierr)
       !!! NEW: Flow solver cleanup
+      If (flowTransient) Then
+         Call TSDestroy(tsPressure,ierr);CHKERRQ(ierr)
+      End If
       Call SNESDestroy(snesPressure,ierr);CHKERRQ(ierr)
       Call VecDestroy(residualPressure,ierr);CHKERRQ(ierr)
    End Select
@@ -615,8 +674,6 @@ Program vDef
    DeAllocate(cohesiveEnergySet)
    DeAllocate(thermalEnergySet)
    DeAllocate(heatFluxWorkSet)
-   DeAllocate(flowEnergy)            !!! NEW
-   DeAllocate(flowInjectionWork)     !!! NEW
    
    DeAllocate(elasticEnergy)
    DeAllocate(forceWork)

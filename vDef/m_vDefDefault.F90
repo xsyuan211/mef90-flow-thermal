@@ -169,6 +169,8 @@ module m_vDefDefault
                                                          1,              & ! sourceOffset
                                                          0,              & ! boundaryPressureOffset
                                                          2,              & ! pressurePreviousStepOffset
+                                                         0,              & ! permFieldOffset
+                                                         0,              & ! darcyVelocityOffset
                                                          MEF90Scaling_CST, & ! sourceScaling
                                                          MEF90Scaling_CST, & ! boundaryPressureScaling
                                                          MEF90Scaling_Linear, & ! pressurePreviousStepScaling

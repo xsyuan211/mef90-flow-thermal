@@ -125,7 +125,7 @@ Contains
       !!!
       !!! DIRICHLET BC: G(p_bc) = p - p_bc = 0
       !!!
-      Call MEF90FlowApplyDirichletResidual(residual,FlowCtx,ierr)
+      Call MEF90FlowApplyDirichletResidual(x,residual,FlowCtx,ierr)
 
       Call VecAssemblyBegin(residual,ierr);CHKERRQ(ierr)
       Call VecAssemblyEnd(residual,ierr);CHKERRQ(ierr)
@@ -218,15 +218,19 @@ Contains
    End Subroutine MEF90FlowBilinearFormCore
 
 
-   !!!! SNES callback wrapper — matches PETSc SNESSetJacobian signature
-   Subroutine MEF90FlowBilinearForm(snesHandle,x,Jac,PreJac,residualMode,FlowCtx,ierr)
+   !!! SNES callback wrapper — matches PETSc 3.3 SNESSetJacobian signature:
+   !!! (snes, x, A, B, MatStructure flg, ctx, ierr)
+   Subroutine MEF90FlowBilinearForm(snesHandle,x,Jac,PreJac,flg,FlowCtx,ierr)
       Type(SNES),Intent(IN)                                :: snesHandle
       Type(Vec),Intent(IN)                               :: x
       Type(Mat),Intent(INOUT)                            :: Jac, PreJac
-      PetscReal,Intent(IN)                               :: residualMode
+      MatStructure,Intent(INOUT)                         :: flg
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
-      Call MEF90FlowBilinearFormCore(x,Jac,PreJac,residualMode,FlowCtx,ierr)
+      !!! residualMode was a PetscReal dummy and is unused inside Core; the
+      !!! assembly always uses the full Jacobian (scale 1.0).
+      Call MEF90FlowBilinearFormCore(x,Jac,PreJac,1.0_Kr,FlowCtx,ierr);CHKERRQ(ierr)
+      flg = SAME_NONZERO_PATTERN
    End Subroutine MEF90FlowBilinearForm
 
 
@@ -243,26 +247,42 @@ Contains
       Type(Vec),Intent(INOUT)                            :: F
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
-      Call MEF90FlowOperatorCore(x,F,FlowCtx,ierr)
-      Call MEF90FlowAddStorageToResidual(F,xDot,FlowCtx,ierr)
+      Call MEF90FlowOperatorCore(x,F,FlowCtx,ierr);CHKERRQ(ierr)
+      Call MEF90FlowAddStorageToResidual(F,xDot,FlowCtx,ierr);CHKERRQ(ierr)
+      !!! Gate 3.1 fix: AddStorageToResidual scatters FSec back into F, so it
+      !!! also writes S*M*xDot into the Dirichlet dofs. Those dofs are algebraic
+      !!! constraints (F = x - p_bc, with NO time derivative). Re-impose them
+      !!! LAST, matching the Jacobian treatment in MEF90FlowIJacobian below.
+      Call MEF90FlowApplyDirichletResidual(x,F,FlowCtx,ierr);CHKERRQ(ierr)
+      Call VecAssemblyBegin(F,ierr);CHKERRQ(ierr)
+      Call VecAssemblyEnd(F,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowIFunction
 
 
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowIJacobian"
 
-   Subroutine MEF90FlowIJacobian(tsHandle,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
+   !!! Gate 3.1 fix: PETSc 3.3 requires the MatStructure output argument in
+   !!! every TS IJacobian callback (cf. MEF90HeatXferIJacobian2D).
+   Subroutine MEF90FlowIJacobian(tsHandle,t,x,xDot,a,Jac,PreJac,flg,FlowCtx,ierr)
       Type(TS),Intent(IN)                                :: tsHandle
       PetscReal,Intent(IN)                               :: t
       Type(Vec),Intent(IN)                               :: x, xDot
       PetscReal,Intent(IN)                               :: a
       Type(Mat),Intent(INOUT)                            :: Jac, PreJac
+      MatStructure,Intent(INOUT)                         :: flg
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
       !!! First, assemble steady Darcy Jacobian K = dG/dp
-      Call MEF90FlowBilinearFormCore(x,Jac,PreJac,1.0_Kr,FlowCtx,ierr)
+      Call MEF90FlowBilinearFormCore(x,Jac,PreJac,1.0_Kr,FlowCtx,ierr);CHKERRQ(ierr)
       !!! Add a·S·M (mass matrix):  K += a·S·BFB
-      Call MEF90FlowAddStorageMassMatrix(Jac,PreJac,a,FlowCtx,ierr)
+      Call MEF90FlowAddStorageMassMatrix(Jac,PreJac,a,FlowCtx,ierr);CHKERRQ(ierr)
+      !!! Gate 3.1 fix: BilinearFormCore zero-rows the BC dofs BEFORE the mass
+      !!! matrix is added, so a*S*M refills those rows and J(dof,dof) is no
+      !!! longer 1. Re-apply Dirichlet LAST: J(dof,:) = 0, J(dof,dof) = 1,
+      !!! consistent with the residual F(dof) = x(dof) - p_bc.
+      Call MEF90FlowApplyDirichletJacobian(Jac,PreJac,FlowCtx,ierr);CHKERRQ(ierr)
+      flg = SAME_NONZERO_PATTERN
    End Subroutine MEF90FlowIJacobian
 
 
@@ -381,6 +401,16 @@ Contains
          Call VecViewExodusVertex(FlowCtx%DMScal,localVec,FlowCtx%MEF90Ctx%IOcomm, &
                                   FlowCtx%MEF90Ctx%fileExoUnit,step,gOpt%boundaryPressureOffset,ierr);CHKERRQ(ierr)
       End If
+
+      !!! Cell-centered diagnostics: permeability field k(v)/mu and Darcy velocity vector
+      If (gOpt%permFieldOffset > 0 .AND. Associated(FlowCtx%permField)) Then
+         Call VecViewExodusCell(FlowCtx%cellDMScal,FlowCtx%permField,FlowCtx%MEF90Ctx%IOcomm, &
+                                FlowCtx%MEF90Ctx%fileExoUnit,step,gOpt%permFieldOffset,ierr);CHKERRQ(ierr)
+      End If
+      If (gOpt%darcyVelocityOffset > 0 .AND. Associated(FlowCtx%cellDarcyVelocity)) Then
+         Call VecViewExodusCell(FlowCtx%cellDMVect,FlowCtx%cellDarcyVelocity,FlowCtx%MEF90Ctx%IOcomm, &
+                                FlowCtx%MEF90Ctx%fileExoUnit,step,gOpt%darcyVelocityOffset,ierr);CHKERRQ(ierr)
+      End If
       Call DMRestoreLocalVector(FlowCtx%DMScal,localVec,ierr);CHKERRQ(ierr)
 
       If (FlowCtx%MEF90Ctx%rank == 0) Then
@@ -394,10 +424,11 @@ Contains
 !!!  Residual:  G(dof) = x(dof) - bc(dof)
 !!!  Jacobian:  K(dof,:) = 0,  K(dof,dof) = 1.0
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-   Subroutine MEF90FlowApplyDirichletResidual(residual,FlowCtx,ierr)
+   Subroutine MEF90FlowApplyDirichletResidual(x,residual,FlowCtx,ierr)
       Type(Vec),Intent(INOUT)                             :: residual
       Type(MEF90FlowCtx_Type),Intent(IN)                  :: FlowCtx
       PetscErrorCode,Intent(OUT)                           :: ierr
+      Type(Vec),Intent(IN)                                :: x
 
       Type(IS)                                            :: CellSetGlobalIS, bcIS
       Type(IS)                                            :: VertexSetGlobalIS, setIS, cellSetIS
@@ -416,15 +447,15 @@ Contains
          If (cellSetOptions%Has_BC) Then
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),cellSetIS,ierr);CHKERRQ(ierr)
             Call MEF90ISCreateCelltoVertex(FlowCtx%DMScal,PETSC_COMM_WORLD,cellSetIS,bcIS,ierr)
-            Call ISGetSize(bcIS,nVal,ierr);CHKERRQ(ierr)
-            Allocate(dofList(nVal),stat=ierr)
+            Call ISGetLocalSize(bcIS,nVal,ierr);CHKERRQ(ierr)
+            Allocate(dofList(nVal),resPtr(nVal),bcPtr(nVal),stat=ierr)
             Call ISGetIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
-            Call VecGetValues(residual,nVal,dofList,resPtr,ierr);CHKERRQ(ierr)
+            Call VecGetValues(x,nVal,dofList,resPtr,ierr);CHKERRQ(ierr)
             Call VecGetValues(FlowCtx%boundaryPressure,nVal,dofList,bcPtr,ierr);CHKERRQ(ierr)
             resPtr = resPtr - bcPtr    !!! G = x - p_bc on Dirichlet dofs
             Call VecSetValues(residual,nVal,dofList,resPtr,INSERT_VALUES,ierr);CHKERRQ(ierr)
             Call ISRestoreIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
-            DeAllocate(dofList)
+            DeAllocate(dofList,resPtr,bcPtr)
             Call ISDestroy(bcIS,ierr);CHKERRQ(ierr)
             Call ISDestroy(cellSetIS,ierr);CHKERRQ(ierr)
          End If
@@ -440,10 +471,10 @@ Contains
          Call PetscBagGetDataMEF90FlowCtxVertexSetOptions(FlowCtx%VertexSetOptionsBag(set),vertexSetOptions,ierr);CHKERRQ(ierr)
          If (vertexSetOptions%Has_BC) Then
             Call DMMeshGetStratumIS(FlowCtx%DMScal,'Vertex Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
-            Call ISGetSize(setIS,nVal,ierr);CHKERRQ(ierr)
+            Call ISGetLocalSize(setIS,nVal,ierr);CHKERRQ(ierr)
             Allocate(dofList(nVal),resPtr(nVal),bcPtr(nVal),stat=ierr)
             Call ISGetIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
-            Call VecGetValues(residual,nVal,dofList,resPtr,ierr);CHKERRQ(ierr)
+            Call VecGetValues(x,nVal,dofList,resPtr,ierr);CHKERRQ(ierr)
             Call VecGetValues(FlowCtx%boundaryPressure,nVal,dofList,bcPtr,ierr);CHKERRQ(ierr)
             resPtr = resPtr - bcPtr
             Call VecSetValues(residual,nVal,dofList,resPtr,INSERT_VALUES,ierr);CHKERRQ(ierr)

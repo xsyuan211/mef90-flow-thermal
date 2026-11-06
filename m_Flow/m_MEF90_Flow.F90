@@ -80,19 +80,23 @@ Contains
 
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowBilinearForm"
-   Subroutine MEF90FlowBilinearForm(snesPressure,x,Jac,PreJac,residualMode,FlowCtx,ierr)
+   !!! Gate 3.1 fix: PETSc 3.3 SNESSetJacobian callbacks take a MatStructure
+   !!! output argument, not a PetscReal (cf. MEF90DefMechBilinearFormDamage
+   !!! at m_DefMech/m_MEF90_DefMech.F90:1043). The former residualMode dummy
+   !!! was reading the enum as a real and never setting flg.
+   Subroutine MEF90FlowBilinearForm(snesPressure,x,Jac,PreJac,flg,FlowCtx,ierr)
       Type(SNES),Intent(IN)                              :: snesPressure
       Type(Vec),Intent(IN)                               :: x
       Type(Mat),Intent(INOUT)                            :: Jac, PreJac
-      PetscReal,Intent(IN)                               :: residualMode
+      MatStructure,Intent(INOUT)                         :: flg
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
       PetscInt                                           :: dim
       Call DMMeshGetDimension(FlowCtx%DM,dim,ierr);CHKERRQ(ierr)
       If (dim == 2) Then
-         Call MEF90FlowBilinearForm2D(snesPressure,x,Jac,PreJac,residualMode,FlowCtx,ierr)
+         Call MEF90FlowBilinearForm2D(snesPressure,x,Jac,PreJac,flg,FlowCtx,ierr)
       Else If (dim == 3) Then
-         Call MEF90FlowBilinearForm3D(snesPressure,x,Jac,PreJac,residualMode,FlowCtx,ierr)
+         Call MEF90FlowBilinearForm3D(snesPressure,x,Jac,PreJac,flg,FlowCtx,ierr)
       End If
    End Subroutine MEF90FlowBilinearForm
 
@@ -116,20 +120,25 @@ Contains
 
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowIJacobian"
-   Subroutine MEF90FlowIJacobian(tsHandle,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
+   !!! Gate 3.1 fix: PETSc 3.3 TS IJacobian callbacks carry a MatStructure
+   !!! output argument (see MEF90HeatXferIJacobian at
+   !!! m_HeatXfer/m_MEF90_HeatXfer.F90:464). Omitting it makes TS call this
+   !!! routine with one extra argument -> stack corruption at run time.
+   Subroutine MEF90FlowIJacobian(tsHandle,t,x,xDot,a,Jac,PreJac,flg,FlowCtx,ierr)
       Type(TS),Intent(IN)                                :: tsHandle
       PetscReal,Intent(IN)                               :: t
       Type(Vec),Intent(IN)                               :: x, xDot
       PetscReal,Intent(IN)                               :: a
       Type(Mat),Intent(INOUT)                            :: Jac, PreJac
+      MatStructure,Intent(INOUT)                         :: flg
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
       PetscInt                                           :: dim
       Call DMMeshGetDimension(FlowCtx%DM,dim,ierr);CHKERRQ(ierr)
       If (dim == 2) Then
-         Call MEF90FlowIJacobian2D(tsHandle,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
+         Call MEF90FlowIJacobian2D(tsHandle,t,x,xDot,a,Jac,PreJac,flg,FlowCtx,ierr)
       Else If (dim == 3) Then
-         Call MEF90FlowIJacobian3D(tsHandle,t,x,xDot,a,Jac,PreJac,FlowCtx,ierr)
+         Call MEF90FlowIJacobian3D(tsHandle,t,x,xDot,a,Jac,PreJac,flg,FlowCtx,ierr)
       End If
    End Subroutine MEF90FlowIJacobian
 
@@ -356,18 +365,47 @@ Contains
       PetscErrorCode,Intent(OUT)                          :: ierr
 
       Type(MEF90FlowGlobalOptions_Type),pointer          :: gOpt
+      Type(Mat)                                          :: matP, matPpre
+      Type(KSP)                                          :: kspP
+      Type(MatNullSpace)                                 :: nspP
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
 
+      !!! Gate 3.1 fix (checklist item C): MEF90FlowBilinearFormCore does
+      !!! MatCopy(Jac,PreJac) and zero-rows BOTH matrices. Passing the same
+      !!! Mat as A and B is therefore invalid — use two independent objects,
+      !!! exactly as MEF90FlowCreateTS now does.
+      Call DMCreateMatrix(FlowCtx%DMScal,MATAIJ,matP,ierr);CHKERRQ(ierr)
+      Call DMCreateMatrix(FlowCtx%DMScal,MATAIJ,matPpre,ierr);CHKERRQ(ierr)
+      Call MatSetOptionsPrefix(matP,'flow_',ierr);CHKERRQ(ierr)
+      Call MatSetOptionsPrefix(matPpre,'flow_',ierr);CHKERRQ(ierr)
+      Call MatSetOption(matP,MAT_KEEP_NONZERO_PATTERN,PETSC_TRUE,ierr);CHKERRQ(ierr)
+      Call MatSetOption(matPpre,MAT_KEEP_NONZERO_PATTERN,PETSC_TRUE,ierr);CHKERRQ(ierr)
+      If (gOpt%addNullSpace) Then
+         Call MatNullSpaceCreate(PETSC_COMM_WORLD,PETSC_TRUE,0,PETSC_NULL_OBJECT,nspP,ierr);CHKERRQ(ierr)
+         Call MatSetNullSpace(matP,nspP,ierr);CHKERRQ(ierr)
+      End If
+      Call MatSetFromOptions(matP,ierr);CHKERRQ(ierr)
+      Call MatSetFromOptions(matPpre,ierr);CHKERRQ(ierr)
+
       Call SNESCreate(FlowCtx%MEF90Ctx%comm,SNESPressure,ierr);CHKERRQ(ierr)
-      Call SNESSetFromOptions(SNESPressure,ierr);CHKERRQ(ierr)
+      Call SNESSetOptionsPrefix(SNESPressure,'flow_',ierr);CHKERRQ(ierr)
       Call SNESSetDM(SNESPressure,FlowCtx%DMScal,ierr);CHKERRQ(ierr)
-      Call SNESSetJacobian(SNESPressure,PETSC_NULL_OBJECT,PETSC_NULL_OBJECT, &
-           MEF90FlowBilinearForm,FlowCtx,ierr);CHKERRQ(ierr)
+      Call SNESSetType(SNESPressure,SNESKSPONLY,ierr);CHKERRQ(ierr)
       Call SNESSetFunction(SNESPressure,residual,MEF90FlowOperator,FlowCtx,ierr);CHKERRQ(ierr)
+      Call SNESSetJacobian(SNESPressure,matP,matPpre,MEF90FlowBilinearForm,FlowCtx,ierr);CHKERRQ(ierr)
       Call SNESSetTolerances(SNESPressure,gOpt%pressureATol,gOpt%pressureRTol, &
            PETSC_DEFAULT_DOUBLE_PRECISION,gOpt%pressureMaxIt,PETSC_DEFAULT_INTEGER,ierr);CHKERRQ(ierr)
       Call PetscObjectSetName(SNESPressure,"SNESPressure",ierr);CHKERRQ(ierr)
+      Call SNESSetFromOptions(SNESPressure,ierr);CHKERRQ(ierr)
+      Call SNESGetKSP(SNESPressure,kspP,ierr);CHKERRQ(ierr)
+      Call KSPSetType(kspP,KSPCG,ierr);CHKERRQ(ierr)
+      Call KSPSetInitialGuessNonzero(kspP,PETSC_TRUE,ierr);CHKERRQ(ierr)
+      If (gOpt%addNullSpace) Then
+         Call KSPSetNullSpace(kspP,nspP,ierr);CHKERRQ(ierr)
+      End If
+      Call KSPSetTolerances(kspP,1.0D-8,PETSC_DEFAULT_DOUBLE_PRECISION,1.0D+10,PETSC_DEFAULT_INTEGER,ierr);CHKERRQ(ierr)
+      Call KSPSetFromOptions(kspP,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowCreateSNES
 
 
@@ -384,16 +422,61 @@ Contains
       PetscReal,Intent(IN)                                :: timeStart, dt
       PetscErrorCode,Intent(OUT)                          :: ierr
 
+      Type(MEF90FlowGlobalOptions_Type),pointer          :: gOpt
+      Type(Mat)                                          :: matP, matPpre
+      Type(MatNullSpace)                                 :: nspP
+      Type(SNES)                                         :: snesP
+      Type(KSP)                                          :: kspP
+
+      Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
+
+      !!! Gate 3.1: IJacobian needs REAL matrices. MEF90FlowBilinearFormCore does
+      !!! MatCopy(Jac,PreJac,...) and MEF90FlowApplyDirichletJacobian zero-rows
+      !!! both of them, so Jac and PreJac MUST be two distinct Mat objects.
+      Call DMCreateMatrix(FlowCtx%DMScal,MATAIJ,matP,ierr);CHKERRQ(ierr)
+      Call DMCreateMatrix(FlowCtx%DMScal,MATAIJ,matPpre,ierr);CHKERRQ(ierr)
+      Call MatSetOptionsPrefix(matP,'flow_',ierr);CHKERRQ(ierr)
+      Call MatSetOptionsPrefix(matPpre,'flow_',ierr);CHKERRQ(ierr)
+      Call MatSetOption(matP,MAT_SPD,PETSC_TRUE,ierr);CHKERRQ(ierr)
+      Call MatSetOption(matPpre,MAT_SPD,PETSC_TRUE,ierr);CHKERRQ(ierr)
+      Call MatSetOption(matP,MAT_SYMMETRY_ETERNAL,PETSC_TRUE,ierr);CHKERRQ(ierr)
+      Call MatSetOption(matPpre,MAT_SYMMETRY_ETERNAL,PETSC_TRUE,ierr);CHKERRQ(ierr)
+      Call MatSetOption(matP,MAT_KEEP_NONZERO_PATTERN,PETSC_TRUE,ierr);CHKERRQ(ierr)
+      Call MatSetOption(matPpre,MAT_KEEP_NONZERO_PATTERN,PETSC_TRUE,ierr);CHKERRQ(ierr)
+      If (gOpt%addNullSpace) Then
+         Call MatNullSpaceCreate(PETSC_COMM_WORLD,PETSC_TRUE,0,PETSC_NULL_OBJECT,nspP,ierr);CHKERRQ(ierr)
+         Call MatSetNullSpace(matP,nspP,ierr);CHKERRQ(ierr)
+      End If
+      Call MatSetFromOptions(matP,ierr);CHKERRQ(ierr)
+      Call MatSetFromOptions(matPpre,ierr);CHKERRQ(ierr)
+
       Call TSCreate(FlowCtx%MEF90Ctx%comm,tsPressure,ierr);CHKERRQ(ierr)
-      Call TSSetFromOptions(tsPressure,ierr);CHKERRQ(ierr)
-      Call TSSetType(tsPressure,TSBEULER,ierr);CHKERRQ(ierr)
       Call TSSetDM(tsPressure,FlowCtx%DMScal,ierr);CHKERRQ(ierr)
+      Call TSSetOptionsPrefix(tsPressure,'flow_',ierr);CHKERRQ(ierr)
+      !!! Gate 3.1 fix: pass the registered type NAME, exactly as the already
+      !!! compiling HeatXfer template does with 'rosw'. The Fortran constant
+      !!! TSBEULER has no precedent in the compiled sources. Also follow the
+      !!! HeatXfer order: TSSetType BEFORE TSSetProblemType.
+      Call TSSetType(tsPressure,'beuler',ierr);CHKERRQ(ierr)
+      Call TSSetProblemType(tsPressure,TS_LINEAR,ierr);CHKERRQ(ierr)
       Call TSSetIFunction(tsPressure,residual,MEF90FlowIFunction,FlowCtx,ierr);CHKERRQ(ierr)
-      Call TSSetIJacobian(tsPressure,PETSC_NULL_OBJECT,PETSC_NULL_OBJECT, &
-           MEF90FlowIJacobian,FlowCtx,ierr);CHKERRQ(ierr)
-      Call TSSetTime(tsPressure,timeStart,ierr);CHKERRQ(ierr)
-      Call TSSetTimeStep(tsPressure,dt,ierr);CHKERRQ(ierr)
+      Call TSSetIJacobian(tsPressure,matP,matPpre,MEF90FlowIJacobian,FlowCtx,ierr);CHKERRQ(ierr)
+      Call TSSetSolution(tsPressure,FlowCtx%pressure,ierr);CHKERRQ(ierr)
+      Call TSSetInitialTimeStep(tsPressure,timeStart,dt,ierr);CHKERRQ(ierr)
+      Call TSSetExactFinalTime(tsPressure,PETSC_TRUE,ierr);CHKERRQ(ierr)
       Call PetscObjectSetName(tsPressure,"TSPressure",ierr);CHKERRQ(ierr)
+      Call TSSetFromOptions(tsPressure,ierr);CHKERRQ(ierr)
+
+      Call TSGetSNES(tsPressure,snesP,ierr);CHKERRQ(ierr)
+      Call SNESGetKSP(snesP,kspP,ierr);CHKERRQ(ierr)
+      Call KSPSetType(kspP,KSPCG,ierr);CHKERRQ(ierr)
+      Call KSPSetInitialGuessNonzero(kspP,PETSC_TRUE,ierr);CHKERRQ(ierr)
+      If (gOpt%addNullSpace) Then
+         Call KSPSetNullSpace(kspP,nspP,ierr);CHKERRQ(ierr)
+      End If
+      Call KSPSetTolerances(kspP,1.0D-8,PETSC_DEFAULT_DOUBLE_PRECISION,1.0D+10, &
+           PETSC_DEFAULT_INTEGER,ierr);CHKERRQ(ierr)
+      Call KSPSetFromOptions(kspP,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowCreateTS
 
 

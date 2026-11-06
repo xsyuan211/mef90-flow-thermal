@@ -404,8 +404,26 @@ jobs:
           mpirun --allow-run-as-root -np 2 ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D.yaml 2>&1 | tee /tmp/terzaghi.log
-          ls -la terzaghi1D-*.exo 2>/dev/null || echo "(no exo)"
-        continue-on-error: true
+          rc=${PIPESTATUS[0]}
+          echo "=== Terzaghi mpirun exit code: $rc ==="
+          echo "=== result files (3.2 analytical-comparison data source) ==="
+          echo "    -prefix data/Beam1x10-tri3 -> geometry data/Beam1x10-tri3.gen, result data/Beam1x10-tri3_out.gen"
+          ls -la data/Beam1x10-tri3_out.gen 2>/dev/null || echo "(no _out.gen result file)"
+          find . -maxdepth 2 \( -name '*_out.gen' -o -name '*.exo' \) -printf '%p %s bytes\n' 2>/dev/null | head -20
+          if grep -Eiq "segmentation fault|signal 11|abort|attempt to deallocate|petsc error|diverged|not converged|TSSolve failed|SNESolve failed|KSP_DIVERGED|error code meaning" /tmp/terzaghi.log; then
+            echo "=== runtime failure signature detected in /tmp/terzaghi.log ==="
+            grep -Ein "segmentation fault|signal 11|abort|attempt to deallocate|petsc error|diverged|not converged|TSSolve failed|SNESolve failed|KSP_DIVERGED|error code meaning" /tmp/terzaghi.log | head -20
+            exit 1
+          fi
+          if ! grep -q "Gate 3.1: transient Darcy TS created" /tmp/terzaghi.log; then
+            echo "=== FAIL: transient TS path was NOT activated (yaml enum mismatch?) ==="
+            exit 1
+          fi
+          if ! grep -q "Gate 3.1: step" /tmp/terzaghi.log; then
+            echo "=== FAIL: TSSolve never advanced (no per-step TS log) ==="
+            exit 1
+          fi
+          exit $rc
       - name: Upload diagnostics
         uses: actions/upload-artifact@v4
         if: always()
