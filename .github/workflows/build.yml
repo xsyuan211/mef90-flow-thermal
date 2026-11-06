@@ -475,6 +475,11 @@ jobs:
           echo "    -prefix data/Beam1x10-tri3 -> geometry data/Beam1x10-tri3.gen, result data/Beam1x10-tri3_out.gen"
           ls -la data/Beam1x10-tri3_out.gen 2>/dev/null || echo "(no _out.gen result file)"
           find . -maxdepth 2 \( -name '*_out.gen' -o -name '*.exo' \) -printf '%p %s bytes\n' 2>/dev/null | head -20
+          if grep -q "Unknown option" /tmp/terzaghi.log; then
+            echo "=== FAIL: PetscBag enum value not in the registered list ==="
+            grep -n "Unknown option" /tmp/terzaghi.log | head -4
+            exit 1
+          fi
           if grep -q "Error opening EXO file\|Could not recognize.*valid Exodus" /tmp/terzaghi.log; then
             echo "=== FAIL: Exodus geometry could not be opened ==="
             grep -n "Exodus Library\|Error opening EXO\|Magic value" /tmp/terzaghi.log | head -10

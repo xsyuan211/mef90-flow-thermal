@@ -166,7 +166,7 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-07 06:10，CI #51 首次进入数值阶段）
+## 进度跟踪（更新 2026-11-07 07:10，CI #52 暴露 yaml 枚举值错误）
 
 **代码进度**
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
@@ -189,6 +189,7 @@
 - CI run **#50 = failure**（14:02–14:39 UTC）：**程序完整启动并读完整个输入 deck**（426 行日志），随后两个 rank 同时 `Caught signal number 11 SEGV`；`Gate 3.1` 自检行一条都没有。这是**首个根因位于 Fortran 代码内部**的失败，前四轮（#46~#49）都在构建/环境层。
 - **#50 根因（静态定论）**：`vDef/vDef.F90` 原本在 `:143` 调 `MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx)`，而该例程 `m_MEF90_Flow.F90:259` 读 `DefMechCtx%DMScalSec`；这个 damage SectionReal 要到 `:170 MEF90DefMechCtxSetSections` 才创建 → 解引用未初始化句柄。另发现 `m_MEF90_FlowCtx.F90` 的 Global PetscBag 只注册 26 项 / 类型有 29 字段，且第 13/14 项 Real/Bool 颠倒、漏 3 个 scaling/offset 字段 → 第 20 项起所有 EXO offset 与容差全部错位读成垃圾值。两处均已修复，详见文末「CI #50 诊断结论与修复」。
 - CI run **#51 = failure**（15:11–15:47 UTC）：`Gate 3.1: init 01..08` 全通过、进入 `Mechanics: step 1`、`_out.gen` 产出 2.79 MB；崩在 `Attempt to DEALLOCATE unallocated 'doflist'`（FlowAssembly:634），且 TS 路径因全局 bag 缺 `flow_` 前缀静默关闭。两处均已修，详见文末「CI #51 诊断结论与修复」。
+- CI run **#52 = failure**（22:15–22:52 UTC）：`flow_` 前缀生效后，注册 Flow 全局 bag 时因 yaml 的 `source_scaling: CST` / `bc_pressure_scaling: CST` 非法枚举而报 `Unknown option CST`（合法值 `constant/linear/file/null`）。已修，并把 CreateTS 调用顺序对齐 HeatXfer 模板；详见文末「CI #52 诊断结论与修复」。
 - 本地无 PETSc 编译链；所有「验收」栏目前均为**代码审查级通过，非运行验证**。
 
 **本次复核发现（A / B 已修 18:35；C 已修 19:10；D 为既有改动）**
@@ -431,3 +432,21 @@ PETSc bag 按 `bag->data + bag->offset` 顺序写值，`PetscBagGetData` 再把 
 **校验**：`git diff --check` 干净；PyYAML 解析 workflow（15 steps）与 yaml 通过；提取 `Run Terzaghi` 的 `run` 块 `bash -n` 通过；`m_Flow/m_MEF90_FlowAssembly.F90` 已无任何 `Allocate(dofList` / `DeAllocate(dofList` / `ISGetSize(` 残留。
 
 **仍待 #52 定论**：`Gate 3.1: flow enum` 是否为 Transient(=2)、`Gate 3.1: transient Darcy TS created`、`Gate 3.1: step`（TSSolve 推进）、`TSGetConvergedReason` / KSP 收敛、`_out.gen` 内是否出现随时间衰减的 pressure。**#52 才可能首次完成 3.1 的瞬态数值求解**；3.2 的 Terzaghi 解析解比对必须等该文件含真实瞬态压力场。
+
+## CI #52 诊断结论与修复（2026-11-07 07:10）
+
+**状态**：run `42303260569` / job `128186129733` `completed failure`；15 个构建步全 success，`Run Terzaghi` failure（22:15–22:52 UTC）。完整日志 2869 行；artifact `build-diagnostics` id `13547191306`。
+
+**根因（`flow_` 前缀生效后暴露的下一层）**：两个 rank 均报
+`[0/1]PETSC ERROR: Unknown option CST for -flow_source_scaling!`，调用链 `PetscOptionsGetEList(options.c:1374) → PetscOptionsGetEnum(:1427) → PetscBagRegisterEnum(bag.c:71)`。崩在 `Gate 3.1: init 02 FlowCtxSetFromOptions` 内部，`init 03..08` 未执行，`_out.gen` 只有 21,176 字节（空壳，不是结果）。`MEF90ScalingList` 的合法字符串是 `constant / linear / file / null`（`MEF90/m_MEF90_Ctx.F90:110-116`），`CST` 只是 Fortran 枚举名 `MEF90Scaling_CST=0`，不是 PetscBag option 值。yaml 中 `source_scaling: CST`、`bc_pressure_scaling: CST` 均非法。
+
+**重要正面证据**：`-flow_source_scaling` 被读到，说明 #51 的 `flow_` 前缀修复**确实生效**（此前所有 Flow 全局选项走默认值）。而 `timestepping_type` 是全局 bag 注册的**第一个** enum（第 562 行），`source_scaling` 排在第 26 个字段（第 629 行）——`Transient` 已成功通过注册，证明 yaml 的 `timestepping_type: Transient` 合法，**下一轮 `flowTransient` 会首次为 true**，`p0=1e5`、`k_min=5e-11` 等也终于生效（`MEF90FlowCtxCreateVectors` 已有 `VecSet(pressure,initialPressure)`）。
+
+**修复**
+1. `vDef/data/terzaghi1D.yaml`：`CST` → `constant` 两处；更正 `# Option names without 'flow_' prefix` 的过时注释，写明键映射到 `-flow_<key>` 与合法 scaling 枚举值。
+2. `.github/workflows/build.yml`：新增 `Unknown option` 精确诊断分支（在 Exodus 检查前），直接打印非法值并失败。
+3. `m_Flow/m_MEF90_Flow.F90`（主动对齐，降低 #53 风险）：`MEF90FlowCreateTS` 调用顺序改为与仓库中已运行的 `MEF90HeatXferCreateTS` 一致 —— `TSGetSNES` 与 `TSSetIFunction`/`TSSetIJacobian` 放在 `TSSetType` **之前**（PETSc 3.3 的 `TSSetType` 可能重置 ops 表），再 `TSSetType('beuler')` → `TSSetProblemType(TS_LINEAR)` → `TSSetSolution` → `TSSetInitialTimeStep` → `TSSetExactFinalTime` → `TSSetFromOptions` → KSP 设置。日志已确认 `petsctsdef.h` 中 `#define TSBEULER 'beuler'`，类型名无误；`tFlowEnd = time(step)` 也已赋值，`TSSolve` 目标时间正确。
+
+**校验**：PyYAML 解析 workflow / yaml 通过，`Run Terzaghi` 的 `run` 块 `bash -n` 通过；`flow` 段枚举值现为 `{'timestepping_type':'Transient','source_scaling':'constant','bc_pressure_scaling':'constant'}`。
+
+**仍待 #53 定论**：`Gate 3.1: flow enum`（应为 2 / T）、`transient Darcy TS created`、`Gate 3.1: step`（TSSolve 推进与 TS 内部时间）、`TSGetConvergedReason` / KSP 收敛、IFunction/IJacobian 首次执行时的并行 Dirichlet dof 索引、`_out.gen` 内随时间衰减的 pressure。**#53 才可能首次完成 3.1 的瞬态求解**；3.2 解析解比对仍需该文件含真实瞬态压力场。

@@ -453,21 +453,22 @@ Contains
       Call TSCreate(FlowCtx%MEF90Ctx%comm,tsPressure,ierr);CHKERRQ(ierr)
       Call TSSetDM(tsPressure,FlowCtx%DMScal,ierr);CHKERRQ(ierr)
       Call TSSetOptionsPrefix(tsPressure,'flow_',ierr);CHKERRQ(ierr)
-      !!! Gate 3.1 fix: pass the registered type NAME, exactly as the already
-      !!! compiling HeatXfer template does with 'rosw'. The Fortran constant
-      !!! TSBEULER has no precedent in the compiled sources. Also follow the
-      !!! HeatXfer order: TSSetType BEFORE TSSetProblemType.
-      Call TSSetType(tsPressure,'beuler',ierr);CHKERRQ(ierr)
-      Call TSSetProblemType(tsPressure,TS_LINEAR,ierr);CHKERRQ(ierr)
+      !!! CI #52: mirror the already-running MEF90HeatXferCreateTS call order.
+      !!! TSSetType may reset the TS ops table in PETSc 3.3, so the IFunction /
+      !!! IJacobian callbacks and TSGetSNES must be installed BEFORE it.
+      Call TSGetSNES(tsPressure,snesP,ierr);CHKERRQ(ierr)
       Call TSSetIFunction(tsPressure,residual,MEF90FlowIFunction,FlowCtx,ierr);CHKERRQ(ierr)
       Call TSSetIJacobian(tsPressure,matP,matPpre,MEF90FlowIJacobian,FlowCtx,ierr);CHKERRQ(ierr)
+      !!! Pass the registered type NAME ('beuler' = TSBEULER in petsctsdef.h),
+      !!! then the problem type — same order as the HeatXfer template.
+      Call TSSetType(tsPressure,'beuler',ierr);CHKERRQ(ierr)
+      Call TSSetProblemType(tsPressure,TS_LINEAR,ierr);CHKERRQ(ierr)
       Call TSSetSolution(tsPressure,FlowCtx%pressure,ierr);CHKERRQ(ierr)
       Call TSSetInitialTimeStep(tsPressure,timeStart,dt,ierr);CHKERRQ(ierr)
       Call TSSetExactFinalTime(tsPressure,PETSC_TRUE,ierr);CHKERRQ(ierr)
       Call PetscObjectSetName(tsPressure,"TSPressure",ierr);CHKERRQ(ierr)
       Call TSSetFromOptions(tsPressure,ierr);CHKERRQ(ierr)
 
-      Call TSGetSNES(tsPressure,snesP,ierr);CHKERRQ(ierr)
       Call SNESGetKSP(snesP,kspP,ierr);CHKERRQ(ierr)
       Call KSPSetType(kspP,KSPCG,ierr);CHKERRQ(ierr)
       Call KSPSetInitialGuessNonzero(kspP,PETSC_TRUE,ierr);CHKERRQ(ierr)

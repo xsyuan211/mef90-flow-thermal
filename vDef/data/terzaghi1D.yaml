@@ -42,7 +42,9 @@ defmech:
     damage_offset: 2
 
 # ----------- DARCY FLOW (Biot coupled) -----------
-# Option names without 'flow_' prefix (PetscBagSetName='flow' provides namespace)
+# These keys map to -flow_<key> (global PetscBag prefix 'flow_').
+# Enum values must match MEF90ScalingList: constant / linear / file / null
+# ('CST' is the Fortran enumerator name, NOT a legal PetscBag option value).
 flow:
     timestepping_type: Transient        # exact match for MEF90Flow_timeSteppingTypeList(3)='Transient' (gate-3.1 TS path)
     perm_min: 5.0e-11               # k_min [m²] — T=c_v·t/H² ≈ 1 at t=1s
@@ -52,8 +54,8 @@ flow:
     biot_coeff: 1.0                 # α = 1.0 — full Biot coupling
     residual_damage: 0.0
     p0: 1.0e5                       # initial pore pressure σ₀ (gate-3 transient decay from this value)
-    source_scaling: CST
-    bc_pressure_scaling: CST
+    source_scaling: constant
+    bc_pressure_scaling: constant
     pressure_atol: 1.0e-08
     pressure_rtol: 1.0e-05
     pressure_maxit: 500
