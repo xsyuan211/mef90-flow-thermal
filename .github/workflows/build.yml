@@ -408,12 +408,29 @@ jobs:
           export MPI_HOME=$HOME/openmpi-3.1.3
           export PATH=$MPI_HOME/bin:$PETSC_DIR/bin:$PETSC_DIR/$PETSC_ARCH/bin:$PATH
           export MEF90_DIR=$(pwd)
+          # PETSc 3.3 is configured --with-shared-libraries=1; all -lmetis,
+          # -lparmetis, -lHYPRE, -lexodus, -lhdf5 ... resolve from the arch lib
+          # dir at link time, so the dynamic loader needs the same dir at run time.
+          export LD_LIBRARY_PATH="$PETSC_DIR/$PETSC_ARCH/lib:$MPI_HOME/lib:$HOME/miniconda2/lib:${LD_LIBRARY_PATH:-}"
+          # Defensive: --download-* packages sometimes leave .so files in
+          # externalpackages subdirs. Add every dir that actually holds one.
+          EXTRA_LIB_DIRS=$(find "$PETSC_DIR/$PETSC_ARCH" -name 'lib*.so*' -printf '%h\n' 2>/dev/null | sort -u | tr '\n' ':')
+          export LD_LIBRARY_PATH="${EXTRA_LIB_DIRS}${LD_LIBRARY_PATH}"
           cd vDef
           if [ ! -x ../bin/$PETSC_ARCH/vDef ]; then
             echo "=== FAIL: vDef executable not found; the build step did not produce a binary ==="
             exit 1
           fi
-          mpirun --allow-run-as-root -np 2 ../bin/$PETSC_ARCH/vDef \
+          echo "=== LD_LIBRARY_PATH ==="
+          echo "$LD_LIBRARY_PATH"
+          echo "=== ldd ../bin/$PETSC_ARCH/vDef ==="
+          ldd ../bin/$PETSC_ARCH/vDef 2>&1 | tee /tmp/ldd-vDef.log
+          if grep -q "not found" /tmp/ldd-vDef.log; then
+            echo "=== FAIL: unresolved shared libraries; check LD_LIBRARY_PATH above ==="
+            grep "not found" /tmp/ldd-vDef.log
+            exit 1
+          fi
+          mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D.yaml 2>&1 | tee /tmp/terzaghi.log
           rc=${PIPESTATUS[0]}
@@ -424,6 +441,11 @@ jobs:
           echo "    -prefix data/Beam1x10-tri3 -> geometry data/Beam1x10-tri3.gen, result data/Beam1x10-tri3_out.gen"
           ls -la data/Beam1x10-tri3_out.gen 2>/dev/null || echo "(no _out.gen result file)"
           find . -maxdepth 2 \( -name '*_out.gen' -o -name '*.exo' \) -printf '%p %s bytes\n' 2>/dev/null | head -20
+          if grep -q "error while loading shared libraries" /tmp/terzaghi.log; then
+            echo "=== FAIL: shared library could not be loaded at runtime ==="
+            grep -n "error while loading shared libraries" /tmp/terzaghi.log | head -10
+            exit 1
+          fi
           if grep -Eiq "segmentation fault|signal 11|abort|attempt to deallocate|petsc error|diverged|not converged|TSSolve failed|SNESolve failed|KSP_DIVERGED|error code meaning" /tmp/terzaghi.log; then
             echo "=== runtime failure signature detected in /tmp/terzaghi.log ==="
             grep -Ein "segmentation fault|signal 11|abort|attempt to deallocate|petsc error|diverged|not converged|TSSolve failed|SNESolve failed|KSP_DIVERGED|error code meaning" /tmp/terzaghi.log | head -20
@@ -449,5 +471,6 @@ jobs:
             /tmp/m_HeatXfer.log
             /tmp/flow.log
             /tmp/vDef.log
+            /tmp/ldd-vDef.log
             /tmp/terzaghi.log
           retention-days: 7

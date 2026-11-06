@@ -166,19 +166,20 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-06 19:55，CI #46 首个可信失败后）
+## 进度跟踪（更新 2026-11-06 20:45，CI #47 编译首次通过后）
 
 **代码进度**
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
 - 闸门 2（可见）：4 / 4
-- 闸门 3（瞬态+符号）：1 / 2（3.1 静态实现 + 二轮正确性修正；**3.1 代码至今从未被编译或运行**；3.2 必须运行）
+- 闸门 3（瞬态+符号）：1 / 2（3.1 静态实现 + 二轮正确性修正；**#47 首次完整编译通过，但仍未运行到物理求解**；3.2 必须运行）
 - 闸门 4（物理+工程）：0 / 11（4.11 的「CI 可信化」前置已做，主体未动）
 - 合计：8 项功能已落地，12 项待做
 
 **提交 / CI 状态**
-- 已提交 **`bd3c1f8`**（8 个文件，+523 / −49，含清单文档），2026-11-06 19:18 推送到 `origin/main`（基线 `2e49c2e`）。`.trae/`、`.workbuddy/` 属工具数据，未入库。
-- CI run **#46 = failure**（11:44 UTC）。`Build MEF90 + m_Flow + vDef` 显示 success 是**假绿**：该步骤中途 `set +e` 后再未恢复，vDef 编译失败被静默吞掉；`Run Terzaghi` 因二进制不存在报 `mpirun ... unable to launch`（exit 132），随后的 Gate 3.1 自检断言只是连带误报 `transient TS path was NOT activated`。
-- **真实根因**：`vDef/m_vDefDefault.F90:154:59` `Error: Invalid character in name` → `m_vDefDefault.o` 编译失败、vDef 未链接。对比历史 **#45** 的 `build-diagnostics`，有**逐字相同**的错误 → vDef 自 Flow 默认值块加入起从未成功构建，历史 success 全部只证明依赖链可用。
+- 已提交 **`bd3c1f8`**（8 文件 +523 / −49）与 **`1972820`**（构建修复），均推送到 `origin/main`（基线 `2e49c2e`）。`.trae/`、`.workbuddy/` 属工具数据，未入库。
+- CI run **#46 = failure**（构建层）：vDef 未链接。真实根因 `vDef/m_vDefDefault.F90:154:59 Error: Invalid character in name`；#45 日志有逐字相同错误 → vDef 自 Flow 默认值块加入起从未构建成功，历史 success 全是假绿。
+- CI run **#47 = failure**（运行层，12:38 UTC）：**所有 15 个构建步骤 success**，`vDef.log` / `flow.log` / `MEF90.log` / `m_DefMech.log` / `m_HeatXfer.log` 均无 error，vDef、vDefBT、vDefHF 等全部成功链接 → **闸门 1/2/3.1 的 Fortran 代码首次完整编译通过**（`flow.log` 仅一条 `PetscObjectSetName` type-mismatch warning）。唯一失败是 `Run Terzaghi`：`libmetis.so: cannot open shared object file`，mpirun exit 127。
+- **运行期根因**：PETSc 3.3 以 `--with-shared-libraries=1 --download-metis=1` 配置，链接行 `-L$PETSC_DIR/$PETSC_ARCH/lib -lmetis -lparmetis -lHYPRE -lexodus -lhdf5 ...`，但 `Run Terzaghi` 步骤从未设置 `LD_LIBRARY_PATH`，动态加载器找不到该目录。与 Fortran 代码无关。
 - 本地无 PETSc 编译链；所有「验收」栏目前均为**代码审查级通过，非运行验证**。
 
 **本次复核发现（A / B 已修 18:35；C 已修 19:10；D 为既有改动）**
@@ -267,7 +268,7 @@
 4. `pressurePreviousStep` 全项目**无任何消费者**（只在 FlowCtx 里创建 / 初值 / 销毁）；本轮新增的 `VecCopy(pressure → pressurePreviousStep)` 目前是死写，保留给闸门 4 的平流 / Biot 消费者。
 5. transient 下 p 每时间步只解一次、AltMin 内 k(v) 刷新但 p 冻结 → staggered 近似，非完整 Biot 固结。
 
-**状态（19:55 更新）**：CI #46 给出首个可信结论——**失败发生在构建层，3.1 的瞬态代码根本没进入运行**。修复已写入工作区，待提交推送后由 #47 复验。
+**状态（20:45 更新）**：CI #46 定位到构建层、#47 确认**全量编译通过**并暴露运行期共享库问题。库路径修复已写入工作区，待提交推送后由 #48 复验；#48 是 3.1 瞬态求解逻辑的**首次真实运行**。
 
 ## CI #46 诊断结论与修复（19:55，首次真实反馈）
 
@@ -286,3 +287,25 @@
 3. **#45 对照**：历史 run #45 的 `vDef.log` 有**逐字相同**的 `154:59` 错误 → 该块加入后 vDef 从未构建成功，之前所有 CI success 只说明 PETSc/OpenMPI 依赖缓存可用。
 4. **仍未验证**：`vDef.F90`（3.1 接线）**从未被编译过**——`m_vDefDefault.o` 先失败，vDef.F90 从未进入编译器。本轮已静态复核其新接口（`TSGetTime` / `TSGetConvergedReason` / `TSSetDuration` / `TSConvergedReason` / `Write(IOBuffer,*)` 等）在项目内均有已编译先例，变量声明齐全，但编译结果只能由 #47 给出。
 5. **3.2 仍不可做**：需先跑出 `vDef/data/Beam1x10-tri3_out.gen`。
+
+## CI #47 诊断结论与修复（20:45，编译首次通过 / 运行层阻塞）
+
+**日志来源**：`build-diagnostics` artifact（#47 id `13502322746`）。
+
+| 日志 | 结论 |
+|---|---|
+| `MEF90.log` / `m_DefMech.log` / `m_HeatXfer.log` | 无 error，核心库全部编译通过 |
+| `flow.log` | m_Flow 全部 .o 产出、无 error；仅 `PetscObjectSetName(SNESPressure)` 与 `tsPressure` 的 type-mismatch warning |
+| `vDef.log` | **263 行、无 error**：`vDef.F90` 首次真实编译、vDef / vDefBT / vDefHF / vDefP / vDefUpa 全部链接成功，末尾 `make: Leaving directory` |
+| `terzaghi.log` | 13 行，全是 `libmetis.so: cannot open shared object file` + mpirun exit 127 |
+
+**结论**：闸门 1/2/3.1 的 Fortran 源码至此**全部编译通过**；此前"3.1 接线从未编译"的风险已消除。失败位于运行期的动态库解析，与数值代码无关：`--with-shared-libraries=1` 下链接行含 `-L$PETSC_DIR/$PETSC_ARCH/lib -lmetis -lparmetis -lHYPRE -lexodus -lhdf5 -lnetcdf -lml -lyaml -lz`，而 `Run Terzaghi` 只设了 `PATH`，没设 `LD_LIBRARY_PATH`。`abort` 关键字扫描误把 OpenMPI 的 "job has been aborted" 报成 runtime failure signature，信息不够精确。
+
+**修复（`.github/workflows/build.yml`）**
+1. `Run Terzaghi` 设 `LD_LIBRARY_PATH=$PETSC_DIR/$PETSC_ARCH/lib:$MPI_HOME/lib:$HOME/miniconda2/lib:${LD_LIBRARY_PATH:-}`；再用 `find $PETSC_DIR/$PETSC_ARCH -name 'lib*.so*'` 把 `externalpackages` 下所有含 .so 的目录一并加入，避免 PETSc 3.3 下载包安装位置差异。
+2. 启动前 `ldd ../bin/$PETSC_ARCH/vDef`，出现 `not found` 立即 `exit 1`；`ldd` 输出存 `/tmp/ldd-vDef.log` 并加入 `build-diagnostics` artifact。
+3. `mpirun` 增加 `-x LD_LIBRARY_PATH`，确保两个 rank 都继承库路径。
+4. 新增 `error while loading shared libraries` 专门断言（放在签名扫描之前），以后同类问题直接给出准确诊断而非泛化 "runtime failure"。
+5. YAML 用 PyYAML 解析通过（15 steps）；提取 `run` 块经 `bash -n` 语法校验通过；`git diff --check` 干净。
+
+**仍待 #48 定论**：`Gate 3.1: transient Darcy TS created`（yaml 枚举是否生效）、`Gate 3.1: step`（TSSolve 是否推进）、SNES/KSP 收敛原因、`vDef/data/Beam1x10-tri3_out.gen` 是否产出。3.2 的解析解比对必须等该文件。
