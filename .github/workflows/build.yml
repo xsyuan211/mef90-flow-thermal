@@ -478,11 +478,18 @@ jobs:
           # needs 35% fewer linear iterations (1973 vs 3043). To re-run that
           # comparison use vDef/data/compare_ksp_runs.py, see the checklist.
           # Keep rtol/converged_reason identical to the #68/#69 baseline.
+          #
+          # CI #71: the DefMech displacement SNES reports reason -5
+          # (SNES_DIVERGED_MAX_IT) on all 51 outer steps.  The deck is nearly
+          # linear (alpha ~ 4e-5), so the L2 secant line search is replaced by
+          # a full Newton step (basic); -disp_snes_monitor records the fnorm
+          # trace for the diagnosis table at the end of this step.
           timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D.yaml \
             -flow_ts_view -flow_ts_monitor \
             -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_monitor -disp_snes_linesearch_type basic \
             2>&1 | tee /tmp/terzaghi.log
           rc=${PIPESTATUS[0]}
           echo "=== Terzaghi mpirun exit code: $rc ==="
@@ -528,15 +535,20 @@ jobs:
             grep -n "error while loading shared libraries" /tmp/terzaghi.log | head -10
             exit 1
           fi
-          # CI #58: DefMech AltMin reports non-convergent displacement/damage
-          # SNES on this deck (reason -3 / -5). It is a pre-existing mechanics
-          # issue, NOT a Flow/TS failure: mpirun exits 0 and the transient
-          # Darcy TS advances all the way to t=1. Report it, do not fail on it.
+          # CI #58: DefMech AltMin used to report non-convergent displacement
+          # SNES on this deck (reason -5, 51/51 outer steps). It did NOT stop
+          # the Flow/TS solve, but it amplified a 2.54e-5 Pa pressure
+          # difference into a 0.012 Displacement_Y difference (see CI #69).
+          # CI #71 makes this a real gate: mechanics must converge too.
           defmech_fail=$(grep -c "SNESSolve failed with SNESConvergedReason" /tmp/terzaghi.log || true)
+          echo "=== Gate 3.3: $defmech_fail non-convergent DefMech SNES solves ==="
           if [ "$defmech_fail" -gt 0 ]; then
-            echo "=== WARNING: DefMech AltMin reported $defmech_fail non-convergent SNES solves (pre-existing mechanics issue; Gate 3.1 Flow TS unaffected) ==="
             grep -o "SNESConvergedReason -[0-9]*" /tmp/terzaghi.log | sort | uniq -c || true
+            echo "=== FAIL: Gate 3.3 DefMech AltMin still diverges (first fnorm trace below) ==="
+            grep "SNES Function norm" /tmp/terzaghi.log | head -12 || true
+            exit 1
           fi
+          echo "=== Gate 3.3 PASS: displacement and damage SNES converged on every outer step ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -647,6 +659,33 @@ jobs:
             echo "=== Gate 3.2 probe: every 10th step pmax ==="
             grep "Gate 3.2:" /tmp/terzaghi.log | awk 'NR==1 || NR%10==0' | head -8
           fi
+          # --- CI #71: same-source DefMech SNES convergence diagnosis -------
+          # Two extra runs of the SAME binary/mesh/deck, differing only in the
+          # displacement SNES configuration. Purely informational: their logs
+          # never enter the fatal-signature scan above, and the delivered
+          # result mesh is restored so the artifact stays the main-run output.
+          cp -f data/Beam1x10-tri3_out.gen /tmp/terzaghi_main.gen
+          deck="-prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi1D.yaml"
+          flowopts="-flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason"
+          for variant in l2 ksponly; do
+            if [ "$variant" = l2 ]; then
+              snesopt="-disp_snes_linesearch_type l2"
+            else
+              snesopt="-disp_snes_type ksponly"
+            fi
+            echo "=== DefMech SNES variant $variant: $snesopt ==="
+            timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+              $deck $flowopts -disp_snes_monitor $snesopt \
+              > "/tmp/snes_${variant}.log" 2>&1
+            vrc=$?
+            echo "=== DefMech SNES variant $variant exit code: $vrc ==="
+          done
+          cp -f /tmp/terzaghi_main.gen data/Beam1x10-tri3_out.gen
+          echo "=== DefMech AltMin SNES diagnosis (first outer step fnorm trace) ==="
+          python3 data/diagnose_snes.py \
+            "main-basic=/tmp/terzaghi.log" \
+            "l2-original=/tmp/snes_l2.log" \
+            "ksponly=/tmp/snes_ksponly.log" || true
           exit $rc
       - name: Upload diagnostics
         uses: actions/upload-artifact@v4
@@ -661,6 +700,8 @@ jobs:
             /tmp/vDef.log
             /tmp/ldd-vDef.log
             /tmp/terzaghi.log
+            /tmp/snes_l2.log
+            /tmp/snes_ksponly.log
           retention-days: 7
       - name: Upload Terzaghi result mesh
         uses: actions/upload-artifact@v4
