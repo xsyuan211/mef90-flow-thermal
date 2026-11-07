@@ -568,12 +568,28 @@ jobs:
           # SNES on this deck (reason -5, 51/51 outer steps). It did NOT stop
           # the Flow/TS solve, but it amplified a 2.54e-5 Pa pressure
           # difference into a 0.012 Displacement_Y difference (see CI #69).
-          # CI #71 turned this into a hard gate; CI #72 relaxes it back to
-          # report-only while we run controlled Jacobian/KSP diagnosis variants
-          # (V1 GMRES, V2 FD-Jacobian) to locate the real root cause.
+          # Root cause (CI #71-#74): the YAML BoolArray parser for
+          # 'displacementBC' dropped every component after the first when the
+          # list had a space after each comma ("1, 1, 1" -> TRUE FALSE FALSE),
+          # leaving u_y unconstrained -> a constant rigid-body translation ->
+          # singular stiffness matrix (zero pivot) -> displacement SNES
+          # SNES_DIVERGED_MAX_IT on every outer step. FD-Jacobian (V2, CI #73)
+          # failed identically, proving it was a singular system, not an
+          # analytic-Jacobian value bug. Fixed in CI #75 by writing the deck
+          # with no-space separators ("1,1,1"), so all three components are
+          # now TRUE (verified in the CellSet PetscBag view). Gate 3.3 is
+          # therefore restored as a HARD convergence gate: any non-convergent
+          # DefMech displacement SNES in the production run fails the build.
           defmech_fail=$(grep -c "SNESSolve failed with SNESConvergedReason" /tmp/terzaghi.log || true)
-          echo "=== Gate 3.3 (report-only): $defmech_fail non-convergent DefMech SNES solves ==="
+          echo "=== Gate 3.3 (hard): $defmech_fail non-convergent DefMech SNES solves ==="
           grep -o "SNESConvergedReason -[0-9]*" /tmp/terzaghi.log | sort | uniq -c || true
+          if [ "$defmech_fail" -gt 0 ]; then
+            echo "=== FAIL: Gate 3.3 DefMech displacement SNES diverged on $defmech_fail solve(s) (SNES_DIVERGED_MAX_IT) ==="
+            echo "    Root-cause check: confirm 'DisplacementBC = TRUE TRUE TRUE' in the CellSet PetscBag view."
+            echo "    If it reads TRUE FALSE FALSE, the YAML BoolArray parser dropped u_y again."
+            exit 1
+          fi
+          echo "=== Gate 3.3 PASS: DefMech displacement SNES converged on all outer steps ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
