@@ -466,7 +466,8 @@ jobs:
           grep -E "libstdc\+\+|libgcc_s|libz\.so|libtinfo" /tmp/ldd-vDef.log || true
           mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
-            -options_file_yaml data/terzaghi1D.yaml 2>&1 | tee /tmp/terzaghi.log
+            -options_file_yaml data/terzaghi1D.yaml \
+            -flow_ts_view -flow_ts_monitor 2>&1 | tee /tmp/terzaghi.log
           rc=${PIPESTATUS[0]}
           echo "=== Terzaghi mpirun exit code: $rc ==="
           echo "=== terzaghi.log (last 120 lines) ==="
@@ -487,8 +488,14 @@ jobs:
           fi
           if grep -q "Caught signal number 11 SEGV" /tmp/terzaghi.log; then
             echo "=== FAIL: segfault in vDef (initialization or solve) ==="
+            echo "=== last 40 lines before the crash (CI #53 pinpoint) ==="
+            crashline=$(grep -n -m1 "Caught signal number 11" /tmp/terzaghi.log | cut -d: -f1)
+            if [ -n "$crashline" ]; then
+              start=$((crashline > 40 ? crashline - 40 : 1))
+              sed -n "${start},${crashline}p" /tmp/terzaghi.log
+            fi
             echo "=== last Gate 3.1 trace reached (pinpoints the failing call) ==="
-            grep -n "Gate 3.1: init\|Gate 3.1: flow enum\|Gate 3.1: transient Darcy TS created\|Gate 3.1: step" /tmp/terzaghi.log | tail -15 || true
+            grep -n "Gate 3.1" /tmp/terzaghi.log | tail -30 || true
             grep -n "Caught signal number 11" /tmp/terzaghi.log | head -4
             exit 1
           fi

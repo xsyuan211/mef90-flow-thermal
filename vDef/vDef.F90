@@ -430,16 +430,42 @@ Program vDef
          !!! material field k(v) is refreshed there. This is a staggered
          !!! approximation (no re-solve of p for every damage update).
          If (flowTransient) Then
+            !!! CI #53: the first transient step SEGVs right after
+            !!! "Mechanics: step 1". Print a checkpoint before/after EVERY
+            !!! call in this block so the next CI log pinpoints the culprit.
+            Write(IOBuffer,*) 'Gate 3.1: step',step,' enter transient block\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             Call MEF90FlowUpdateMuFromTemperature(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
+            Write(IOBuffer,*) 'Gate 3.1: step',step,' post-UpdateMu\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             Call MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
+            Write(IOBuffer,*) 'Gate 3.1: step',step,' post-UpdatePerm\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             Call MEF90FlowSetTransients(MEF90FlowCtx,step,time(step),ierr);CHKERRQ(ierr)
+            Write(IOBuffer,*) 'Gate 3.1: step',step,' post-SetTransients\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             Call MEF90FlowUpdateboundaryPressure(MEF90FlowCtx%boundaryPressure,MEF90FlowCtx,ierr);CHKERRQ(ierr)
+            Write(IOBuffer,*) 'Gate 3.1: step',step,' post-UpdateBoundaryPressure\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+            Call TSGetTime(tsPressure,t,ierr);CHKERRQ(ierr)
             Call TSSetDuration(tsPressure,10000,time(step),ierr);CHKERRQ(ierr)
             tFlowEnd = time(step)
-            Call TSSolve(tsPressure,MEF90FlowCtx%pressure,tFlowEnd,ierr);CHKERRQ(ierr)
-            Call TSGetConvergedReason(tsPressure,tsPressureConvergedReason,ierr);CHKERRQ(ierr)
-            If (tsPressureConvergedReason < 0) Then
-               Write(IOBuffer,410) "pressure",tsPressureConvergedReason
+            Write(IOBuffer,*) 'Gate 3.1: step',step,' pre-TSSolve TS time',t,' target',tFlowEnd,'\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+            !!! CI #53: step 1 has time(1) == TS initial time == 0. PETSc 3.3
+            !!! must NOT be asked to integrate a zero-length interval (HeatXfer
+            !!! guards this with "If (t < time(step))" in the same loop).
+            If (t < tFlowEnd) Then
+               Call TSSolve(tsPressure,MEF90FlowCtx%pressure,tFlowEnd,ierr);CHKERRQ(ierr)
+               Write(IOBuffer,*) 'Gate 3.1: step',step,' post-TSSolve\n'
+               Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+               Call TSGetConvergedReason(tsPressure,tsPressureConvergedReason,ierr);CHKERRQ(ierr)
+               If (tsPressureConvergedReason < 0) Then
+                  Write(IOBuffer,410) "pressure",tsPressureConvergedReason
+                  Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+               End If
+            Else
+               Write(IOBuffer,*) 'Gate 3.1: step',step,' TSSolve skipped (no time advance)\n'
                Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             End If
             !!! Gate 3.1 self-check: report the TS internal time so the CI log

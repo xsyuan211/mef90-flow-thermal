@@ -166,7 +166,7 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-07 07:10，CI #52 暴露 yaml 枚举值错误）
+## 进度跟踪（更新 2026-11-07 07:55，CI #53 首次激活瞬态路径后 SEGV）
 
 **代码进度**
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
@@ -190,6 +190,7 @@
 - **#50 根因（静态定论）**：`vDef/vDef.F90` 原本在 `:143` 调 `MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx)`，而该例程 `m_MEF90_Flow.F90:259` 读 `DefMechCtx%DMScalSec`；这个 damage SectionReal 要到 `:170 MEF90DefMechCtxSetSections` 才创建 → 解引用未初始化句柄。另发现 `m_MEF90_FlowCtx.F90` 的 Global PetscBag 只注册 26 项 / 类型有 29 字段，且第 13/14 项 Real/Bool 颠倒、漏 3 个 scaling/offset 字段 → 第 20 项起所有 EXO offset 与容差全部错位读成垃圾值。两处均已修复，详见文末「CI #50 诊断结论与修复」。
 - CI run **#51 = failure**（15:11–15:47 UTC）：`Gate 3.1: init 01..08` 全通过、进入 `Mechanics: step 1`、`_out.gen` 产出 2.79 MB；崩在 `Attempt to DEALLOCATE unallocated 'doflist'`（FlowAssembly:634），且 TS 路径因全局 bag 缺 `flow_` 前缀静默关闭。两处均已修，详见文末「CI #51 诊断结论与修复」。
 - CI run **#52 = failure**（22:15–22:52 UTC）：`flow_` 前缀生效后，注册 Flow 全局 bag 时因 yaml 的 `source_scaling: CST` / `bc_pressure_scaling: CST` 非法枚举而报 `Unknown option CST`（合法值 `constant/linear/file/null`）。已修，并把 CreateTS 调用顺序对齐 HeatXfer 模板；详见文末「CI #52 诊断结论与修复」。
+- CI run **#53 = failure**（23:13–23:50 UTC）：构建 15 步全 success（PETSc 重建 28 分钟），**`Gate 3.1: flow enum 2 Transient 2 enabled T` 与 `transient Darcy TS created` 首次出现**，`init 01..08` 全通过；但 `Mechanics: step 1, t=0` 之后立即 rank 1 SEGV（mpirun exit 59），无 `Gate 3.1: step` → 崩在 flowTransient 块内。已加逐调用追踪 + 零跨度保护 + 空指针防护，详见文末「CI #53 诊断结论与修复」。
 - 本地无 PETSc 编译链；所有「验收」栏目前均为**代码审查级通过，非运行验证**。
 
 **本次复核发现（A / B 已修 18:35；C 已修 19:10；D 为既有改动）**
@@ -450,3 +451,32 @@ PETSc bag 按 `bag->data + bag->offset` 顺序写值，`PetscBagGetData` 再把 
 **校验**：PyYAML 解析 workflow / yaml 通过，`Run Terzaghi` 的 `run` 块 `bash -n` 通过；`flow` 段枚举值现为 `{'timestepping_type':'Transient','source_scaling':'constant','bc_pressure_scaling':'constant'}`。
 
 **仍待 #53 定论**：`Gate 3.1: flow enum`（应为 2 / T）、`transient Darcy TS created`、`Gate 3.1: step`（TSSolve 推进与 TS 内部时间）、`TSGetConvergedReason` / KSP 收敛、IFunction/IJacobian 首次执行时的并行 Dirichlet dof 索引、`_out.gen` 内随时间衰减的 pressure。**#53 才可能首次完成 3.1 的瞬态求解**；3.2 解析解比对仍需该文件含真实瞬态压力场。
+
+
+## CI #53 诊断结论与修复（2026-11-07 07:55，瞬态路径首次激活）
+
+**状态**：run `42310380078` / job `128210036201` `completed failure`；step 1–14 全 success（`Build PETSc-3.3` 23:21–23:49 UTC，28 分钟；`Build MEF90 + m_Flow + vDef` 23:49–23:50 编译通过），`Run Terzaghi` 仅 1 秒即 failure（23:50:50–23:50:51Z），mpirun exit **59**，完整 job 日志 2934 行。
+
+**首次真正进入瞬态（正面结果）**
+- `Gate 3.1: init 01..08` 8 条全部走完；`Time values array` 51 个 0→1 时刻（dt=0.02）。
+- `Gate 3.1: flow enum           2  Transient           2  enabled T` —— #51 的 `flow_` 前缀修复 + #52 的合法枚举值全部生效，`flowTransient` **首次为 true**。
+- `Gate 3.1: transient Darcy TS created, timeSteppingType= 2` —— `MEF90FlowCreateTS` 首次成功创建。
+- DefMech Disp/damage 两个 SNES 对象正常创建（712×712 / 356×356 矩阵）；`_out.gen` 2,789,988 字节（仍只是初始场）。
+
+**崩溃现场**
+`Mechanics: step    1, t= 0.00000E+00` 之后**没有任何** `Gate 3.1: step`，rank 1 立即 `Caught signal number 11 SEGV`，`MPI_ABORT`（errorcode 59）使 rank 0 收到 signal 15 后退出。没有 Fortran runtime error，PETSc 3.3 release 构建只给 `User provided function() line 0 in unknown directory unknown file`，无调用栈。因此崩溃必在 `vDef/vDef.F90` 的 `flowTransient` 块内（该块在 #53 之前从未执行过）。
+
+**静态核对（已排除的项）**
+- TS 回调 dispatcher `MEF90FlowIFunction` / `MEF90FlowIJacobian`（`m_Flow/m_MEF90_Flow.F90:105/127`）签名与 HeatXfer 模板一致，IJacobian 含 `MatStructure flg`，无参数错位。
+- `MEF90DiffusionOperatorAddTransientTermSet(G,mesh,x,cellIS,alpha,elem,elemType,ierr)` 与 `MEF90DiffusionBilinearFormSet(K,mesh,cellIS,A,lambda,elem,elemType,ierr)` 的实参顺序/类型均与定义一致；`A_zero = 0.0_Kr`、`A_cell = permCell(1)` 是项目既有的标量→`MEF90_MATS` 赋值写法。
+- `MEF90FlowSetTransients` / `MEF90FlowUpdateboundaryPressure` 的 `constant` 分支只做 `VecSetValues`，路径与 init 阶段一致。
+- **两个仍未排除的高风险**：① `beuler + TS_LINEAR + IFunction/IJacobian` 是仓库内从未运行过的组合（HeatXfer 原生用 `rosw/ra3pw`，且其 transient 分支在本次 yaml 中也是 NULL，两者都只有编译级验证）；② step 1 时 `time(1)=0` 且 TS 初始时间也是 0，`TSSetDuration(...,0)` 会要求 TSSolve 积分零长度区间，而 HeatXfer 模板在同一循环用 `If (t < time(step))` 做了保护。③ `SCell(1)` 在储存项/质量矩阵两处是裸指针读取，未做 `Associated`/`size` 保护（rank 相关性崩溃的典型来源）。
+
+**本轮改动（不改物理模型，只加可观测性 + 防御）**
+1. `vDef/vDef.F90`：flowTransient 块内每个调用前后加 `Gate 3.1: step N ...` 检查点（enter / post-UpdateMu / post-UpdatePerm / post-SetTransients / post-UpdateBoundaryPressure / pre-TSSolve / post-TSSolve）；`TSSolve` 前先 `TSGetTime`，按 HeatXfer 的写法用 `If (t < tFlowEnd)` 包住，step 1 打印 `TSSolve skipped (no time advance)`，`TSGetConvergedReason` 也一并进保护分支避免读到未初始化值。`Gate 3.1: step ... TS time` 打印仍在块外，保证 CI 判据有效。
+2. `m_Flow/m_MEF90_FlowAssembly.F90`：`MEF90FlowIFunction`（enter / post-OperatorCore）、`MEF90FlowIJacobian`（enter）、`MEF90FlowAddStorageToResidual`、`MEF90FlowAddStorageMassMatrix` 四个入口加 trace；两处 `SCell(1)` 加 `Associated(SCell)` + `size(SCell) > 0` 保护，否则取 0。
+3. `.github/workflows/build.yml`：mpirun 加 `-flow_ts_view -flow_ts_monitor`（让 PETSc 自己报告 TS 类型、问题类型与步进）；SEGV 分支打印崩溃前 40 行（用 `crashline` + `sed`，避免 awk 引号嵌套）；Gate grep 放宽到全部 `Gate 3.1` 行并 `tail -30`。
+
+**校验**：`git diff --check` 干净；PyYAML 解析 workflow / yaml 通过；`Run Terzaghi` 的 `run` 块 `bash -n` 通过；`PetscPrintf(PETSC_COMM_WORLD, ...)` 在项目内有 36 个文件先例；Fortran `If/End If` 配对已逐段复核。
+
+**#54 判据（按优先级）**：① 日志里最后一个 `Gate 3.1: step 1 ...` 检查点 = 精确崩溃位置（若停在 `pre-TSSolve` 之后且无 `IFunction enter` → PETSc TS 层；若停在 `IFunction enter` 之后 → 残差/储存项；若停在 `IJacobian enter` → 雅可比）；② `-flow_ts_view` 打印的 type / problem type；③ `-flow_ts_monitor` 是否出现步进；④ 若零跨度保护已消除崩溃，则看 `Gate 3.1: step 2 ... post-TSSolve`、`TS time`、`TSGetConvergedReason` 与 `_out.gen` 是否出现随时间衰减的 pressure。3.2 的 Terzaghi 解析解比对仍需该文件含真实瞬态压力场。

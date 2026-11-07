@@ -247,7 +247,10 @@ Contains
       Type(Vec),Intent(INOUT)                            :: F
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
+      !!! CI #53 diagnostic: mark entry into the TS residual callback.
+      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IFunction enter\n',ierr);CHKERRQ(ierr)
       Call MEF90FlowOperatorCore(x,F,FlowCtx,ierr);CHKERRQ(ierr)
+      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IFunction post-OperatorCore\n',ierr);CHKERRQ(ierr)
       Call MEF90FlowAddStorageToResidual(F,xDot,FlowCtx,ierr);CHKERRQ(ierr)
       !!! Gate 3.1 fix: AddStorageToResidual scatters FSec back into F, so it
       !!! also writes S*M*xDot into the Dirichlet dofs. Those dofs are algebraic
@@ -273,6 +276,8 @@ Contains
       MatStructure,Intent(INOUT)                         :: flg
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
+      !!! CI #53 diagnostic: mark entry into the TS Jacobian callback.
+      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IJacobian enter\n',ierr);CHKERRQ(ierr)
       !!! First, assemble steady Darcy Jacobian K = dG/dp
       Call MEF90FlowBilinearFormCore(x,Jac,PreJac,1.0_Kr,FlowCtx,ierr);CHKERRQ(ierr)
       !!! Add a·S·M (mass matrix):  K += a·S·BFB
@@ -733,6 +738,7 @@ Contains
       PetscReal                                           :: S_avg
       Type(MEF90_MATS)                                    :: A_zero
 
+      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: storage residual enter\n',ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%DMScalSec,FSec,ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%DMScalSec,pDotSec,ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,storativitySec,ierr);CHKERRQ(ierr)
@@ -758,7 +764,17 @@ Contains
                   Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr)
                   !!! alpha = S(cell), pre-multiply and pass to DiffusionOperatorAddTransientTermSet
                   Call SectionRealRestrict(storativitySec,cellID(cell),SCell,ierr);CHKERRQ(ierr)
-                  S_avg = SCell(1)
+                  !!! CI #53: a rank may own zero cells in a set; guard the
+                  !!! restricted pointer before reading SCell(1).
+                  If (Associated(SCell)) Then
+                     If (size(SCell) > 0) Then
+                        S_avg = SCell(1)
+                     Else
+                        S_avg = 0.0_Kr
+                     End If
+                  Else
+                     S_avg = 0.0_Kr
+                  End If
                   Call MEF90DiffusionOperatorAddTransientTermSet(FSec,FlowCtx%DM,pDotSec, &
                        singleIS,S_avg,elem,elemType,ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
@@ -800,6 +816,7 @@ Contains
       Type(MEF90_MATS)                                    :: A_zero
       Type(SectionReal)                                   :: storativitySec
 
+      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: storage matrix enter\n',ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,storativitySec,ierr);CHKERRQ(ierr)
       Call SectionRealToVec(storativitySec,FlowCtx%cellDMScalScatter,SCATTER_REVERSE,FlowCtx%storativity,ierr);CHKERRQ(ierr)
 
@@ -821,7 +838,15 @@ Contains
                Do cell = 1, size(cellID)
                   Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr)
                   Call SectionRealRestrict(storativitySec,cellID(cell),SCell,ierr);CHKERRQ(ierr)
-                  lambda_val = a * SCell(1)
+                  If (Associated(SCell)) Then
+                     If (size(SCell) > 0) Then
+                        lambda_val = a * SCell(1)
+                     Else
+                        lambda_val = 0.0_Kr
+                     End If
+                  Else
+                     lambda_val = 0.0_Kr
+                  End If
                   !!! K += 0*∇ + λ·BFB   (lambda term only → mass matrix)
                   Call MEF90DiffusionBilinearFormSet(Jac,FlowCtx%DM,singleIS, &
                        A_zero,lambda_val,elem,elemType,ierr)
