@@ -719,3 +719,39 @@ MEF90VecSetValuesISdof: DMMeshISCreateISglobaldof → ... (DM Mesh 内部含同�
 **新的最强怀疑（可由 #61 直接证伪/确认）**：`MEF90FlowIFunction` 内共发生 **3 次 `SectionRealToVec(..., SCATTER_FORWARD, F)`**（`OperatorCore` 内 1 次 + `AddStorageToResidual` 内 1 次 + `ApplyDirichletResidual` 内 1 次），而 HeatXfer 的 IFunction 只在全部分项累加进同一个 `FSec` 后 scatter **1 次**。若该 scatter 在 PETSc 3.3 是 `ADD_VALUES` 语义，`F` 会被反复累加成数倍 `K·p + S·M·ṗ`，而 `J` 只装配一次 → **F/J 不相容**，`KSPCG` 在 `MAT_SPD` 假设下收敛到错误解并逐放大 —— 与观测的 `|x|`、`|xDot|` 交替变号放大一致。
 
 **#61 改动（纯诊断，不动求解逻辑）**：在 `MEF90FlowIFunction` 的前 4 步（`t<0.07`）打印 `|x|∞`、`|xDot|∞`，以及 `|F|∞` 在 `post-OperatorCore` / `post-Storage` / `post-Dirichlet` 三个检查点的值。若 `|F|` 逐次成倍增长即可确认 scatter 累加，下一步把 IFunction 重构为「单个 `FSec` 累加 K·p + S·M·ṗ + 源项 → 一次 SCATTER_FORWARD → BC 行单独覆盖」的 HeatXfer 结构。
+
+
+## CI #61 诊断结果（2026-11-07 13:40，scatter 累加假设也被证伪；xDot 恒为 0）
+
+**状态**：run `42342725365`，`completed failure`（仍是 `FAIL: Gate 3.2 pressure DIVERGED`，`ratio=1.65448e+31`），`Gate 3.1 PASS` 与 `mpirun exit code: 0` 保持。曲线与 #59/#60 逐位一致。
+
+**实测诊断（t=0.02 / 0.04 / 0.06，两 rank 一致）**：
+
+| t | \|x\|∞ | \|xDot\|∞ | \|F\| post-OperatorCore | post-Storage | post-Dirichlet | IJacobian shift a |
+|---|---|---|---|---|---|---|
+| 0.02 | 1.0e5 | **0** | 1.0e5 | 1.0e5 | 1.0e5 | 50 |
+| 0.04 | 1.0e5 | **0** | 1.0697e-2 | 1.0697e-2 | 1.0697e-2 | 50 |
+| 0.06 | 9.9978e4 | **0** | 7.0755e-5 | 7.0755e-5 | 7.0755e-5 | 50 |
+
+**三条确定性结论**：
+1. `SectionRealToVec(SCATTER_FORWARD)` 在本配置下是 **INSERT 语义**：三次 scatter 后 `|F|` 完全不变，「F 被反复累加」假设证伪，无需重构 IFunction。
+2. **`xDot` 在所有步恒为 0**，`AddStorageToResidual`（`S·M·ṗ`）在 TS 求解中对 F **零贡献**；而 `IJacobian` 仍加 `a·S·M`。PETSc 3.3 `TS_LINEAR` + `ksponly` 是在 `(x=U_n, xdot=0)` 处求 F，再解 `J ΔU = -F`（`J=K+aSM`），代数上等价于 BE 的 `(K+aSM)U_{n+1}=aSM·U_n`。
+3. `|F|` 从 1e5 骤降到 1e-2 / 7e-5，只是**顶面 Dirichlet 代数行** `x-p_bc` 收敛；`|x|` 始终 ~1e5，说明内部压力几乎没被推进。按量级估算 `K/aSM ≈ 360`（K~2.5e-8，aSM~7e-11），正确 BE 应在首步就衰减到 ~0.1% —— 因此 **J 中的 K 项实际没有生效**（或被 BC 处理抹掉），使 `U_{n+1}≈U_n` 并逐步放大高频误差。
+
+**下一轮唯一该做的诊断**：在 `MEF90FlowIJacobian` 里打印 `MatNorm(Jac,NORM_INFINITY)` 以及 `MatGetDiagonal` 的 min/max（分 `BilinearFormCore` 后、`AddStorageMassMatrix` 后、`ApplyDirichletJacobian` 后三个检查点），直接看 K 是否被清零、质量项量级是否与 7e-11 相符。若 `MatZeroRowsColumnsIS` 的 `setISdof` 实际覆盖全体顶点（而非仅顶面 6 个），`J` 会退化成单位阵 —— 这与「内部压力不变 + 高频交替放大」完全吻合，是最可能的剩余根因。
+
+
+## #62 静态复核（2026-11-07 14:30）：IS 假说排除，锁定「BC 零行被调用 4 次」的结构差异
+
+**已排除**：`MEF90FlowApplyDirichletJacobian` 的 `DMMeshISCreateISglobaldof(DMScal,bcIS,0,setISdof)` + `MatZeroRowsColumnsIS(A,setISdof,1.0,...)` 与 `m_HeatXfer/m_MEF90_HeatXferAssembly.F90:617-620` **逐字相同**，`MEF90ISCreateCelltoVertex` 也只返回边界 BAR2 的顶点，不存在「覆盖全体 356 顶点」的可能。`A_zero = 0.0_Kr` 经 `MatS2D_Get_Real` 正确置零全部三个分量。
+
+**新发现的结构差异（确定性）**：`MEF90HeatXFerIJacobian` 是 `MatZeroEntries(A)` → 装 K（`MEF90DiffusionBilinearFormSet`）→ 装 `shift*ρc`（`MEF90_MassMatrixAssembleSet`）→ `MatAssembly` → **最后统一做一次** BC `MatZeroRowsColumnsIS`；且 `TSSetIJacobian(tsTemp,matTemp,matTemp,...)` 里 A 与 M 是同一个矩阵。而 Flow 的 `MEF90FlowBilinearFormCore` 在 K 装完、`MatCopy` 之后**立刻**调 `ApplyDirichletJacobian`，随后 `AddStorageMassMatrix` 又往已被清零的 BC 行/列 `ADD_VALUES` 加质量项，`MEF90FlowIJacobian` 末尾**再**调一次 `ApplyDirichletJacobian` —— 每步 Jac/PreJac 各 2 次、共 **4 次** `MatZeroRowsColumnsIS`，中间夹着一次往零行写值的 ADD 装配。这与 HeatXfer 已验证模板不符。
+
+**#62 改动（结构对齐 + 三点诊断，同时落地）**：
+
+1. `MEF90FlowBilinearFormCore`：删除末尾的 `ApplyDirichletJacobian`，只负责装配纯 K 并 `MatCopy` 到 PreJac；BC 交由调用方在所有装配完成后统一施加。
+2. `MEF90FlowBilinearForm`（稳态 SNES wrapper）：`Core(...,0.0_Kr,...)` 之后补一次 `ApplyDirichletJacobian`（稳态路径运行时被 `If (.not. flowTransient)` 跳过，但语义必须正确）。
+3. `MEF90FlowIJacobian`：`Core(...,0.0_Kr,...)` → `AddStorageMassMatrix` → **`ApplyDirichletJacobian` 仅一次**；新增 `MEF90FlowReportJacobian` 辅助子程序，在前 3 步（`t<0.07`）打印 `MatNorm(Jac,NORM_INFINITY)` 与 `MatGetDiagonal` 的 min/max，检查点 `post-Core / post-Storage / post-Dirichlet`；同时打印 `FlowCtx%storativity` 与 `permField` 的 min/max，确认 S=4.6e-10、k/μ=5e-8 确实进入装配。
+4. 静态量级修正：单元面积 ≈1.67e-2 m²，K 对角 ≈1e-7，M 对角 ≈6e-13，`aM≈3e-11`，即 `K/aM≈1e4`（清单 3.2 里原估的 360 偏小）。因此 `J≈K` 且 K 在常向量方向奇异，只有 Dirichlet 行给出对角 1 —— 矩阵条件数极差，与 KSP 迭代数 1 → 50 → 54 逐步攀升一致。
+
+**判据**：① 若 `Gate 3.2 PASS`（ratio≈0.09）→ 结构差异即根因，3.2 通过；② 若仍发散，`diagJ` 三点直接给出答案：`|J|inf≈1e-7 / diag min≈1e-8` 说明 K 存在（问题在 F/J 相容性或 CG 收敛），`|J|inf≈1 / diag min=max=1` 说明 J 退化成单位阵；`diagFld` 同时排除参数未填充。③ 收敛后再处理 step 16 的浮点跳步与 z 剖面解析解比对。

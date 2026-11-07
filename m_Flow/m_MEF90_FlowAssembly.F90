@@ -215,8 +215,13 @@ Contains
       Call MatAssemblyEnd(Jac,MAT_FINAL_ASSEMBLY,ierr);CHKERRQ(ierr)
       Call MatCopy(Jac,PreJac,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRQ(ierr)
 
-      !!! DIRICHLET BC: K_ii = 1 for all BC dofs
-      Call MEF90FlowApplyDirichletJacobian(Jac,PreJac,FlowCtx,ierr)
+      !!! CI #62: DO NOT zero-row here. In the transient path the storage
+      !!! matrix (a*S*M) is added AFTER this call, which refills the BC rows
+      !!! with mass entries; MEF90FlowIJacobian then had to zero-row AGAIN.
+      !!! That gave 4 MatZeroRowsColumnsIS calls per step (Jac+PreJac, twice).
+      !!! HeatXfer assembles K + shift*M FIRST and applies Dirichlet ONCE at
+      !!! the very end. Mirror that: the callers now own BC enforcement.
+      !!! (SNES steady path -> MEF90FlowBilinearForm, TS path -> IJacobian.)
 
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
       Call ISDestroy(CellSetGlobalIS,ierr)
@@ -235,7 +240,9 @@ Contains
       PetscErrorCode,Intent(OUT)                         :: ierr
       !!! residualMode was a PetscReal dummy and is unused inside Core; the
       !!! assembly always uses the full Jacobian (scale 1.0).
-      Call MEF90FlowBilinearFormCore(x,Jac,PreJac,1.0_Kr,FlowCtx,ierr);CHKERRQ(ierr)
+      Call MEF90FlowBilinearFormCore(x,Jac,PreJac,0.0_Kr,FlowCtx,ierr);CHKERRQ(ierr)
+      !!! CI #62: steady SNES path must enforce Dirichlet once, at the end.
+      Call MEF90FlowApplyDirichletJacobian(Jac,PreJac,FlowCtx,ierr);CHKERRQ(ierr)
       flg = SAME_NONZERO_PATTERN
    End Subroutine MEF90FlowBilinearForm
 
@@ -306,6 +313,7 @@ Contains
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
       Character(len=256)                                 :: IOBuffer
+      PetscReal                                          :: sMin, sMax, kMin, kMax
       !!! CI #53 diagnostic: mark entry into the TS Jacobian callback.
       Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IJacobian enter\n',ierr);CHKERRQ(ierr)
       !!! Gate 3.2 diagnostic: report the BE shift a = d(xdot)/d(x) for the
@@ -313,18 +321,60 @@ Contains
       If (t < 0.07_Kr) Then
          Write(IOBuffer,*) 'Gate 3.2 diag: IJacobian t',t,' shift a',a,'\n'
          Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+         Call VecMin(FlowCtx%storativity,PETSC_NULL_INTEGER,sMin,ierr);CHKERRQ(ierr)
+         Call VecMax(FlowCtx%storativity,PETSC_NULL_INTEGER,sMax,ierr);CHKERRQ(ierr)
+         Call VecMin(FlowCtx%permField,PETSC_NULL_INTEGER,kMin,ierr);CHKERRQ(ierr)
+         Call VecMax(FlowCtx%permField,PETSC_NULL_INTEGER,kMax,ierr);CHKERRQ(ierr)
+         Write(IOBuffer,*) 'Gate 3.2 diagFld: t',t,' S min/max',sMin,sMax,' k/mu min/max',kMin,kMax,'\n'
+         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
       End If
-      !!! First, assemble steady Darcy Jacobian K = dG/dp
-      Call MEF90FlowBilinearFormCore(x,Jac,PreJac,1.0_Kr,FlowCtx,ierr);CHKERRQ(ierr)
+      !!! First, assemble steady Darcy Jacobian K = dG/dp (no BC yet).
+      Call MEF90FlowBilinearFormCore(x,Jac,PreJac,0.0_Kr,FlowCtx,ierr);CHKERRQ(ierr)
+      If (t < 0.07_Kr) Then
+         Call MEF90FlowReportJacobian('post-Core',t,Jac,x,ierr);CHKERRQ(ierr)
+      End If
       !!! Add a·S·M (mass matrix):  K += a·S·BFB
       Call MEF90FlowAddStorageMassMatrix(Jac,PreJac,a,FlowCtx,ierr);CHKERRQ(ierr)
-      !!! Gate 3.1 fix: BilinearFormCore zero-rows the BC dofs BEFORE the mass
-      !!! matrix is added, so a*S*M refills those rows and J(dof,dof) is no
-      !!! longer 1. Re-apply Dirichlet LAST: J(dof,:) = 0, J(dof,dof) = 1,
+      If (t < 0.07_Kr) Then
+         Call MEF90FlowReportJacobian('post-Storage',t,Jac,x,ierr);CHKERRQ(ierr)
+      End If
+      !!! CI #62: Dirichlet is applied ONCE, after every matrix contribution,
+      !!! exactly like MEF90HeatXFerIJacobian. J(dof,:) = 0, J(dof,dof) = 1,
       !!! consistent with the residual F(dof) = x(dof) - p_bc.
       Call MEF90FlowApplyDirichletJacobian(Jac,PreJac,FlowCtx,ierr);CHKERRQ(ierr)
+      If (t < 0.07_Kr) Then
+         Call MEF90FlowReportJacobian('post-Dirichlet',t,Jac,x,ierr);CHKERRQ(ierr)
+      End If
       flg = SAME_NONZERO_PATTERN
    End Subroutine MEF90FlowIJacobian
+
+
+#undef __FUNCT__
+#define __FUNCT__ "MEF90FlowReportJacobian"
+!!! CI #62 diagnostic: report |J|inf and the diagonal range at each assembly
+!!! checkpoint. If K is present, |J|inf ~ 1e-7 and diag min ~ 1e-8, max = 1
+!!! (the Dirichlet rows). If the BC IS wiped the whole matrix, |J|inf ~ 1 and
+!!! every diagonal entry = 1 -> J is the identity and CG cannot diffuse.
+   Subroutine MEF90FlowReportJacobian(tag,t,Jac,x,ierr)
+      Character(len=*),Intent(IN)                        :: tag
+      PetscReal,Intent(IN)                               :: t
+      Type(Mat),Intent(IN)                               :: Jac
+      Type(Vec),Intent(IN)                               :: x
+      PetscErrorCode,Intent(OUT)                         :: ierr
+
+      Type(Vec)                                          :: diagVec
+      PetscReal                                          :: nJ, dMin, dMax
+      Character(len=256)                                 :: IOBuffer
+
+      Call VecDuplicate(x,diagVec,ierr);CHKERRQ(ierr)
+      Call MatNorm(Jac,NORM_INFINITY,nJ,ierr);CHKERRQ(ierr)
+      Call MatGetDiagonal(Jac,diagVec,ierr);CHKERRQ(ierr)
+      Call VecMin(diagVec,PETSC_NULL_INTEGER,dMin,ierr);CHKERRQ(ierr)
+      Call VecMax(diagVec,PETSC_NULL_INTEGER,dMax,ierr);CHKERRQ(ierr)
+      Write(IOBuffer,*) 'Gate 3.2 diagJ: t',t,' ',Trim(tag),' |J|inf',nJ,' diag min/max',dMin,dMax,'\n'
+      Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+      Call VecDestroy(diagVec,ierr);CHKERRQ(ierr)
+   End Subroutine MEF90FlowReportJacobian
 
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
