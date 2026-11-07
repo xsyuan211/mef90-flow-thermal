@@ -18,9 +18,9 @@ jobs:
             libtool automake tar
       - name: Cache OpenMPI
         id: cache-openmpi
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
-          path: $HOME/openmpi-3.1.3
+          path: ~/openmpi-3.1.3
           key: openmpi-3.1.3-ubuntu-latest-v1
       - name: Build OpenMPI 3.1.3
         if: steps.cache-openmpi.outputs.cache-hit != 'true'
@@ -41,9 +41,9 @@ jobs:
           mpirun --version
       - name: Cache PETSc deps
         id: cache-petsc-dl
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
-          path: $HOME/petsc-dl
+          path: ~/petsc-dl
           key: petsc-dl-v1
       - name: Pre-download PETSc deps
         if: steps.cache-petsc-dl.outputs.cache-hit != 'true'
@@ -56,11 +56,11 @@ jobs:
           ls -la
       - name: Cache Miniconda + PETSc build
         id: cache-petsc
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
-            $HOME/miniconda2
-            $HOME/petsc-3.3-mef90
+            ~/miniconda2
+            ~/petsc-3.3-mef90
           key: petsc-mef90-3.3-ubuntu-latest-v1
       - name: Build PETSc-3.3
         if: steps.cache-petsc.outputs.cache-hit != 'true'
@@ -533,3 +533,26 @@ jobs:
             /tmp/ldd-vDef.log
             /tmp/terzaghi.log
           retention-days: 7
+      - name: Save cache OpenMPI
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/openmpi-3.1.3
+          key: openmpi-3.1.3-ubuntu-latest-v1
+      - name: Save cache PETSc deps
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/petsc-dl
+          key: petsc-dl-v1
+      - name: Save cache Miniconda + PETSc build
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/miniconda2
+            ~/petsc-3.3-mef90
+          key: petsc-mef90-3.3-ubuntu-latest-v1

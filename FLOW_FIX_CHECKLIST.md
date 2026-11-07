@@ -166,7 +166,7 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-07 08:50，CI #54 精确定位到 SetSourceCst）
+## 进度跟踪（更新 2026-11-07 09:55，CI #55 定位到 cell-DM globaldof 路径）
 
 **代码进度**
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
@@ -192,6 +192,7 @@
 - CI run **#52 = failure**（22:15–22:52 UTC）：`flow_` 前缀生效后，注册 Flow 全局 bag 时因 yaml 的 `source_scaling: CST` / `bc_pressure_scaling: CST` 非法枚举而报 `Unknown option CST`（合法值 `constant/linear/file/null`）。已修，并把 CreateTS 调用顺序对齐 HeatXfer 模板；详见文末「CI #52 诊断结论与修复」。
 - CI run **#53 = failure**（23:13–23:50 UTC）：构建 15 步全 success（PETSc 重建 28 分钟），**`Gate 3.1: flow enum 2 Transient 2 enabled T` 与 `transient Darcy TS created` 首次出现**，`init 01..08` 全通过；但 `Mechanics: step 1, t=0` 之后立即 rank 1 SEGV（mpirun exit 59），无 `Gate 3.1: step` → 崩在 flowTransient 块内。已加逐调用追踪 + 零跨度保护 + 空指针防护，详见文末「CI #53 诊断结论与修复」。
 - CI run **#54 = failure**（00:00–00:37 UTC）：逐调用 trace 生效，`Gate 3.1: step 1 post-UpdatePerm` 之后、`post-SetTransients` 之前 rank 1 SEGV → **崩在 `MEF90FlowSetTransients` 内部**，零跨度保护与 TS 回调均未到达。已定位并修复 `MEF90FlowSetSourceCst` 对 BAR2 边界 cell set 误做 cell-DM dof 映射，详见文末「CI #54 诊断结论与修复」。
+- CI run **#55 = failure**（00:53–01:27 UTC）：构建 14 步全 success，`Run Terzaghi` 2 秒失败（mpirun exit 59）。逐 set trace 显示 `SetTransients enter → pre-SetSourceCst → SetSourceCst enter → SetSourceCst set 1 id 1` 后 rank 1 SEGV；rank 0 走完 `SetSourceCst done / post-SetSourceCst / pre-UpdateBC / UpdateBC cell set 2 id 10` 才被 MPI_ABORT 杀掉。已把源项换成已验证的 SectionReal 路径并修好 CI 缓存，详见文末「CI #55 诊断结论与修复」。
 - 本地无 PETSc 编译链；所有「验收」栏目前均为**代码审查级通过，非运行验证**。
 
 **本次复核发现（A / B 已修 18:35；C 已修 19:10；D 为既有改动）**
@@ -518,3 +519,43 @@ DMMeshISCreateISglobaldof(FlowCtx%cellDMScal, setIS, 0, setISdof, ...)
 **#55 判据**：① 应看到 `SetTransients enter ... srcScale 0 bcScale 0` → `pre-SetSourceCst` → `SetSourceCst enter` → `set 1 id 1` → `SetSourceCst done` → `post-SetSourceCst` → `pre-UpdateBC` → `UpdateBC cell set ...` → `UpdateBC done`；② 若零跨度保护让 step 1 打 `TSSolve skipped`，step 2 应出现 `pre-TSSolve` / `IFunction enter` / `IJacobian enter` / `post-TSSolve` 及 `-flow_ts_monitor` 步进；③ `TSGetConvergedReason`、TS time 是否推进、`_out.gen` 内 pressure 是否随时间衰减（3.2 前置）。若仍 SEGV，最后一个 `Gate 3.1: ... set N` 即精确越界位置。
 
 **性能备注**：workflow 已内置 `actions/cache` 缓存 `$HOME/petsc-3.3-mef90` 与 OpenMPI，但 `actions/cache@v4` 只在 **job 成功**时保存；此前每轮 job 均 failure，故缓存从未落盘、每轮都重建 PETSc（约 28 分钟）。只要有一轮 job success，后续 run 会自动命中缓存，无需改 workflow。
+
+
+## CI #55 诊断结论与修复（2026-11-07 09:55，源项改走 SectionReal + CI 缓存修复）
+
+**状态**：run `42320914171` / job `128244974102` `completed failure`（基于 `71890d5`）。构建 step 1–14 全 success（PETSc 重建 28 分钟，MEF90 + m_Flow + vDef 编译通过）；`Run Terzaghi` 01:27:36–38Z 仅 2 秒失败，mpirun exit **59**，完整 job 日志 3006 行。`init 01..08`、`flow enum 2 Transient 2 enabled T`、`transient Darcy TS created` 全部正常。
+
+**trace 结果（#54 加的逐 set 检查点生效）**
+```
+Mechanics: step    1, t= 0.00000E+00
+ Gate 3.1: step 1  enter transient block
+ Gate 3.1: step 1  post-UpdateMu
+ Gate 3.1: step 1  post-UpdatePerm
+ Gate 3.1: SetTransients enter step 1  srcScale 0  bcScale 0
+Gate 3.1: SetTransients pre-SetSourceCst
+Gate 3.1: SetSourceCst enter
+ Gate 3.1: SetSourceCst set 1  id 1
+[1]PETSC ERROR: Caught signal number 11 SEGV
+```
+关键细节：**rank 0 完整走完** `SetSourceCst done → post-SetSourceCst → pre-UpdateBC → UpdateBC enter → UpdateBC cell set 2 id 10`，之后才收到 MPI_ABORT 的 signal 15。所以 rank 1 崩在 `set 1`（唯一的 codim=0 体单元集 `cs0001`）循环体内，而 rank 0 通过了同一段代码 —— 典型的 rank 相关越界，不是逻辑分支错误。
+
+**根因（#54 的 BAR2 跳过修复已生效，但只解决了第一个问题）**：`MEF90FlowSetSourceCst` 仍走 `DMMeshGetStratumIS(cellDMScal,...) → DMMeshISCreateISglobaldof(cellDMScal,...,setISdof) → ISGetIndicesF90(setISdof,setIdx) → VecSetValues(sourceVec,size(setIdx),setIdx,...)`。在 PETSc 3.3 的 DMMesh cell-section 下，这条 global-dof 路径在 rank 1 上给出空/越出 `sourceVec` 布局的索引（rank 0 拥有低编号 point 恰好合法），`ISGetIndicesF90`/`size()` 或 `VecSetValues` release 模式直接越界读写 → SEGV。HeatXfer 的 `SetFluxCst` 是同款写法，但本 CI 里 HeatXfer 的 transient 分支一直是 NULL，**从未在 2 rank 上验证过**，不能作为可信模板。
+
+**修复：改用项目里已被 10 轮 CI 验证的 SectionReal 路径**（`MEF90FlowUpdatePerm` / `MEF90FlowUpdateStorativity` 在 init 07/08 和每个 step 的 `post-UpdatePerm` 都通过）。`MEF90FlowSetSourceCst` 现在：
+```
+SectionRealDuplicate(cellDMScalSec, sourceSec) → SectionRealSet(0)
+→ DMmeshGetLabelIdIS(DM,'Cell Sets') + AllGatherMerge
+→ 每个 set：skip Has_BC / Codim/=0；DMMeshGetStratumIS(DM,...)
+→ ISGetIndicesF90(setIS,cellIDs)；逐 cell SectionRealRestrict/写入 source/SectionRealRestore
+→ SectionRealComplete + SectionRealToVec(sourceSec, cellDMScalScatter, SCATTER_FORWARD, sourceVec)
+→ SectionRealDestroy
+```
+完全不再调用 `DMMeshISCreateISglobaldof` 与 `VecSetValues`，也不再对 `setISdof` 取 F90 指针。仍保留 #54 的 BAR2 跳过，并打印 `set / id / nCell / src` 便于下一轮核对。
+
+**附加防御（同类空 IS 模式，共 6 处）**：`MEF90FlowUpdateboundaryPressure`（cell set / vertex set）、`MEF90FlowApplyDirichletResidual`（cell set / vertex set）、`MEF90FlowApplyDirichletJacobian`（cell set / vertex set）都在 `ISGetLocalSize` 后用 `If (nVal > 0)` 包住指针操作；两个 Dirichlet 函数里原先缺 `CHKERRQ` 的 `MEF90ISCreateCelltoVertex` 也补上。这些函数会在 step 2 的 TS 回调里首次成批执行。
+
+**CI 缓存修复（性能，更正 #54 章节的推断）**：原 workflow 有两个独立缺陷 —— ① `actions/cache@v4` 的 `path:` 里写 `$HOME/...`，而 cache action **不展开 shell 变量**，路径是字面量、永远缓存不到真实目录；② `actions/cache@v4` 的保存是 Post 步骤，**job failure 时被 skip**，而此前每轮 job 都 failure，缓存从未落盘（日志里 `Post Cache ... completed skipped`）。现在改成 `actions/cache/restore@v4` + `~/...` 路径，并在 job 末尾加 3 个 `if: always()` + `continue-on-error: true` 的 `actions/cache/save@v4`，key 保持不变。**从 #56 起即使失败也会把 PETSc/OpenMPI 缓存下来，后续 run 可省掉约 28 分钟重建。**
+
+**校验**：`git diff --check` 干净；PyYAML 解析 workflow（18 steps）/ yaml 通过；`Run Terzaghi` 的 `run` 块 `bash -n` 通过；5 个改写子程序的 `Do/End Do`、`If/End If`、`Select Case/End Select` 配对脚本核对通过（`SetSourceCst` 的 2 个 `If` 是单行 `If (...) Cycle`，无需 `End If`）；新增的 `SectionRealDuplicate/Set/Restrict/Restore/Complete/ToVec/Destroy`、`SCATTER_FORWARD` 在本文件中分别有 16/3/8/2/4/15/16/5 处既有先例。仍为零本地编译、靠 CI 验证。
+
+**#56 判据（按顺序）**：① `SetSourceCst enter (SectionReal path)` → `set 1 id 1 nCell ... src ...` → `done`；② `UpdateBC cell set ... nVal ...` / `UpdateBC done`、`pre-TSSolve`；③ step 1 打 `TSSolve skipped (no time advance)`，step 2 起出现 `IFunction enter / post-OperatorCore / IJacobian enter / post-TSSolve` 与 `-flow_ts_monitor` 步进；④ `TSGetConvergedReason`、TS time 推进、`_out.gen` 内 pressure 是否随时间衰减（3.2 Terzaghi 解析解比对前置）。若仍 SEGV，最后一个 `Gate 3.1` 检查点仍可精确定位（缓存生效后下一轮只需几分钟）。
