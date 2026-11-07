@@ -708,3 +708,14 @@ MEF90VecSetValuesISdof: DMMeshISCreateISglobaldof → ... (DM Mesh 内部含同�
 **校验**：`git diff --check`、PyYAML（19 steps）、`bash -n` 全通过；6 处调用逐一核对，TS 路径已无 `Diffusion*Set(...,FlowCtx%DM,...)` 残留。仍为零本地编译、靠 CI 验证。
 
 **#60 判据**：① 编译通过、`Gate 3.1 PASS` 保持；② `Gate 3.2 diag shift a` = 50；③ pmax 单调衰减、`ratio≈0.09` → `Gate 3.2 PASS`、CI 全绿；④ 若仍发散，则下一轮用 `MatNorm(Jac)` 与 `VecNorm(F)` 逐项对比 F/J 装配，并检查 `MEF90Element_Create` 是否也需换成 `DMScal`；⑤ 收敛后把 step 16 的浮点跳步改为基于 `time(step)` 的容差驱动，再做 z 剖面与 Terzaghi 级数逐点比对。
+
+
+## CI #60 复核（2026-11-07 13:25，DM 假设被证伪 → 转向 F/J 一致性）
+
+**状态**：run `42342061821` / job `128311695113`，`completed failure`，但失败原因正确且信息明确：`=== FAIL: Gate 3.2 pressure DIVERGED (pmax final/initial=1.65448e+31 > 1.5) ===`（硬判据首次生效，杜绝假绿）。`Gate 3.1 PASS` 保持，`mpirun exit code: 0`。
+
+**关键观测**：`Gate 3.2 diag: IJacobian t 0.02/0.04/0.06 shift a 50.0` —— BE 的 `a=1/dt=50` **完全正确**；但 `pmax` 末值 **1.6544841814641773E+036 与 #59 逐位完全相同**。把 6 处装配的 mesh 从 `FlowCtx%DM` 改成 `DMScal` **没有改变任何数值** → 主 DM 与 DMScal 的 default section 在本配置下等价，「2-dof/1-dof 映射错位」假设被证伪（改动本身仍保留，因为它与 HeatXfer 模板一致）。
+
+**新的最强怀疑（可由 #61 直接证伪/确认）**：`MEF90FlowIFunction` 内共发生 **3 次 `SectionRealToVec(..., SCATTER_FORWARD, F)`**（`OperatorCore` 内 1 次 + `AddStorageToResidual` 内 1 次 + `ApplyDirichletResidual` 内 1 次），而 HeatXfer 的 IFunction 只在全部分项累加进同一个 `FSec` 后 scatter **1 次**。若该 scatter 在 PETSc 3.3 是 `ADD_VALUES` 语义，`F` 会被反复累加成数倍 `K·p + S·M·ṗ`，而 `J` 只装配一次 → **F/J 不相容**，`KSPCG` 在 `MAT_SPD` 假设下收敛到错误解并逐放大 —— 与观测的 `|x|`、`|xDot|` 交替变号放大一致。
+
+**#61 改动（纯诊断，不动求解逻辑）**：在 `MEF90FlowIFunction` 的前 4 步（`t<0.07`）打印 `|x|∞`、`|xDot|∞`，以及 `|F|∞` 在 `post-OperatorCore` / `post-Storage` / `post-Dirichlet` 三个检查点的值。若 `|F|` 逐次成倍增长即可确认 scatter 累加，下一步把 IFunction 重构为「单个 `FSec` 累加 K·p + S·M·ṗ + 源项 → 一次 SCATTER_FORWARD → BC 行单独覆盖」的 HeatXfer 结构。

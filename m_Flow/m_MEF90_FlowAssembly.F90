@@ -253,16 +253,39 @@ Contains
       Type(Vec),Intent(INOUT)                            :: F
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
+      Character(len=256)                                 :: IOBuffer
+      PetscReal                                          :: nX, nXDot, nF
       !!! CI #53 diagnostic: mark entry into the TS residual callback.
       Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IFunction enter\n',ierr);CHKERRQ(ierr)
       Call MEF90FlowOperatorCore(x,F,FlowCtx,ierr);CHKERRQ(ierr)
       Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IFunction post-OperatorCore\n',ierr);CHKERRQ(ierr)
+      !!! Gate 3.2 diagnostic (CI #60): three SectionRealToVec(SCATTER_FORWARD)
+      !!! calls happen in this callback. If that scatter is ADD_VALUES rather
+      !!! than INSERT_VALUES, F would be accumulated repeatedly while J is
+      !!! assembled once -> F/J inconsistency -> exponential blow-up.
+      If (t < 0.07_Kr) Then
+         Call VecNorm(x,NORM_INFINITY,nX,ierr);CHKERRQ(ierr)
+         Call VecNorm(xDot,NORM_INFINITY,nXDot,ierr);CHKERRQ(ierr)
+         Call VecNorm(F,NORM_INFINITY,nF,ierr);CHKERRQ(ierr)
+         Write(IOBuffer,*) 'Gate 3.2 diag: t',t,' |x|',nX,' |xDot|',nXDot,' |F| post-OperatorCore',nF,'\n'
+         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+      End If
       Call MEF90FlowAddStorageToResidual(F,xDot,FlowCtx,ierr);CHKERRQ(ierr)
+      If (t < 0.07_Kr) Then
+         Call VecNorm(F,NORM_INFINITY,nF,ierr);CHKERRQ(ierr)
+         Write(IOBuffer,*) 'Gate 3.2 diag: |F| post-Storage',nF,'\n'
+         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+      End If
       !!! Gate 3.1 fix: AddStorageToResidual scatters FSec back into F, so it
       !!! also writes S*M*xDot into the Dirichlet dofs. Those dofs are algebraic
       !!! constraints (F = x - p_bc, with NO time derivative). Re-impose them
       !!! LAST, matching the Jacobian treatment in MEF90FlowIJacobian below.
       Call MEF90FlowApplyDirichletResidual(x,F,FlowCtx,ierr);CHKERRQ(ierr)
+      If (t < 0.07_Kr) Then
+         Call VecNorm(F,NORM_INFINITY,nF,ierr);CHKERRQ(ierr)
+         Write(IOBuffer,*) 'Gate 3.2 diag: |F| post-Dirichlet',nF,'\n'
+         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+      End If
       Call VecAssemblyBegin(F,ierr);CHKERRQ(ierr)
       Call VecAssemblyEnd(F,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowIFunction
