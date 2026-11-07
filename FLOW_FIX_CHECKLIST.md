@@ -933,4 +933,47 @@ CDF2 布局复核：`REC0=23980`、`RECSZ=55320`、`numrecs=51`、`coordx/coordy
 - 根因：`m_DefMech/m_MEF90_DefMech.F90:1290` 与 `m_HeatXfer/m_MEF90_HeatXfer.F90:584` 把 `nameV` 的 offset 1 固定写成 `"Temperature"`；Flow 侧仅在 `m_Flow/m_MEF90_FlowCtx.F90:393` 用 `PetscObjectSetName(...,"Pressure")` 给 Vec 起名，未写进 `nameV`。
 - 影响：ParaView / VisIt 会把压力场显示成温度、单位错误；纯输出元数据缺陷，不影响数值。修改前需先确认 `nameV` 的 offset 分配规则。
 
-**当前状态**：两个闸门稳定通过；结果网格、三份后处理产物与两个可复现脚本可直接用于分析；本地与远程 `main` 一致。上述 A/B 及既有清理项均为非阻塞，改动需重跑 CI 并另行授权推代码；本节的文档更新与新增文件目前仅在本机，未推送。
+**当时状态（已被 CI #67 取代）**：两个闸门稳定通过；结果网格、三份后处理产物与两个可复现脚本可直接用于分析；本地与远程 `main` 一致。上节 A/B 两项缺陷随后在 CI #67 中修复，见下一节。
+
+
+## CI #67 结果（2026-11-07 17:25）：A/B 修复完成，解析基准严格对齐
+
+**状态**：commit `40cd29a`，run `42359268474` / job `128363964783`，`completed success`。`git push` 已恢复（代理 `127.0.0.1:7888` 可用），不再需要 REST API 绕行。
+
+### 改动
+
+1. **`vDef/vDef.F90`（修 A）**：初始化末尾、时间循环之前，用**已 public 的 `MEF90FlowOperator`** 计算一次 SNES 残差，再 `VecAXPY(pressure,-1.0_Kr,residualPressure)` 把 Dirichlet 修正从初始场里减掉。原理：`MEF90FlowCtxCreateVectors` 把压力设成全场 `p0`（无 BC）；均匀场下 `K·p=0`、`source=0`，故残差只在 Dirichlet dof 上等于 `p0-p_bc`、内部为 0。减掉后内部仍 `p0`、排水面变为 `p_bc`，正是解析级数的 `BE(0)`。此后 `time_whole=t` 的场就是 `BE(n)`（`n=t/dt`），不再滞后一步。零新增接口、零本地编译。
+2. **`m_DefMech/m_MEF90_DefMech.F90`（修 B）**：`MEF90DefMechFormatEXO` 里 `nameV(temperatureOffset)` 改为按 `Associated(MEF90DefMechCtx%temperature)` 条件赋值 —— HeatXfer 激活时 `"Temperature"`，禁用时（vDef 已 `DeAllocate` 该成员，Flow 的 `pressureOffset=1` 占用同一 slot）为 `"Pressure"`。不新增 Exodus API、不改 offset 布局；根目录同名文件是旧副本，构建只用 `m_DefMech/`。
+3. **`.github/workflows/build.yml`**：① 运行前 `rm -f data/Beam1x10-tri3_out.gen`，保证 `EXGVP→0` 从而一定执行 `FormatEXO`（否则变量名修复不生效）；② Gate 3.2 新增**真正的解析解硬比对**：纯 `awk` 计算 BE 修正 Terzaghi 级数在 t=1 的 `p/p0=0.09339316`，要求 `|ratio-expected|<=0.02`；③ 新增 `name_nod_var1=="Pressure"` 校验（纯标准库 `vDef/data/parse_cdf2.py`）。原有 `ratio>1.5` 发散判据与 `[0.05,0.15]` 带宽判据保留。
+4. 新增 `vDef/data/parse_cdf2.py`（CDF2 解析器，CI 依赖）与 `vDef/data/postprocess_terzaghi.py`（后处理主脚本）。
+
+静态校验：`git diff --check`、PyYAML（19 steps）、全部 `run` 块 `bash -n`、两个 Fortran 文件 `If/End If` 配对 0/0、新增 shell/awk 命令行本地原样复现，全通过。
+
+### CI 关键输出
+
+| 判据 | 结果 |
+|---|---|
+| Gate 3.1 | **PASS**（50 次 `post-TSSolve` + 1 次 step-1 skip、TS 到 t=1、rejected=0、`_out.gen` magic 有效） |
+| 初始场 | `CI #67: initial pressure after Dirichlet pmin 0.0 pmax 100000.0`（排水面 6 节点为 0） |
+| Gate 3.2 带宽 | **PASS**：`ratio=0.0905571 ∈ [0.05,0.15]`（#66 为 0.0954738） |
+| Gate 3.2 解析 | **PASS**：BE 解析 `0.09339316`，`|0.0905571-0.09339316|=0.00284 <= 0.02` |
+| Gate 3.2 元数据 | **PASS**：`name_nod_var1 = 'Pressure'`（#66 为 `Temperature`） |
+
+### `_out.gen` 逐点复核（artifact `terzaghi-out-gen`，已落盘）
+
+`CDF\002`、2,845,300 B、51 records、`REC0=23980`、`RECSZ=55320`、356 节点。`t=0` 场 `pmin=0 / pmax=1e5` 且仅 6 个节点低于 `0.5 p0`（排水面）；`t=0.02` 的 `pmax=99773.794` 正是 #66 的 `t=0.04` 值 —— 序列整体前移一步，完全符合预期。
+
+| t | L2 vs BE(n) | L2 vs BE(n-1) | 最优 |
+|---|---|---|---|
+| 0.02 | **0.050%** | 25.652% | BE(n) |
+| 0.10 | **0.401%** | 6.129% | BE(n) |
+| 0.50 | **1.688%** | 6.688% | BE(n) |
+| 1.00 | **3.206%** | 8.131% | BE(n) |
+
+对比 #66（修复前）：早期是 `BE(n-1)` 逐位吻合（0.050% / 0.336%），现在**所有时刻都严格对齐 `BE(n)`**；`t=0` 的 L2 误差从 13.09% 降到 **0.000%**；全场相对连续解析解的误差从 9.40% 降到 **3.76%**（残余来自一阶 BE 与 P1 空间离散谱偏差）。
+
+### 后处理产物（已用 #67 artifact 重新生成）
+
+`terzaghi_pressure_timeseries.csv`（51 行）、`terzaghi_pressure_field.csv`（18,156 行）、`terzaghi_validation.png`（四联图）。CSV 保留 `*_shift1_*` 列作为修复前对齐的历史对照；PNG 的 (c) 面板同时画出 `BE(n)`（当前基准）与 `BE(n-1)`（旧对齐），直观展示修复效果。运行 `python vDef/data/postprocess_terzaghi.py` 可一键重生成。
+
+**当前状态**：闸门 3.1 / 3.2 均稳定通过；时间轴与输出元数据正确；transient Darcy 求解链物理正确且逐时对齐解析解。剩余非阻塞清理：YAML 几何注释、`pressurePreviousStep` 死写、GMRES/CG 选型、诊断 trace 减噪、DefMech AltMin 50 次 SNES WARNING、以及 nodal slot 3 仍存在 `boundary_pressure_offset=3` 与 `disp_offset=3` 的槽位复用（名字仍是 `Displacement_X`，本次未动，需统一规划 offset 后再改）。

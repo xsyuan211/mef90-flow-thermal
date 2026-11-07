@@ -4,6 +4,11 @@ Reads vDef/data/Beam1x10-tri3_out.gen (Exodus / NetCDF CDF2), extracts the
 nodal pressure history, compares it pointwise with the 1D Terzaghi series
 (continuum and backward-Euler-corrected), and writes CSV tables + a PNG chart.
 
+CI #67 applied the Dirichlet BC to the initial field, so the field written
+at time_whole=t is now exactly the BE(n) field with n=t/dt. The "shift1"
+columns (BE(n-1)) are kept only as a historical reference: before CI #67
+they were the correct alignment, now they quantify the fix.
+
 Pure numpy + PIL (no scipy / matplotlib, matching the local environment).
 """
 import csv
@@ -65,8 +70,9 @@ def analytic_vec_steps(nsteps):
     """BE-series field after exactly nsteps steps (independent of time label).
 
     nsteps=0 is the initial field WITH the drained Dirichlet BC applied
-    (interior p0, drained face 0). The vDef output at t=0 is still the
-    raw p0 field without BC, so its fields lag this series by one step.
+    (interior p0, drained face 0); this is exactly what CI #67 now writes
+    at t=0. Callers use n=t/dt for the correct post-#67 alignment, and
+    n-1 only to reproduce the pre-#67 one-step lag for comparison.
     """
     if nsteps <= 0:
         return P0 * np.where(_Z >= H - 1e-12, 0.0, 1.0)
@@ -210,7 +216,7 @@ def frame(dr, box, title, xlabel, ylabel, xmin, xmax, ymin, ymax, logy=False):
 
     tick = (ymax - ymin) / 4
     tickfmt = '%.3f' if tick < 0.02 else ('%.2f' if tick < 0.5 else
-                                         ('%.1f' if tick < 2 else '%.0f'))
+                                         ('%.1f' if tick < 5 else '%.0f'))
     for k in range(5):
         gy = T + k * (B - T) / 4
         dr.line([(L, gy), (R, gy)], fill=GRID)
@@ -261,7 +267,7 @@ def draw_chart(times, fields, x, y, z, rows):
     dr = ImageDraw.Draw(im)
     dr.text((60, 14), 'Gate 3.2  |  Terzaghi 1D consolidation: FEM vs analytic solution',
             fill=FG, font=font(22, True))
-    dr.text((60, 40), 'CI #66  -  51 steps, dt=0.02 s, cv=108.696 m2/s, H=10 m, p0=1e5 Pa',
+    dr.text((60, 40), 'CI #67  -  51 steps, dt=0.02 s, cv=108.696 m2/s, H=10 m, p0=1e5 Pa',
             fill=(100, 106, 118), font=font(13))
 
     # (a) pmax/p0 decay
@@ -273,7 +279,7 @@ def draw_chart(times, fields, x, y, z, rows):
     poly(dr, con, C_CONT, 3, dash=True)
     poly(dr, be, C_BE, 3)
     poly(dr, fem, C_FEM, 3)
-    legend(dr, PANEL[0], [('FEM (CI #66)', C_FEM, False),
+    legend(dr, PANEL[0], [('FEM (CI #67)', C_FEM, False),
                           ('BE-corrected series', C_BE, False),
                           ('continuum series', C_CONT, True)])
 
@@ -303,7 +309,7 @@ def draw_chart(times, fields, x, y, z, rows):
 
     # (c) L2 error history
     X, Y = frame(dr, PANEL[2], '(c) Field L2 relative error vs time',
-                 'time t [s]', 'L2 rel. error [%]', 0, 1.0, 0, 36.0)
+                 'time t [s]', 'L2 rel. error [%]', 0, 1.0, 0, 10.0)
     e_con = [(X(t), Y(float(r[7]) * 100)) for t, r in zip(times, rows)]
     e_be = [(X(t), Y(float(r[8]) * 100)) for t, r in zip(times, rows)]
     e_sh = [(X(t), Y(float(r[10]) * 100)) for t, r in zip(times, rows)]
@@ -311,14 +317,14 @@ def draw_chart(times, fields, x, y, z, rows):
     poly(dr, e_be, C_BE, 3)
     poly(dr, e_sh, C_SHIFT, 3, dash=True)
     legend(dr, PANEL[2], [('vs continuum', C_CONT, False),
-                          ('vs BE (n steps)', C_BE, False),
-                          ('vs BE (n-1 steps)', C_SHIFT, True)])
+                          ('vs BE(n) [CI #67]', C_BE, False),
+                          ('vs BE(n-1) [old]', C_SHIFT, True)])
     x0, y0, x1, y1 = PANEL[2]
     dr.text((x0 + 250, y0 + 78),
-            't<0.06 spike: initial condition / Dirichlet ramp-in',
+            'CI #67: t=0 field now satisfies the Dirichlet BC',
             fill=(100, 106, 118), font=font(12))
     dr.text((x0 + 250, y0 + 98),
-            'early fields match BE(n-1) to 0.05-2%: one-step time-label offset',
+            'BE(n) is the correct reference; purple = pre-#67 one-step lag',
             fill=(100, 106, 118), font=font(12))
 
     # (d) space-time heat map
