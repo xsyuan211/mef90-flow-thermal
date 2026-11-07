@@ -46,6 +46,10 @@ Program vDef
    TSConvergedReason                                  :: tsPressureConvergedReason
    Logical                                            :: flowTransient
    PetscReal                                          :: tFlowEnd, dtFlow0
+   !!! Gate 3.2: global pressure extrema per outer step. VecMax is the
+   !!! undrained bottom pressure -> Terzaghi decay probe (zero local compile,
+   !!! VecMin/VecMax already used in m_MEF90_DefMechAssembly.F90:91-92).
+   PetscReal                                          :: pressureMin, pressureMax
 
    SNESConvergedReason                                :: snesDispConvergedReason
    Type(Vec)                                          :: residualDisp
@@ -474,6 +478,15 @@ Program vDef
             Write(IOBuffer,*) 'Gate 3.1: step',step,' TS time',t,' target',time(step),'\n'
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             Call VecCopy(MEF90FlowCtx%pressure,MEF90FlowCtx%pressurePreviousStep,ierr);CHKERRQ(ierr)
+            !!! Gate 3.2: emit the pressure envelope of THIS outer step.
+            !!! VecMin/VecMax are collective but every rank executes this
+            !!! block, so no rank-dependent deadlock (CI #57 lesson).
+            !!! pmax is the impermeable-bottom pressure: Terzaghi predicts it
+            !!! decays from p0=1e5 towards ~8.7e3 at t=1 s (T~1.09).
+            Call VecMin(MEF90FlowCtx%pressure,PETSC_NULL_INTEGER,pressureMin,ierr);CHKERRQ(ierr)
+            Call VecMax(MEF90FlowCtx%pressure,PETSC_NULL_INTEGER,pressureMax,ierr);CHKERRQ(ierr)
+            Write(IOBuffer,*) 'Gate 3.2: step',step,' pmin',pressureMin,' pmax',pressureMax,'\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
          End If
 
          !!! NEW — Phase 2b: snapshot preset forces (gravity etc.) into baseForce
