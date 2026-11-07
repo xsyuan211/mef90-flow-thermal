@@ -889,4 +889,48 @@ MEF90VecSetValuesISdof: DMMeshISCreateISglobaldof → ... (DM Mesh 内部含同�
 
 **当前状态**：闸门 3.1 与 3.2 均稳定通过；transient Darcy 求解链（TS 创建 → IFunction/IJacobian → Dirichlet → 输出）物理正确；`vDef/data/Beam1x10-tri3_out.gen` 已可用于后处理。
 
-**剩余清理项（非阻塞）**：YAML 注释里的 `1m(W)×10m(H)` 与真实几何 `x∈[-5,5], y∈[-0.5,0.5]` 对齐；`pressurePreviousStep` 死写；GMRES/CG 最终选型；`Gate 3.1/3.2` 诊断 trace 与 `|F|₁`/`diagJ` 打印减噪；DefMech AltMin 每步 SNES 非收敛（50 次 WARNING，力学侧遗留）；本地 HEAD 与远程 main 分叉（远程已到 #66）。
+**剩余清理项（非阻塞）**：YAML 注释里的 `1m(W)×10m(H)` 与真实几何 `x∈[-5,5], y∈[-0.5,0.5]` 对齐；`pressurePreviousStep` 死写；GMRES/CG 最终选型；`Gate 3.1/3.2` 诊断 trace 与 `|F|₁`/`diagJ` 打印减噪；DefMech AltMin 每步 SNES 非收敛（50 次 WARNING，力学侧遗留）；**新增**：输出时间标签超前 1 个 `dt`、Exodus 节点变量名错标 `Temperature`（见下节）。
+
+
+## 后处理与仓库同步（2026-11-07 16:45）：产物交付，另发现 2 项待修缺陷
+
+### 1. 本地仓库已对齐远程 main（代理恢复）
+
+- `git fetch origin main` 现已通（代理 `127.0.0.1:7888` 恢复），`origin/main` 由 `8983360` 更新到 `f695c907`。最新 CI run 仍是 #66 `42354263842 / completed success`；`f695c907` 带 `[skip ci]`，之后没有新 run。
+- 本地 4 个核心文件的 raw blob sha 与远程 tree **逐字节一致**：`build.yml a247f3f0`、`FLOW_FIX_CHECKLIST.md 300495ec`、`FlowAssembly.F90 709b9e78`、`vDef.F90 f9e2abbd`。
+- 分叉情况：`merge-base = 8983360`，本地独有 5 个提交 / 远程独有 10 个；`README.md` 与 `vDefDefault_remote.F90` 的 HISTORY 差异经 `git diff --ignore-space-at-eol` 确认为纯 CRLF 假差异。
+- 备份 `backup/local-pre-sync-5e22420` 后执行 `git reset --hard origin/main` → HEAD = `f695c907`，`git diff origin/main` 为空，`git status` 只剩未跟踪的 `.workbuddy/` / `.trae/`；`vDef/data/Beam1x10-tri3_out.gen` 完好（2,845,300 B，`CDF\002`，51 records）。
+
+### 2. 后处理产物（本机 numpy + PIL，零编译）
+
+| 文件 | 内容 |
+|---|---|
+| `vDef/data/terzaghi_pressure_timeseries.csv` | 51 行：`t` / `pmin` / `pmax` / `pmax·p0⁻¹`，连续解析、BE 解析、BE-shift1 的封闭端峰值，三套全场 L2 相对误差 |
+| `vDef/data/terzaghi_pressure_field.csv` | 18,156 行（51 时刻 × 356 节点）：`x`, `y`, FEM 压力，三套解析值，两组逐点残差 |
+| `vDef/data/terzaghi_validation.png` | 四联图：峰值衰减、t=1 剖面、L2 误差史、时空压力热图 |
+| `vDef/data/parse_cdf2.py` | 精简 NetCDF CDF2 解析器（header / 变量表 / record 偏移），纯 `struct` |
+| `vDef/data/postprocess_terzaghi.py` | 后处理主脚本，运行 `python vDef/data/postprocess_terzaghi.py` 即可一键重生成上表三份产物 |
+
+CDF2 布局复核：`REC0=23980`、`RECSZ=55320`、`numrecs=51`、`coordx/coordy` 356 节点、`vals_nod_var1` 为压力、`vals_elem_var4eb1` 600 单元。参数 `c_v=(5e-11/1e-3)/4.6e-10=108.695652 m²/s`、`H=10 m`（`z=5-x`，排水面 `x=-5`）、`p0=1e5 Pa`、`dt=0.02 s`；Terzaghi 级数取 400 项，BE 修正把每个模态换成 `(1+λ_m dt)^(-t/dt)`。
+
+| t | pmax FEM | 连续解析 | BE 解析 | L2 连续 | L2 BE(n) | L2 BE(n-1) |
+|---|---|---|---|---|---|---|
+| 0.10 | 95183 | 93606 | 92465 | 7.61% | 5.75% | **0.34%** |
+| 0.20 | 77971 | 74126 | 74687 | 6.19% | 4.66% | **0.70%** |
+| 0.50 | 35802 | 33306 | 34481 | 7.32% | 3.66% | **1.63%** |
+| 1.00 | 9547 | 8713 | 9339 | 9.40% | **2.06%** | 3.15% |
+
+### 3. 新发现 A（#67 候选）：`time_whole` 比物理推进超前 1 个 `dt`
+
+- `t=0` 输出的是**未施加 Dirichlet BC 的均匀场**（356 节点 `pmin=pmax=1e5`）；`t=0.02` 输出场恰好等于「含 BC 的初始场」（只有 `x=-5` 的 6 个节点为 0，其余 `p0`），与 BE 级数 `n=0` 的 L2 = **0.0000%**。
+- 因此 `time_whole=t` 的场对应 BE 解析的 **`n-1` 步**。逐步量化：`t=0.04 → BE(1)` **0.050%**、`0.10 → BE(4)` **0.336%**、`0.30 → BE(14)` **1.024%**、`0.70 → BE(34)` **2.240%**，早期几乎逐位吻合；后期空间离散谱偏差累积，`t=1.0` 落在 `BE(49)` 与 `BE(50)` 之间（`3.145%` vs `2.061%`）。
+- 根因：`vDef.F90` 的 step 1 跳过 `TSSolve` 且初始条件未先施加 BC，输出时间标签没有补偿这一步。**不影响闸门 3.1/3.2**（`ratio=0.0955` 物理正确），但严格逐时解析比对须用 `n-1`（CSV 已提供 `*_shift1_*` 列）。
+- 候选修法：① 初始化后立即调用 `UpdateboundaryPressure` 把排水面置 0 再写 `t=0`；或 ② 写 `time_whole` 时统一减 `dt`。两者都需重跑 CI，且会改变 Gate 3.2 的解析对齐基准。
+
+### 4. 新发现 B：Exodus 节点变量名错标为 `Temperature`
+
+- `_out.gen` 的 `name_nod_var(1)` 是 `Temperature`，但 `vals_nod_var1` 的数值已逐点验证为压力（Pa）。
+- 根因：`m_DefMech/m_MEF90_DefMech.F90:1290` 与 `m_HeatXfer/m_MEF90_HeatXfer.F90:584` 把 `nameV` 的 offset 1 固定写成 `"Temperature"`；Flow 侧仅在 `m_Flow/m_MEF90_FlowCtx.F90:393` 用 `PetscObjectSetName(...,"Pressure")` 给 Vec 起名，未写进 `nameV`。
+- 影响：ParaView / VisIt 会把压力场显示成温度、单位错误；纯输出元数据缺陷，不影响数值。修改前需先确认 `nameV` 的 offset 分配规则。
+
+**当前状态**：两个闸门稳定通过；结果网格、三份后处理产物与两个可复现脚本可直接用于分析；本地与远程 `main` 一致。上述 A/B 及既有清理项均为非阻塞，改动需重跑 CI 并另行授权推代码；本节的文档更新与新增文件目前仅在本机，未推送。

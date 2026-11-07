@@ -1287,7 +1287,19 @@ End Subroutine MEF90DefMechUpdateboundaryDamage
          nameV(MEF90DefMechGlobalOptions%boundaryDamageOffset)            = "Boundary_Damage"
       End If
       If (MEF90DefMechGlobalOptions%temperatureOffset > 0) Then
-         nameV(MEF90DefMechGlobalOptions%temperatureOffset)               = "Temperature"
+         !!! CI #67: in vDef the Flow solver writes the Darcy pressure into
+         !!! the nodal slot `pressureOffset`, which coincides with this
+         !!! temperatureOffset (both = 1 in vDefDefault / terzaghi1D.yaml).
+         !!! When HeatXfer is disabled vDef DeAllocates
+         !!! MEF90DefMechCtx%temperature and never writes a temperature
+         !!! field, so slot 1 actually contains PRESSURE [Pa], not [K].
+         !!! Label it from the real owner instead of hard-coding
+         !!! "Temperature" (which made ParaView report a temperature field).
+         If (Associated(MEF90DefMechCtx%temperature)) Then
+            nameV(MEF90DefMechGlobalOptions%temperatureOffset)            = "Temperature"
+         Else
+            nameV(MEF90DefMechGlobalOptions%temperatureOffset)            = "Pressure"
+         End If
       End If
       
       numfield = 0

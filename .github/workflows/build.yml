@@ -427,6 +427,11 @@ jobs:
             export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$EXTRA_LIB_DIRS"
           fi
           cd vDef
+          # CI #67: always start from a virgin result file. MEF90DefMechFormatEXO
+          # (which writes the nodal variable NAMES) only runs when the output
+          # file is unformatted (EXGVP returns 0), so a stale _out.gen would
+          # silently keep the old "Temperature" label for the pressure field.
+          rm -f data/Beam1x10-tri3_out.gen
           # Many data/*.gen entries in this repo are TEXT POINTERS: they were
           # symlinks to ../../TestMeshes/*.gen, materialized as plain text on
           # Windows checkouts. Exodus needs a real NetCDF/HDF5 file; magic must
@@ -610,6 +615,30 @@ jobs:
               echo "=== FAIL: Gate 3.2 decay ratio $ratio outside analytic band [0.05,0.15] ==="
               echo "    expected FE/BE 0.0934 (continuum Terzaghi 0.0871)."
               grep "Gate 3.2:" /tmp/terzaghi.log | awk 'NR==1 || NR%10==0' | head -8 || true
+              exit 1
+            fi
+            # --- CI #67: TRUE analytic comparison + output metadata check ---
+            # Backward-Euler-corrected Terzaghi series at the closed end z=0,
+            # t=1 s: cv=(k/mu)/S=108.695652 m2/s, H=10 m, dt=0.02 s, n=50.
+            # Every mode decays as (1+lambda_m*dt)^(-n) instead of
+            # exp(-lambda_m*t). Pure awk: no numpy/scipy on the runner, and
+            # 200 modes is far beyond convergence at t=1.
+            expected=$(awk 'BEGIN{pi=atan2(0,-1); cv=(5.0e-11/1.0e-3)/4.6e-10; H=10.0; dt=0.02; n=50; s=0.0; for(m=0;m<200;m++){k=2*m+1; lam=cv*(k*pi/(2.0*H))^2; a=(4.0/pi)*((m%2==0)?1.0:-1.0)/k; s+=a*exp(-n*log(1.0+lam*dt))} printf "%.8f",s}')
+            echo "=== Gate 3.2: BE-corrected analytic p/p0(t=1)=$expected ; FEM ratio=$ratio ==="
+            if awk -v r="$ratio" -v e="$expected" 'BEGIN{d=r-e; if(d<0)d=-d; exit !(d<=0.02)}'; then
+              echo "=== Gate 3.2 PASS: |FEM - BE analytic| <= 0.02 (time axis aligned, CI #67) ==="
+            else
+              echo "=== FAIL: Gate 3.2 FEM ratio deviates from the BE analytic solution by > 0.02 ==="
+              echo "    A ratio near 0.124 means the initial Dirichlet BC was NOT applied."
+              exit 1
+            fi
+            # CI #67: nodal variable 1 carries the Darcy pressure and must be
+            # labelled Pressure [Pa], not Temperature [K]. parse_cdf2.py is a
+            # pure-standard-library NetCDF CDF2 reader committed under vDef/data.
+            nodvar1=$(python3 -c "import sys; sys.path.insert(0,'data'); from parse_cdf2 import CDF2; c=CDF2('$out'); print(b''.join(c.read_static('name_nod_var')[:33]).rstrip(b'\x00').decode())")
+            echo "=== Gate 3.2 metadata: name_nod_var1 = '$nodvar1' ==="
+            if [ "$nodvar1" != "Pressure" ]; then
+              echo "=== FAIL: Gate 3.2 Exodus nodal variable 1 is '$nodvar1', expected Pressure ==="
               exit 1
             fi
             echo "=== Gate 3.2 probe: every 10th step pmax ==="

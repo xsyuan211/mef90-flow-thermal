@@ -198,6 +198,26 @@ Program vDef
    Call MEF90FlowUpdateStorativity(MEF90FlowCtx,ierr);CHKERRQ(ierr)
    Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 08 Flow coefficients ready\n",ierr);CHKERRQ(ierr)
 
+   !!! CI #67 — apply the Dirichlet BC to the INITIAL pressure field.
+   !!! MEF90FlowCtxCreateVectors sets p = p0 everywhere (no BC), so the
+   !!! first TSSolve spent its whole step merely zeroing the drained face:
+   !!! for a uniform field K*p = 0, source = 0, and F(U0,0) equals p0-p_bc
+   !!! on the Dirichlet dofs and 0 in the interior. Every output record was
+   !!! therefore labelled one dt too late: time_whole=t held the BE(n-1)
+   !!! field (verified offline: t=0.04 matched BE(1) to 0.05%, t=0.10
+   !!! matched BE(4) to 0.34%). Reuse the already-public SNES residual to
+   !!! extract exactly that Dirichlet correction and subtract it ONCE before
+   !!! the time loop: the interior stays p0, the drained face becomes p_bc.
+   !!! From now on the field written at time_whole=t is the BE(n) field with
+   !!! n = t/dt, and step 2..51 still take exactly one fixed-dt BE step each.
+   Call MEF90FlowUpdateboundaryPressure(MEF90FlowCtx%boundaryPressure,MEF90FlowCtx,ierr);CHKERRQ(ierr)
+   Call MEF90FlowOperator(snesPressure,MEF90FlowCtx%pressure,residualPressure,MEF90FlowCtx,ierr);CHKERRQ(ierr)
+   Call VecAXPY(MEF90FlowCtx%pressure,-1.0_Kr,residualPressure,ierr);CHKERRQ(ierr)
+   Call VecMin(MEF90FlowCtx%pressure,PETSC_NULL_INTEGER,pressureMin,ierr);CHKERRQ(ierr)
+   Call VecMax(MEF90FlowCtx%pressure,PETSC_NULL_INTEGER,pressureMax,ierr);CHKERRQ(ierr)
+   Write(IOBuffer,*) 'CI #67: initial pressure after Dirichlet pmin',pressureMin,' pmax',pressureMax,'\n'
+   Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+
    Call VecDuplicate(MEF90DefMechCtx%displacement,displacementAltMinOld,ierr);CHKERRQ(ierr)
    Call VecDuplicate(MEF90DefMechCtx%displacement,residualDisp,ierr);CHKERRQ(ierr)
    Call PetscObjectSetName(residualDisp,"residualDisp",ierr);CHKERRQ(ierr)
