@@ -401,6 +401,9 @@ jobs:
           file bin/$PETSC_ARCH/vDef
       - name: Run Terzaghi
         if: always()
+        # CI #57 hung for 1h in mpirun (MPI deadlock) with no step timeout.
+        # Cap the step and the solver so a hang always produces diagnostics.
+        timeout-minutes: 20
         run: |
           set +e
           export PETSC_DIR=$HOME/petsc-3.3-mef90
@@ -464,12 +467,20 @@ jobs:
           fi
           echo "=== system runtime libraries resolved for vDef ==="
           grep -E "libstdc\+\+|libgcc_s|libz\.so|libtinfo" /tmp/ldd-vDef.log || true
-          mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D.yaml \
             -flow_ts_view -flow_ts_monitor 2>&1 | tee /tmp/terzaghi.log
           rc=${PIPESTATUS[0]}
           echo "=== Terzaghi mpirun exit code: $rc ==="
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            echo "=== FAIL: Terzaghi TIMED OUT / HUNG (MPI deadlock or stalled TS solve) ==="
+            echo "=== last Gate 3.1 trace reached (both ranks print via PETSC_COMM_SELF) ==="
+            grep -n "Gate 3.1" /tmp/terzaghi.log | tail -100 || true
+            echo "=== last 80 raw lines before timeout ==="
+            tail -80 /tmp/terzaghi.log
+            exit 1
+          fi
           echo "=== terzaghi.log (last 120 lines) ==="
           tail -120 /tmp/terzaghi.log
           echo "=== result files (3.2 analytical-comparison data source) ==="

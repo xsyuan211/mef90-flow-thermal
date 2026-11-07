@@ -596,3 +596,27 @@ Gate 3.1: UpdateBC enter
 **校验**：`git diff --check` 干净；三个改写子程序的 `Do/End Do`、`If/End If` 配对脚本核对通过（脚本对两处单行 `If (...) Cycle` 的假阳性已排除）；`MEF90Vec*ISdof` / `DMMeshISCreateISglobaldof` / `MatZeroRowsColumnsIS` 均由 `Use m_MEF90` 可见且在 HeatXfer/DefMech 有大量先例；全文件已无 `VecSetValues` / `VecGetValues` / `MatZeroRows(` 的实际调用（仅注释）。仍为零本地编译、靠 CI 验证。
 
 **#57 判据（按顺序）**：① 两 rank 各自打印 `UpdateBC cell set 2 id 10 / nVal ... / done`，若 rank 1 只打出 `id 10` 而无 `nVal` → 崩在 `MEF90ISCreateCelltoVertex` 内部；② `post-UpdateBC` → step 1 `TSSolve skipped (no time advance)`；③ step 2 起 `IFunction enter / post-OperatorCore / IJacobian enter / post-TSSolve` 与 `-flow_ts_monitor` 步进、`TSGetConvergedReason`；④ `_out.gen` 内 pressure 随时间从 `p0=1e5` 衰减（3.2 Terzaghi 解析解比对前置）。
+
+
+## CI #57 诊断结论与修复（2026-11-07 11:55，collective 死锁 → SectionReal 全路径）
+
+**状态**：run `42331220979` / job `128277936048`，`in_progress` 挂起约 1 小时后主动 `cancel`（`completed cancelled`）。**缓存全部命中**：`Cache OpenMPI / PETSc deps / Miniconda+PETSc build` 全 success，`Build OpenMPI` / `Pre-download PETSc deps` / `Build PETSc-3.3` 全部 skipped，构建 14 步在 02:51:18Z 即完成（**从 37 分钟降到约 25 秒**）。`Run Terzaghi` 02:53:24Z 开始后再无任何输出，job 无 `timeout-minutes`、step 无超时，会一直挂到 6 小时默认上限。运行中/取消后的 job log archive 未及时生成（302 签名地址返回 `BlobNotFound`）、artifacts 为空，故本轮靠静态定位。
+
+**根因（高置信度）**：#56 把裸 `VecSetValues` 换成 `MEF90VecSetValuesISdof` / `MEF90VecGetValuesISdof`，但这些 helper **内含 collective 调用**：
+```
+MEF90VecGetValuesISdof: DMMeshGetSectionReal → DMMeshCreateGlobalScatter → SectionRealToVec(SCATTER_REVERSE)  [VecScatter = collective]
+MEF90VecSetValuesISdof: DMMeshISCreateISglobaldof → ... (DM Mesh 内部含同步)
+```
+而 #55 留下的 `If (nVal > 0)` 保护让 **rank 0（顶面 BC 顶点数 0）整段跳过、rank 1（拥有全部顶面顶点）独自进入 collective** → MPI 死锁。行为变化完全吻合：#56 是 rank 1 直接越界 SEGV（裸 `VecSetValues` 非 collective），#57 换成 helper 后变成两 rank 无限等待。同类风险还有 `MatZeroRowsColumnsIS`（collective）被 `If (nVal > 0)` 包住。**通用规则：任何 collective 调用都不能放在 rank 相关的分支里。**
+
+**本轮改动（2 文件）**
+1. `m_Flow/m_MEF90_FlowAssembly.F90` —— 三个 BC 子程序统一改走 **SectionReal 路径**（#55 `SetSourceCst` 已在两 rank 验证；`MEF90FlowOperatorCore` / `MEF90FlowAddStorageToResidual` 同款）：
+   - `MEF90FlowUpdateboundaryPressure`：`SectionRealDuplicate(DMScalSec,bcSec)` + `SectionRealSet(0)` → 逐 BC point `SectionRealRestrict/写/Restore`（**纯本地，可用 `nVal > 0` 保护**）→ 函数末尾无条件 `SectionRealComplete` + `SectionRealToVec(SCATTER_FORWARD)` + `Destroy`。
+   - `MEF90FlowApplyDirichletResidual`：duplicate `resSec/xSec/bcSec`，三者各 `SectionRealToVec(SCATTER_REVERSE)` 读回（无条件）；逐 BC point 写 `rPtr(1) = xPtr(1) - bPtr(1)`（本地）；末尾无条件 `SectionRealComplete(resSec)` + `SCATTER_FORWARD` 写回 `residual` + Destroy × 3。
+   - `MEF90FlowApplyDirichletJacobian`：**删掉两处 `If (nVal > 0)`**，`DMMeshISCreateISglobaldof` + `MatZeroRowsColumnsIS(Jac/PreJac, ...)` 在**两个 rank 上无条件执行**（rank 0 传空 dof IS，PETSc 视为 no-op）。
+   - 结果：`MEF90Vec*ISdof` 两个 helper 已从 Flow assembly 中完全移除；所有 collective 都落在所有 rank 都执行的路径上，仅本地 per-point 写入受 `nVal` 保护。
+2. `.github/workflows/build.yml` —— 防挂兜底：`Run Terzaghi` 加 `timeout-minutes: 20`；`mpirun` 用 `timeout -k 10s 600` 包装；rc=124/137 时打印 `=== FAIL: Terzaghi TIMED OUT / HUNG ===` + 最后 100 条 Gate trace + 最后 80 行原始日志后 `exit 1`，保证任何死锁都能在 10 分钟内产出可诊断日志（且 `Upload diagnostics` 的 `if: always()` 能收走 `/tmp/terzaghi.log`）。
+
+**校验**：`git diff --check` 干净；PyYAML（18 steps，`timeout-minutes: 20`）通过；`Run Terzaghi` 的 `run` 块 `bash -n` 通过；18 个 Subroutine 的 `Do/End Do`、`If/End If`、`Select/End Select` 配对脚本全平衡；全文件已无 `VecSetValues` / `VecGetValues` / `MatZeroRows(` / `MEF90Vec*ISdof` 的实际调用（仅注释）；新增的 `SectionRealDuplicate/Set/Restrict/Restore/Complete/ToVec/Destroy` 与 `SCATTER_REVERSE/FORWARD` 在本文件均有既有先例（其中 `MEF90FlowOperatorCore` 已用同一个 `DMScalScatter` 对多个 duplicate section 做 ToVec）。仍为零本地编译、靠 CI 验证。
+
+**#58 判据（按顺序）**：① 缓存命中 → 构建 < 1 分钟；② 两 rank 各打印 `UpdateBC enter / cell set 2 id 10 / nVal ... / UpdateBC done`（`PETSC_COMM_SELF`），`post-UpdateBC` → `pre-TSSolve`；③ step 1 `TSSolve skipped (no time advance)`，step 2 起 `IFunction enter / post-OperatorCore / IJacobian enter / post-TSSolve` 与 `-flow_ts_monitor` 步进；④ TS 收敛原因、TS time 推进、`_out.gen` 压力从 `p0=1e5` 衰减（3.2 前置）。若仍挂，`timeout` 会在 10 分钟内给出卡住前最后一条 Gate trace，可直接区分死锁与 TS 收敛停滞。
