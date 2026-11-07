@@ -574,18 +574,23 @@ Contains
       PetscErrorCode,Intent(OUT)                         :: ierr
 
       Type(MEF90FlowGlobalOptions_Type),pointer          :: gOpt
+      Character(len=256)                                 :: IOBuffer
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
+      Write(IOBuffer,*) 'Gate 3.1: SetTransients enter step',step,' srcScale',gOpt%sourceScaling,' bcScale',gOpt%boundaryPressureScaling,'\n'
+      Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
 
       Select case (gOpt%sourceScaling)
          Case (MEF90Scaling_File)
             Call VecLoadExodusCell(FlowCtx%cellDMScal,FlowCtx%source,FlowCtx%MEF90Ctx%IOcomm, &
                                     FlowCtx%MEF90Ctx%fileExoUnit,step,gOpt%sourceOffset,ierr);CHKERRQ(ierr)
          Case (MEF90Scaling_Linear)
-            Call MEF90FlowSetSourceCst(FlowCtx%source,FlowCtx,ierr)
+            Call MEF90FlowSetSourceCst(FlowCtx%source,FlowCtx,ierr);CHKERRQ(ierr)
             Call VecScale(FlowCtx%source,timeVal,ierr);CHKERRQ(ierr)
          Case (MEF90Scaling_CST)
-            Call MEF90FlowSetSourceCst(FlowCtx%source,FlowCtx,ierr)
+            Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetTransients pre-SetSourceCst\n',ierr);CHKERRQ(ierr)
+            Call MEF90FlowSetSourceCst(FlowCtx%source,FlowCtx,ierr);CHKERRQ(ierr)
+            Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetTransients post-SetSourceCst\n',ierr);CHKERRQ(ierr)
       End Select
 
       Select case (gOpt%boundaryPressureScaling)
@@ -593,10 +598,12 @@ Contains
             Call VecLoadExodusVertex(FlowCtx%DMScal,FlowCtx%boundaryPressure,FlowCtx%MEF90Ctx%IOcomm, &
                                      FlowCtx%MEF90Ctx%fileExoUnit,step,gOpt%boundaryPressureOffset,ierr);CHKERRQ(ierr)
          Case (MEF90Scaling_Linear)
-            Call MEF90FlowUpdateboundaryPressure(FlowCtx%boundaryPressure,FlowCtx,ierr)
+            Call MEF90FlowUpdateboundaryPressure(FlowCtx%boundaryPressure,FlowCtx,ierr);CHKERRQ(ierr)
             Call VecScale(FlowCtx%boundaryPressure,timeVal,ierr);CHKERRQ(ierr)
          Case (MEF90Scaling_CST)
-            Call MEF90FlowUpdateboundaryPressure(FlowCtx%boundaryPressure,FlowCtx,ierr)
+            Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetTransients pre-UpdateBC\n',ierr);CHKERRQ(ierr)
+            Call MEF90FlowUpdateboundaryPressure(FlowCtx%boundaryPressure,FlowCtx,ierr);CHKERRQ(ierr)
+            Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetTransients post-UpdateBC\n',ierr);CHKERRQ(ierr)
       End Select
    End Subroutine MEF90FlowSetTransients
 
@@ -618,8 +625,10 @@ Contains
       PetscInt,dimension(:),Pointer                      :: setID, dofList
       PetscInt                                           :: set, nVal
       PetscReal,Allocatable                              :: val(:)
+      Character(len=256)                                 :: IOBuffer
 
       Call VecSet(boundaryPressure,0.0_Kr,ierr);CHKERRQ(ierr)
+      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: UpdateBC enter\n',ierr);CHKERRQ(ierr)
 
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -627,8 +636,12 @@ Contains
       Do set = 1, size(setID)
          Call PetscBagGetDataMEF90FlowCtxCellSetOptions(FlowCtx%CellSetOptionsBag(set),cellSetOptions,ierr);CHKERRQ(ierr)
          If (cellSetOptions%Has_BC) Then
+            Write(IOBuffer,*) 'Gate 3.1: UpdateBC cell set',set,' id',setID(set),'\n'
+            Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),cellSetIS,ierr);CHKERRQ(ierr)
-            Call MEF90ISCreateCelltoVertex(FlowCtx%DMScal,PETSC_COMM_WORLD,cellSetIS,bcIS,ierr)
+            !!! CI #54: this call used to have NO CHKERRQ, so a bad/unset bcIS
+            !!! was silently passed to ISGetLocalSize and segfaulted on rank 1.
+            Call MEF90ISCreateCelltoVertex(FlowCtx%DMScal,PETSC_COMM_WORLD,cellSetIS,bcIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(bcIS,nVal,ierr);CHKERRQ(ierr)
             Allocate(val(nVal),stat=ierr)
             Call ISGetIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
@@ -641,7 +654,7 @@ Contains
          End If
       End Do
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
-      Call ISDestroy(CellSetGlobalIS,ierr)
+      Call ISDestroy(CellSetGlobalIS,ierr);CHKERRQ(ierr)
 
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Vertex Sets',VertexSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,VertexSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -649,6 +662,8 @@ Contains
       Do set = 1, size(setID)
          Call PetscBagGetDataMEF90FlowCtxVertexSetOptions(FlowCtx%VertexSetOptionsBag(set),vertexSetOptions,ierr);CHKERRQ(ierr)
          If (vertexSetOptions%Has_BC) Then
+            Write(IOBuffer,*) 'Gate 3.1: UpdateBC vertex set',set,' id',setID(set),'\n'
+            Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
             Call DMMeshGetStratumIS(FlowCtx%DMScal,'Vertex Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(setIS,nVal,ierr);CHKERRQ(ierr)
             Allocate(val(nVal),stat=ierr)
@@ -661,10 +676,11 @@ Contains
          End If
       End Do
       Call ISRestoreIndicesF90(VertexSetGlobalIS,setID,ierr);CHKERRQ(ierr)
-      Call ISDestroy(VertexSetGlobalIS,ierr)
+      Call ISDestroy(VertexSetGlobalIS,ierr);CHKERRQ(ierr)
 
       Call VecAssemblyBegin(boundaryPressure,ierr);CHKERRQ(ierr)
       Call VecAssemblyEnd(boundaryPressure,ierr);CHKERRQ(ierr)
+      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: UpdateBC done\n',ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowUpdateboundaryPressure
 
 
@@ -680,12 +696,15 @@ Contains
       PetscErrorCode,Intent(OUT)                         :: ierr
 
       Type(MEF90FlowCellSetOptions_Type),pointer         :: cellSetOptions
+      Type(MEF90Element_Type)                            :: elemType
       Type(IS)                                           :: CellSetGlobalIS, setIS, setISdof
       PetscInt,dimension(:),Pointer                      :: setID, setIdx
       PetscInt                                           :: set, nVal
       PetscReal,Dimension(:),Pointer                     :: val
+      Character(len=256)                                 :: IOBuffer
 
       Call VecSet(sourceVec,0.0_Kr,ierr);CHKERRQ(ierr)
+      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetSourceCst enter\n',ierr);CHKERRQ(ierr)
 
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -693,10 +712,23 @@ Contains
 
       Do set = 1, size(setID)
          Call PetscBagGetDataMEF90FlowCtxCellSetOptions(FlowCtx%CellSetOptionsBag(set),cellSetOptions,ierr);CHKERRQ(ierr)
-         Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
+         !!! CI #54 ROOT CAUSE: cs0010/cs0020 are BAR2 boundary facets, not
+         !!! volume cells. They carry Has_BC=T and have NO dof in cellDMScalSec.
+         !!! Feeding them to DMMeshISCreateISglobaldof(cellDMScal,...) reads
+         !!! outside the cell section -> rank-dependent SEGV, which is exactly
+         !!! why rank 1 died right after "post-UpdatePerm". Skip them the same
+         !!! way MEF90FlowOperatorCore and the storage terms already do.
+         If (cellSetOptions%Has_BC) Cycle
+         elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
+         If (elemType%Codim /= 0) Cycle
+         Write(IOBuffer,*) 'Gate 3.1: SetSourceCst set',set,' id',setID(set),'\n'
+         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+         Call DMMeshGetStratumIS(FlowCtx%cellDMScal,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
          Call DMMeshISCreateISglobaldof(FlowCtx%cellDMScal,setIS,0,setISdof,ierr);CHKERRQ(ierr)
-         Call ISGetIndicesF90(setISdof,setIdx,ierr);CHKERRQ(ierr)   !!! separate ptr
-         Call ISGetLocalSize(setISdof,nVal,ierr);CHKERRQ(ierr)
+         Call ISGetIndicesF90(setISdof,setIdx,ierr);CHKERRQ(ierr)
+         !!! HeatXfer's MEF90HeatXferSetFluxCst uses size(setIdx) everywhere;
+         !!! never mix a separately-obtained IS length with the F90 pointer.
+         nVal = size(setIdx)
          Allocate(val(nVal),stat=ierr)
          val = cellSetOptions%source
          Call VecSetValues(sourceVec,nVal,setIdx,val,INSERT_VALUES,ierr);CHKERRQ(ierr)
@@ -706,10 +738,11 @@ Contains
          Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
       End Do
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
-      Call ISDestroy(CellSetGlobalIS,ierr)
+      Call ISDestroy(CellSetGlobalIS,ierr);CHKERRQ(ierr)
 
       Call VecAssemblyBegin(sourceVec,ierr);CHKERRQ(ierr)
       Call VecAssemblyEnd(sourceVec,ierr);CHKERRQ(ierr)
+      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetSourceCst done\n',ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowSetSourceCst
 
 

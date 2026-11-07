@@ -166,7 +166,7 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-07 07:55，CI #53 首次激活瞬态路径后 SEGV）
+## 进度跟踪（更新 2026-11-07 08:50，CI #54 精确定位到 SetSourceCst）
 
 **代码进度**
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
@@ -191,6 +191,7 @@
 - CI run **#51 = failure**（15:11–15:47 UTC）：`Gate 3.1: init 01..08` 全通过、进入 `Mechanics: step 1`、`_out.gen` 产出 2.79 MB；崩在 `Attempt to DEALLOCATE unallocated 'doflist'`（FlowAssembly:634），且 TS 路径因全局 bag 缺 `flow_` 前缀静默关闭。两处均已修，详见文末「CI #51 诊断结论与修复」。
 - CI run **#52 = failure**（22:15–22:52 UTC）：`flow_` 前缀生效后，注册 Flow 全局 bag 时因 yaml 的 `source_scaling: CST` / `bc_pressure_scaling: CST` 非法枚举而报 `Unknown option CST`（合法值 `constant/linear/file/null`）。已修，并把 CreateTS 调用顺序对齐 HeatXfer 模板；详见文末「CI #52 诊断结论与修复」。
 - CI run **#53 = failure**（23:13–23:50 UTC）：构建 15 步全 success（PETSc 重建 28 分钟），**`Gate 3.1: flow enum 2 Transient 2 enabled T` 与 `transient Darcy TS created` 首次出现**，`init 01..08` 全通过；但 `Mechanics: step 1, t=0` 之后立即 rank 1 SEGV（mpirun exit 59），无 `Gate 3.1: step` → 崩在 flowTransient 块内。已加逐调用追踪 + 零跨度保护 + 空指针防护，详见文末「CI #53 诊断结论与修复」。
+- CI run **#54 = failure**（00:00–00:37 UTC）：逐调用 trace 生效，`Gate 3.1: step 1 post-UpdatePerm` 之后、`post-SetTransients` 之前 rank 1 SEGV → **崩在 `MEF90FlowSetTransients` 内部**，零跨度保护与 TS 回调均未到达。已定位并修复 `MEF90FlowSetSourceCst` 对 BAR2 边界 cell set 误做 cell-DM dof 映射，详见文末「CI #54 诊断结论与修复」。
 - 本地无 PETSc 编译链；所有「验收」栏目前均为**代码审查级通过，非运行验证**。
 
 **本次复核发现（A / B 已修 18:35；C 已修 19:10；D 为既有改动）**
@@ -480,3 +481,40 @@ PETSc bag 按 `bag->data + bag->offset` 顺序写值，`PetscBagGetData` 再把 
 **校验**：`git diff --check` 干净；PyYAML 解析 workflow / yaml 通过；`Run Terzaghi` 的 `run` 块 `bash -n` 通过；`PetscPrintf(PETSC_COMM_WORLD, ...)` 在项目内有 36 个文件先例；Fortran `If/End If` 配对已逐段复核。
 
 **#54 判据（按优先级）**：① 日志里最后一个 `Gate 3.1: step 1 ...` 检查点 = 精确崩溃位置（若停在 `pre-TSSolve` 之后且无 `IFunction enter` → PETSc TS 层；若停在 `IFunction enter` 之后 → 残差/储存项；若停在 `IJacobian enter` → 雅可比）；② `-flow_ts_view` 打印的 type / problem type；③ `-flow_ts_monitor` 是否出现步进；④ 若零跨度保护已消除崩溃，则看 `Gate 3.1: step 2 ... post-TSSolve`、`TS time`、`TSGetConvergedReason` 与 `_out.gen` 是否出现随时间衰减的 pressure。3.2 的 Terzaghi 解析解比对仍需该文件含真实瞬态压力场。
+
+
+## CI #54 诊断结论与修复（2026-11-07 08:50，逐调用 trace 命中崩溃点）
+
+**状态**：run `42315564918` / job `128227179782` `completed failure`（基于 `0a30b0e`）。构建 15 步全 success；`Run Terzaghi` 1 秒失败，mpirun exit **59**，完整 job 日志 2987 行。
+
+**trace 结果（#53 加的检查点生效）**
+```
+Mechanics: step    1, t= 0.00000E+00
+ Gate 3.1: step 1  enter transient block
+ Gate 3.1: step 1  post-UpdateMu
+ Gate 3.1: step 1  post-UpdatePerm
+[1]PETSC ERROR: Caught signal number 11 SEGV
+```
+`init 01..08`、`flow enum 2 Transient 2 enabled T`、`transient Darcy TS created` 全部正常；崩溃被夹在 `post-UpdatePerm` 与 `post-SetTransients` 之间 → **`vDef.F90` 调用的唯一函数 `MEF90FlowSetTransients(MEF90FlowCtx,step,time(step),ierr)`**。rank 0 无 `post-SetTransients`（被 `MPI_ABORT` 以 signal 15 杀掉），说明两 rank 都在该函数内、rank 1 先越界。
+
+**根因（确定性）**：`MEF90FlowSetTransients2D`（即 `m_Flow/m_MEF90_FlowAssembly.F90` 的 `MEF90FlowSetTransients`，该文件由 Makefile 以 `-DMEF90_DIM=2/3` 编译两次）在 `sourceScaling=constant` 分支首次调用 `MEF90FlowSetSourceCst` —— 这是全项目**唯一从未被执行过**的函数。它遍历所有 cell set，对 `cs0010`/`cs0020`（BAR2 边界 facet，`flowBC: true`）也调用
+```
+DMMeshISCreateISglobaldof(FlowCtx%cellDMScal, setIS, 0, setISdof, ...)
+```
+但这些 point 在 `cellDMScalSec`（由 `DMMeshGetCellSectionReal` 建立，**只为 codim=0 体单元分配 dof**）里没有 dof → 越界读，rank 相关。同文件的 `MEF90FlowOperatorCore` 用 `If (.not. Has_BC)` + `If (elemType%Codim == 0)` 跳过它们，两个储存项也跳过 `Has_BC`；唯独 `SetSourceCst` 漏了。这正解释了「为何 rank 1 挂、为何 #54 之前从未触发」。
+
+**静态排除**：`time` 数组由 `MEF90CtxGetTime` 在 `linear` 分支对所有 rank `Allocate`，`time(step)` 有效；`cellDMScal` 是 `DMMeshClone(Mesh,...)`，`DMMeshGetStratumIS(DM,...)` 与 `(cellDMScal,...)` 的 point id 空间一致，DM 混用不是根因；`MEF90FlowUpdateboundaryPressure` 在 #51 稳态路径已执行到 `VecSetValues` 之后才崩（当时是 `DeAllocate(dofList)`），其索引方式不是本次 SEGV 来源。
+
+**本轮改动（2 文件）**
+1. `m_Flow/m_MEF90_FlowAssembly.F90`（重写 3 个子程序）：
+   - `MEF90FlowSetSourceCst`：**跳过 `Has_BC` 及 `Codim /= 0` 的 cell set**；对齐已验证的 `MEF90HeatXferSetFluxCst` —— `DMMeshGetStratumIS(FlowCtx%cellDMScal,...)`、`nVal = size(setIdx)`（不再混用 `ISGetLocalSize` 与 F90 指针长度）；所有 PETSc 调用补 `CHKERRQ`。
+   - `MEF90FlowUpdateboundaryPressure`：`MEF90ISCreateCelltoVertex` 补 `CHKERRQ(ierr)`（原来缺，失败会静默传递未初始化的 `bcIS`）；两处 `ISDestroy` 补 `CHKERRQ`；保留 #51 的 `ISGetLocalSize` 修复与 PETSc 托管指针所有权。
+   - `MEF90FlowSetTransients`：四个付费分支全部补 `CHKERRQ`，`constant` 分支前后加 Gate 检查点；入口打印 `srcScale/bcScale` 枚举值。
+   - 三个函数统一加逐 set / 逐阶段 `Gate 3.1:` trace，若仍崩溃可直接读出 set 编号与函数。
+2. `.github/workflows/build.yml`：SEGV 诊断的 Gate grep 由 `tail -30` 放宽到 `tail -60`，容纳新增检查点。
+
+**校验**：`git diff --check` 干净；PyYAML 解析 workflow / yaml 通过；`Run Terzaghi` 的 `run` 块 `bash -n` 通过；三个子程序的 `Do/End Do`、`If/End If`（两处为单行 `If (...) Cycle`）、`Select Case/End Select` 配对已脚本核对；`PetscPrintf(PETSC_COMM_WORLD,...)` 与 `Write(IOBuffer,*)` 在项目内有大量先例且 #54 已编译通过。仍为零本地编译、靠 CI 验证。
+
+**#55 判据**：① 应看到 `SetTransients enter ... srcScale 0 bcScale 0` → `pre-SetSourceCst` → `SetSourceCst enter` → `set 1 id 1` → `SetSourceCst done` → `post-SetSourceCst` → `pre-UpdateBC` → `UpdateBC cell set ...` → `UpdateBC done`；② 若零跨度保护让 step 1 打 `TSSolve skipped`，step 2 应出现 `pre-TSSolve` / `IFunction enter` / `IJacobian enter` / `post-TSSolve` 及 `-flow_ts_monitor` 步进；③ `TSGetConvergedReason`、TS time 是否推进、`_out.gen` 内 pressure 是否随时间衰减（3.2 前置）。若仍 SEGV，最后一个 `Gate 3.1: ... set N` 即精确越界位置。
+
+**性能备注**：workflow 已内置 `actions/cache` 缓存 `$HOME/petsc-3.3-mef90` 与 OpenMPI，但 `actions/cache@v4` 只在 **job 成功**时保存；此前每轮 job 均 failure，故缓存从未落盘、每轮都重建 PETSc（约 28 分钟）。只要有一轮 job success，后续 run 会自动命中缓存，无需改 workflow。
