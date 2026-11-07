@@ -755,3 +755,26 @@ MEF90VecSetValuesISdof: DMMeshISCreateISglobaldof → ... (DM Mesh 内部含同�
 4. 静态量级修正：单元面积 ≈1.67e-2 m²，K 对角 ≈1e-7，M 对角 ≈6e-13，`aM≈3e-11`，即 `K/aM≈1e4`（清单 3.2 里原估的 360 偏小）。因此 `J≈K` 且 K 在常向量方向奇异，只有 Dirichlet 行给出对角 1 —— 矩阵条件数极差，与 KSP 迭代数 1 → 50 → 54 逐步攀升一致。
 
 **判据**：① 若 `Gate 3.2 PASS`（ratio≈0.09）→ 结构差异即根因，3.2 通过；② 若仍发散，`diagJ` 三点直接给出答案：`|J|inf≈1e-7 / diag min≈1e-8` 说明 K 存在（问题在 F/J 相容性或 CG 收敛），`|J|inf≈1 / diag min=max=1` 说明 J 退化成单位阵；`diagFld` 同时排除参数未填充。③ 收敛后再处理 step 16 的浮点跳步与 z 剖面解析解比对。
+
+
+## CI #62 结果（2026-11-07 14:45）：J 装配被完全证清，根因收敛到求解器/CG 对称性
+
+**状态**：run `42348017902` / job `128329892722`，`completed failure`，但 `Gate 3.1 PASS`、`mpirun exit 0`；`pmax` 末值 **1.6544841814641773E+036 与 #59/#60/#61 逐位相同**（结构改动同样不改变数值）。
+
+**`diagFld` / `diagJ` 实测（t=0.02/0.04/0.06 完全一致，J 是常数矩阵）**：
+
+| 检查点 | \|J\|∞ | diag min | diag max |
+|---|---|---|---|
+| post-Core（纯 K） | 6.5392496e-7 | 1.0451187e-8 | 3.2696248e-7 |
+| post-Storage（+aSM） | 6.5392496e-7 | 1.0645001e-8 | 3.2742320e-7 |
+| post-Dirichlet（BC 行=1） | 1.0 | 1.1425415e-8 | 1.0 |
+
+`S min/max = 4.6e-10 / 4.6e-10`、`k/μ min/max = 5e-8 / 5e-8` → **参数全部正确进入装配**；质量项使对角 +1.94e-10（=a·S·单元体积，正确）；BC 只影响少数行（diag max 由 3.27e-7 → 1）。**J = K + a·S·M + Dirichlet 单位行，完全正确，K 没有被抹掉，「BC IS 覆盖全体顶点」假说彻底排除。**
+
+**压力演化给出新的决定性线索**：step 1 `pmin=pmax=1e5` → step 2 `0 / 1e5` → step 3 `-2843 / 99978` → step 4 `-2623 / 99864` → step 5 `-2032 / 99647` → step 6 `-1677 / 98811`。**前 6 步正是 Terzaghi 早期的正确物理**（顶面排水、底部几乎不变、扩散前沿逐层下移），step 7 起 `pmax=2.46e5`、`pmin=-9.4e5`… 正负交替放大。即**不是 F/J 符号反向**（否则首步就错），而是 J 是常数、病态矩阵上 CG 的误差逐步累积出 checkerboard 模式。
+
+**不对称的直接证据**：`Gate 3.1: UpdateBC cell set 2 nVal` 两 rank 分别是 **6 和 0** —— `DMMeshGetStratumIS` / `MEF90ISCreateCelltoVertex` 产出的是**本地** point IS。`MatZeroRowsColumnsIS` 是 collective 且要清**列**，两 rank 传入不同 IS 时跨 rank 的耦合列无法一致清零 → J 非对称；而 `MEF90FlowCreateTS` 设了 `MAT_SPD` + `MAT_SYMMETRY_ETERNAL` + `KSPCG`，CG 在非对称矩阵上无收敛保证。日志中 `ILU: using diagonal shift to prevent zero pivot` 也表明预条件器处于病态边界。
+
+**（备选解释）** DefMech / HeatXfer 用同样的 rank 相关 IS + `MatZeroRowsColumnsIS`，但它们的多分量矩阵与分区不同；若 GMRES 也发散，则须回到 PETSc 3.3 `TS_LINEAR`+`beuler` 的 IFunction 约定（本次未能取到 3.3 源码，仓库 tags 已不含 v3.3）。
+
+**#63 动作（纯命令行二分，零代码改动、零编译风险）**：mpirun 增加 `-flow_ksp_type gmres -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason`，保留默认 `bjacobi/ilu` PC。`KSPSetFromOptions` 会覆盖代码里的 `KSPCG`。GMRES 不要求 SPD：① 若 `Gate 3.2 PASS`（ratio≈0.09）→ 确认是 CG/对称性，随后补 `MEF90ISAllGatherMerge` 让两 rank 的 BC IS 一致（治本）或直接采用 GMRES；② 若仍发散 → 排除迭代求解器，下一轮核对 BE 线性步的 F/J 符号约定并考虑直接法 `-flow_pc_type lu`。

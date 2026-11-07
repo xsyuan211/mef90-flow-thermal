@@ -470,7 +470,9 @@ jobs:
           timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D.yaml \
-            -flow_ts_view -flow_ts_monitor 2>&1 | tee /tmp/terzaghi.log
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_type gmres -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            2>&1 | tee /tmp/terzaghi.log
           rc=${PIPESTATUS[0]}
           echo "=== Terzaghi mpirun exit code: $rc ==="
           if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
