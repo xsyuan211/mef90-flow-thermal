@@ -600,10 +600,17 @@ jobs:
               grep "Gate 3.2 diag:" /tmp/terzaghi.log | head -10 || true
               exit 1
             fi
-            if awk -v r="$ratio" 'BEGIN{exit !(r>=0.02 && r<=0.30)}'; then
-              echo "=== Gate 3.2 PASS: Terzaghi decay ratio $ratio in [0.02,0.30] (analytic ~0.087) ==="
+            # CI #66: with one fixed-dt BE step per outer step the FE solution
+            # is ratio=0.0934 (continuum Terzaghi 0.0871). Tighten the loose
+            # divergence-sanity band into a real analytic comparison; the
+            # hard "ratio > 1.5 DIVERGED" rule above is kept unchanged.
+            if awk -v r="$ratio" 'BEGIN{exit !(r>=0.05 && r<=0.15)}'; then
+              echo "=== Gate 3.2 PASS: Terzaghi decay ratio $ratio in [0.05,0.15] (FE/BE 0.0934, analytic 0.0871) ==="
             else
-              echo "=== WARNING: Gate 3.2 decay ratio $ratio outside analytic band [0.02,0.30] ==="
+              echo "=== FAIL: Gate 3.2 decay ratio $ratio outside analytic band [0.05,0.15] ==="
+              echo "    expected FE/BE 0.0934 (continuum Terzaghi 0.0871)."
+              grep "Gate 3.2:" /tmp/terzaghi.log | awk 'NR==1 || NR%10==0' | head -8 || true
+              exit 1
             fi
             echo "=== Gate 3.2 probe: every 10th step pmax ==="
             grep "Gate 3.2:" /tmp/terzaghi.log | awk 'NR==1 || NR%10==0' | head -8

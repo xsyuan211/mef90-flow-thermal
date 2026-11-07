@@ -452,14 +452,22 @@ Program vDef
             Write(IOBuffer,*) 'Gate 3.1: step',step,' post-UpdateBoundaryPressure\n'
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             Call TSGetTime(tsPressure,t,ierr);CHKERRQ(ierr)
-            Call TSSetDuration(tsPressure,10000,time(step),ierr);CHKERRQ(ierr)
-            tFlowEnd = time(step)
+            !!! CI #66: this TS has a FIXED dt from TSSetInitialTimeStep
+            !!! (dtFlow0 = time(2)-time(1) = 0.02 s). Driving TSSetDuration
+            !!! with the interpolated time(step) produced near-zero intervals
+            !!! at steps 12-16 (|time(step)-t| ~ 3e-17): beuler then used
+            !!! shift a=1/dt ~ 1e16, J ~ a*S*M, and the pressure froze for
+            !!! FIVE outer steps. That is the sole remaining difference
+            !!! between CI #65 (ratio 0.1244) and the FE/BE value 0.0934
+            !!! (continuum Terzaghi 0.0871). Advance exactly ONE fixed-dt
+            !!! backward-Euler step per outer step instead.
+            tFlowEnd = t + dtFlow0
+            Call TSSetDuration(tsPressure,10000,tFlowEnd,ierr);CHKERRQ(ierr)
             Write(IOBuffer,*) 'Gate 3.1: step',step,' pre-TSSolve TS time',t,' target',tFlowEnd,'\n'
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
-            !!! CI #53: step 1 has time(1) == TS initial time == 0. PETSc 3.3
-            !!! must NOT be asked to integrate a zero-length interval (HeatXfer
-            !!! guards this with "If (t < time(step))" in the same loop).
-            If (t < tFlowEnd) Then
+            !!! CI #53/#66: step 1 is the initial condition (t = time(1) = 0)
+            !!! and must not advance the TS; steps 2..51 each take one step.
+            If (step > 1) Then
                Call TSSolve(tsPressure,MEF90FlowCtx%pressure,tFlowEnd,ierr);CHKERRQ(ierr)
                Write(IOBuffer,*) 'Gate 3.1: step',step,' post-TSSolve\n'
                Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
@@ -475,7 +483,7 @@ Program vDef
             !!! Gate 3.1 self-check: report the TS internal time so the CI log
             !!! shows whether p was actually advanced on this step.
             Call TSGetTime(tsPressure,t,ierr);CHKERRQ(ierr)
-            Write(IOBuffer,*) 'Gate 3.1: step',step,' TS time',t,' target',time(step),'\n'
+            Write(IOBuffer,*) 'Gate 3.1: step',step,' TS time',t,' target',tFlowEnd,'\n'
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             Call VecCopy(MEF90FlowCtx%pressure,MEF90FlowCtx%pressurePreviousStep,ierr);CHKERRQ(ierr)
             !!! Gate 3.2: emit the pressure envelope of THIS outer step.

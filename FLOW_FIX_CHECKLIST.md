@@ -832,3 +832,31 @@ MEF90VecSetValuesISdof: DMMeshISCreateISglobaldof → ... (DM Mesh 内部含同�
 **#65 判据**：`diagJ post-Core` 的 `|J|inf` 应从 `6.539e-7` 降到 `~3.70e-7`、diag max 从 `3.27e-7` 降到 `~1.85e-7`；`post-Storage` 的 diag delta 应从 `4.607e-10` 变为 `~5.50e-10`；`pmax(final)/pmax(initial)` 应进入 `0.02–0.30` 且接近解析 `0.087`（含 5 个冻结步时约 `0.12`）→ `Gate 3.2 PASS`。若仍偏高，则只剩时间轴冻结步与 `TS_LINEAR` 的 `TSSetDuration` 语义问题。
 
 **待办（本轮未动）**：step 12–16 的零跨度 `TSSolve` 改成基于 `time(step)` 的容差驱动（注意 workflow 的 `post-TSSolve>=48` 判据需同步调整）；YAML 注释里的 `1m(W)×10m(H)` 与真实几何 `x∈[-5,5], y∈[-0.5,0.5]` 对齐；`pressurePreviousStep` 死写；GMRES/CG 最终选型；诊断 trace 清理。
+
+
+## CI #65 结果（2026-11-07 16:05）：3.1 与 3.2 同时通过，根因复现逐位吻合
+
+**状态**：run `42353581894` / job `128346726709`，`completed success`；`Terzaghi mpirun exit code: 0`；`Gate 3.1 PASS`（51 个 pressure envelope、TS 到 t=1、rejected=0、`_out.gen` 有效）；**`Gate 3.2 PASS: Terzaghi decay ratio 0.124364 in [0.02,0.30]`**。`pmax` 从 `1e5` 单调降到 `12436.427`，`pmin` 全程约 0（#64 的 -331 负超调消失）。
+
+**离线预测 vs CI 实测（零本地编译的定量验证）**：
+
+| 量 | Python FE 预测 | CI #65 实测 | CI #64 |
+|---|---|---|---|
+| `diagJ post-Core |J|inf` | 3.7040672e-7 | **3.7040672351723571e-7** | 6.5392496e-7 |
+| `diagJ post-Core diag min` | 4.1769252e-8 | **4.1769251804758425e-8** | 1.0451187e-8 |
+| `diagJ post-Core diag max` | 1.8520336e-7 | **1.8520336175861785e-7** | 3.2696248e-7 |
+| `post-Storage` diag min 增量 | 1.0033700e-10 | 1.0108357e-10 | 1.9381416e-10 |
+| ratio（45 / 50 个有效 BE 步） | 0.1213 / 0.0934 | **0.124364** | 0.348069 |
+
+→ 两个根因（`MatS2D_Get_Real` 的 `XY=R` + `elem(1)` 几何复用）**完全确认**；K 与 M 现在都是物理正确的各向同性 P1 有限元装配。
+
+**剩余唯一偏差 = 时间轴**：#65 仍有 5 个冻结步（step 12–16 `pmax` 逐位不变）。原因是 `TSSetDuration(ts,10000,time(step))` 遇到 `|time(step)-t|≈3e-17` 的近零区间，`beuler` 的 `a=1/dt` 爆炸使 `J≈aSM`、压力不推进；45 个有效 BE 步对应 0.1213，与实测 0.124364 吻合（解析连续解 0.0871，50 步 FE/BE 解 0.0934）。
+
+**#66 改动（2 个代码文件）**：
+
+1. `vDef/vDef.F90`：TS 本来就由 `TSSetInitialTimeStep(...,dtFlow0=0.02)` 固定步长驱动，因此改为**每个外层步恰好推进一个固定 dt**：`tFlowEnd = t + dtFlow0`、`TSSetDuration(ts,10000,tFlowEnd)`、`If (step > 1) Then TSSolve(...)`。不再用插值 `time(step)` 作为 TS 目标，彻底消除近零区间；step 1 仍为初始条件不推进，step 2–51 共 50 步 → t=1。`nSolve=50` 仍满足 Gate 3.1 的 `>=48`。
+2. `.github/workflows/build.yml`：Gate 3.2 从宽松的发散护栏 `[0.02,0.30]` 收紧为**真正的解析解比对带 `[0.05,0.15]`**（FE/BE 0.0934、连续解 0.0871），带外改为硬 `FAIL`；`ratio>1.5` 的发散硬判据保留。
+
+校验：`git diff --check`、PyYAML（19 steps）、`Run Terzaghi` 块 `bash -n`、`vDef.F90` 的 34/34 个 `If/End If` 配对全通过；零本地编译。
+
+**#66 判据**：① `Gate 3.1 PASS` 保持、`nSolve=50`、无 skip（除 step 1）；② 51 步 `pmax` 严格单调、无冻结段；③ `ratio≈0.093` 落入 `[0.05,0.15]` 且打印 `Gate 3.2 PASS`；④ `diagJ` 三项与 #65 一致（K/M 未再改动）。若 ratio 仍 ≈0.124，说明冻结步来自 PETSc 3.3 `TSSetExactFinalTime` 内部裁剪而非外层目标，需改用 `TSSetDuration(ts,1,...)` 强制单步。
