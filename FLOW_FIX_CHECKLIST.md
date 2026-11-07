@@ -778,3 +778,21 @@ MEF90VecSetValuesISdof: DMMeshISCreateISglobaldof → ... (DM Mesh 内部含同�
 **（备选解释）** DefMech / HeatXfer 用同样的 rank 相关 IS + `MatZeroRowsColumnsIS`，但它们的多分量矩阵与分区不同；若 GMRES 也发散，则须回到 PETSc 3.3 `TS_LINEAR`+`beuler` 的 IFunction 约定（本次未能取到 3.3 源码，仓库 tags 已不含 v3.3）。
 
 **#63 动作（纯命令行二分，零代码改动、零编译风险）**：mpirun 增加 `-flow_ksp_type gmres -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason`，保留默认 `bjacobi/ilu` PC。`KSPSetFromOptions` 会覆盖代码里的 `KSPCG`。GMRES 不要求 SPD：① 若 `Gate 3.2 PASS`（ratio≈0.09）→ 确认是 CG/对称性，随后补 `MEF90ISAllGatherMerge` 让两 rank 的 BC IS 一致（治本）或直接采用 GMRES；② 若仍发散 → 排除迭代求解器，下一轮核对 BE 线性步的 F/J 符号约定并考虑直接法 `-flow_pc_type lu`。
+
+
+## CI #63 结果 + PETSc 3.3 源码核对（2026-11-07 15:00）：求解器排除，语义核对通过
+
+**#63**（run `42348910801`）`completed failure`，`Gate 3.1 PASS`、`mpirun exit 0`；`pmax` 末值 **1.6543647997127005E+036**（#62 为 1.6544841814641773E+036，仅末几位不同），前 10 步曲线逐点一致。**GMRES + rtol 1e-10 完全不改变结果 → CG / 矩阵对称性 / KSP 收敛精度全部排除**，发散是离散方程本身的确定性性质（J 为常数矩阵的线性递推 `U_{n+1}=G U_n` 存在 |λ|>1 的模式）。
+
+**PETSc 3.3 源码核对**（`petsc/petsc` tag `v3.3`，`src/ts/impls/implicit/theta/theta.c` 与 `src/ts/interface/ts.c`）：
+
+- `TSStep_Theta`：`th->shift = 1/(Theta*dt)`；`VecCopy(ts->vec_sol,th->X)` → `SNESSolve(snes,th->affine,th->X)`；BE（Theta=1）时 `affine = F(t0,U0,0)*(Theta-1)/Theta = 0`，即 SNES 解 `G(U)=0`。
+- `SNESTSFormFunction_Theta`：`Xdot = shift*(X-X0)`，再 `TSComputeIFunction(ts,stage_time,X,Xdot,Y)`；`SNESTSFormJacobian_Theta`：`TSComputeIJacobian(..., shift, ...)`。
+- `TS_LINEAR` 在 `TSSetProblemType` / `TSGetSNES` / `TSSetFromOptions` 里**只做一件事**：`SNESSetType(snes,SNESKSPONLY)`；`ts.c:447` 的「同 t 则 `MatScale(A,shift/old_shift)` 复用」优化因每步 `t` 不同而未命中（日志每步都有 `IJacobian enter`）。
+- `TSComputeIFunction`（ts.c:372-376）在只提供 ifunction 时直接采用用户残差；`TSComputeIJacobian`（ts.c:457-465）在只提供 iJacobian、无 RHSJacobian 时直接采用用户矩阵，**不会再 `MatShift` 或 `MatAXPY`**。
+
+→ 我们的 `F=K·x-f+Dirichlet`、`J=K+a·S·M+Dirichlet` 与 BE 的 `U_{n+1}=U_n-J^{-1}F(U_n,0)` **代数上完全自洽**，`a=50`、`xDot=0` 也符合源码。因此剩余嫌疑只能是 **F 与 J 中 K 项的实际数值/映射不一致**，而非 TS 约定。
+
+**#64 动作（收敛到 HeatXfer 的单次 scatter 结构）**：`MEF90FlowIFunction` 删除 `MEF90FlowAddStorageToResidual(F,xDot,...)` 与末尾的 `MEF90FlowApplyDirichletResidual(x,F,...)`，只保留 `MEF90FlowOperatorCore(x,F,...)` 一次 `SCATTER_FORWARD`（`OperatorCore` 内部已在最后施加 Dirichlet）。理由：`TS_LINEAR+ksponly` 下 `xDot≡0`，储存残差恒为 0，两次额外 scatter 最好情况是无操作、最坏情况会把 ghost 点值重复累加进 F（`|F|∞` 无法发现局部累加，而 J 只装配一次 K → F/J 比例失衡，正好产生 |λ|>1 的交替放大）。同时把诊断升级为 `|F|∞` + **`|F|₁`**（整体累加会立刻暴露）。GMRES 选项保留（#63 已证明它不是变量）。
+
+**判据**：① `|F|₁` 相对 #62/#63 是否变化、② `Gate 3.2 PASS` / ratio≈0.09；若仍发散，则 F/J 的 K 项映射是最后的未知量，下一轮需在同一子程序里用 `MatMult(J,x)` 与 F 逐点比对，或把 F 的装配也改走 `DMmeshAssembleMatrix` 的同一 default section。

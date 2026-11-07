@@ -261,36 +261,27 @@ Contains
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
       Character(len=256)                                 :: IOBuffer
-      PetscReal                                          :: nX, nXDot, nF
+      PetscReal                                          :: nX, nXDot, nF, nF1
       !!! CI #53 diagnostic: mark entry into the TS residual callback.
       Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IFunction enter\n',ierr);CHKERRQ(ierr)
+      !!! CI #64: SINGLE SCATTER, exactly like MEF90HeatXFerIFunction. The old
+      !!! version performed THREE SectionRealToVec(SCATTER_FORWARD) into F
+      !!! (OperatorCore, AddStorageToResidual, ApplyDirichletResidual). With
+      !!! PETSc 3.3 TS_LINEAR + ksponly, xDot is identically 0 at the only
+      !!! function evaluation (SNESTSFormFunction_Theta evaluates F at
+      !!! X == X0, so Xdot = shift*(X-X0) = 0), hence the storage residual
+      !!! is exactly zero and MEF90FlowOperatorCore already applies the
+      !!! Dirichlet rows LAST. Both extra scatters were pure no-ops in the
+      !!! best case and potential ghost-point accumulations in the worst case
+      !!! (|F|inf cannot detect a partial accumulation). Reduce to one pass.
       Call MEF90FlowOperatorCore(x,F,FlowCtx,ierr);CHKERRQ(ierr)
       Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IFunction post-OperatorCore\n',ierr);CHKERRQ(ierr)
-      !!! Gate 3.2 diagnostic (CI #60): three SectionRealToVec(SCATTER_FORWARD)
-      !!! calls happen in this callback. If that scatter is ADD_VALUES rather
-      !!! than INSERT_VALUES, F would be accumulated repeatedly while J is
-      !!! assembled once -> F/J inconsistency -> exponential blow-up.
       If (t < 0.07_Kr) Then
          Call VecNorm(x,NORM_INFINITY,nX,ierr);CHKERRQ(ierr)
          Call VecNorm(xDot,NORM_INFINITY,nXDot,ierr);CHKERRQ(ierr)
          Call VecNorm(F,NORM_INFINITY,nF,ierr);CHKERRQ(ierr)
-         Write(IOBuffer,*) 'Gate 3.2 diag: t',t,' |x|',nX,' |xDot|',nXDot,' |F| post-OperatorCore',nF,'\n'
-         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
-      End If
-      Call MEF90FlowAddStorageToResidual(F,xDot,FlowCtx,ierr);CHKERRQ(ierr)
-      If (t < 0.07_Kr) Then
-         Call VecNorm(F,NORM_INFINITY,nF,ierr);CHKERRQ(ierr)
-         Write(IOBuffer,*) 'Gate 3.2 diag: |F| post-Storage',nF,'\n'
-         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
-      End If
-      !!! Gate 3.1 fix: AddStorageToResidual scatters FSec back into F, so it
-      !!! also writes S*M*xDot into the Dirichlet dofs. Those dofs are algebraic
-      !!! constraints (F = x - p_bc, with NO time derivative). Re-impose them
-      !!! LAST, matching the Jacobian treatment in MEF90FlowIJacobian below.
-      Call MEF90FlowApplyDirichletResidual(x,F,FlowCtx,ierr);CHKERRQ(ierr)
-      If (t < 0.07_Kr) Then
-         Call VecNorm(F,NORM_INFINITY,nF,ierr);CHKERRQ(ierr)
-         Write(IOBuffer,*) 'Gate 3.2 diag: |F| post-Dirichlet',nF,'\n'
+         Call VecNorm(F,NORM_1,nF1,ierr);CHKERRQ(ierr)
+         Write(IOBuffer,*) 'Gate 3.2 diag: t',t,' |x|',nX,' |xDot|',nXDot,' |F|inf',nF,' |F|1',nF1,'\n'
          Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
       End If
       Call VecAssemblyBegin(F,ierr);CHKERRQ(ierr)
