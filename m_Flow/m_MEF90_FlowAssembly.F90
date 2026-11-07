@@ -289,10 +289,9 @@ Contains
       Type(Vec),Intent(INOUT)                            :: F
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
-      Character(len=256)                                 :: IOBuffer
-      PetscReal                                          :: nX, nXDot, nF, nF1
-      !!! CI #53 diagnostic: mark entry into the TS residual callback.
-      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IFunction enter\n',ierr);CHKERRQ(ierr)
+      !!! CI #68: removed the per-step entry / norm diagnostics. They printed
+      !!! 2 lines plus a 4-line norm report for every TS callback (50 steps),
+      !!! and are no longer needed now that Gate 3.2 is a hard analytic check.
       !!! CI #64: SINGLE SCATTER, exactly like MEF90HeatXFerIFunction. The old
       !!! version performed THREE SectionRealToVec(SCATTER_FORWARD) into F
       !!! (OperatorCore, AddStorageToResidual, ApplyDirichletResidual). With
@@ -304,15 +303,6 @@ Contains
       !!! best case and potential ghost-point accumulations in the worst case
       !!! (|F|inf cannot detect a partial accumulation). Reduce to one pass.
       Call MEF90FlowOperatorCore(x,F,FlowCtx,ierr);CHKERRQ(ierr)
-      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IFunction post-OperatorCore\n',ierr);CHKERRQ(ierr)
-      If (t < 0.07_Kr) Then
-         Call VecNorm(x,NORM_INFINITY,nX,ierr);CHKERRQ(ierr)
-         Call VecNorm(xDot,NORM_INFINITY,nXDot,ierr);CHKERRQ(ierr)
-         Call VecNorm(F,NORM_INFINITY,nF,ierr);CHKERRQ(ierr)
-         Call VecNorm(F,NORM_1,nF1,ierr);CHKERRQ(ierr)
-         Write(IOBuffer,*) 'Gate 3.2 diag: t',t,' |x|',nX,' |xDot|',nXDot,' |F|inf',nF,' |F|1',nF1,'\n'
-         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
-      End If
       Call VecAssemblyBegin(F,ierr);CHKERRQ(ierr)
       Call VecAssemblyEnd(F,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowIFunction
@@ -332,39 +322,17 @@ Contains
       MatStructure,Intent(INOUT)                         :: flg
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
-      Character(len=256)                                 :: IOBuffer
-      PetscReal                                          :: sMin, sMax, kMin, kMax
-      !!! CI #53 diagnostic: mark entry into the TS Jacobian callback.
-      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IJacobian enter\n',ierr);CHKERRQ(ierr)
-      !!! Gate 3.2 diagnostic: report the BE shift a = d(xdot)/d(x) for the
-      !!! first few steps. Expected 1/dt = 50 for dt=0.02.
-      If (t < 0.07_Kr) Then
-         Write(IOBuffer,*) 'Gate 3.2 diag: IJacobian t',t,' shift a',a,'\n'
-         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
-         Call VecMin(FlowCtx%storativity,PETSC_NULL_INTEGER,sMin,ierr);CHKERRQ(ierr)
-         Call VecMax(FlowCtx%storativity,PETSC_NULL_INTEGER,sMax,ierr);CHKERRQ(ierr)
-         Call VecMin(FlowCtx%permField,PETSC_NULL_INTEGER,kMin,ierr);CHKERRQ(ierr)
-         Call VecMax(FlowCtx%permField,PETSC_NULL_INTEGER,kMax,ierr);CHKERRQ(ierr)
-         Write(IOBuffer,*) 'Gate 3.2 diagFld: t',t,' S min/max',sMin,sMax,' k/mu min/max',kMin,kMax,'\n'
-         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
-      End If
+      !!! CI #68: removed the per-step shift/S/k-mu/Jacobian diagnostics.
+      !!! MEF90FlowReportJacobian is kept below as an on-demand debugging
+      !!! helper; it is no longer called on the production path.
       !!! First, assemble steady Darcy Jacobian K = dG/dp (no BC yet).
       Call MEF90FlowBilinearFormCore(x,Jac,PreJac,0.0_Kr,FlowCtx,ierr);CHKERRQ(ierr)
-      If (t < 0.07_Kr) Then
-         Call MEF90FlowReportJacobian('post-Core',t,Jac,x,ierr);CHKERRQ(ierr)
-      End If
       !!! Add a·S·M (mass matrix):  K += a·S·BFB
       Call MEF90FlowAddStorageMassMatrix(Jac,PreJac,a,FlowCtx,ierr);CHKERRQ(ierr)
-      If (t < 0.07_Kr) Then
-         Call MEF90FlowReportJacobian('post-Storage',t,Jac,x,ierr);CHKERRQ(ierr)
-      End If
       !!! CI #62: Dirichlet is applied ONCE, after every matrix contribution,
       !!! exactly like MEF90HeatXFerIJacobian. J(dof,:) = 0, J(dof,dof) = 1,
       !!! consistent with the residual F(dof) = x(dof) - p_bc.
       Call MEF90FlowApplyDirichletJacobian(Jac,PreJac,FlowCtx,ierr);CHKERRQ(ierr)
-      If (t < 0.07_Kr) Then
-         Call MEF90FlowReportJacobian('post-Dirichlet',t,Jac,x,ierr);CHKERRQ(ierr)
-      End If
       flg = SAME_NONZERO_PATTERN
    End Subroutine MEF90FlowIJacobian
 
@@ -372,7 +340,8 @@ Contains
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowReportJacobian"
 !!! CI #62 diagnostic: report |J|inf and the diagonal range at each assembly
-!!! checkpoint. If K is present, |J|inf ~ 1e-7 and diag min ~ 1e-8, max = 1
+!!! checkpoint. CI #68: kept as an on-demand helper, no longer called by
+!!! MEF90FlowIJacobian. If K is present, |J|inf ~ 1e-7 and diag min ~ 1e-8, max = 1
 !!! (the Dirichlet rows). If the BC IS wiped the whole matrix, |J|inf ~ 1 and
 !!! every diagonal entry = 1 -> J is the identity and CG cannot diffuse.
    Subroutine MEF90FlowReportJacobian(tag,t,Jac,x,ierr)
@@ -739,9 +708,9 @@ Contains
       Character(len=256)                                 :: IOBuffer
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
-      Write(IOBuffer,*) 'Gate 3.1: SetTransients enter step',step,' srcScale',gOpt%sourceScaling,' bcScale',gOpt%boundaryPressureScaling,'\n'
-      Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
-
+      !!! CI #68: removed the per-step enter/pre/post trace prints here and in
+      !!! UpdateboundaryPressure / SetSourceCst. The Gate 3.1 handshake stays
+      !!! in vDef.F90 (step / post-TSSolve) and Gate 3.2 in the pressure envelope.
       Select case (gOpt%sourceScaling)
          Case (MEF90Scaling_File)
             Call VecLoadExodusCell(FlowCtx%cellDMScal,FlowCtx%source,FlowCtx%MEF90Ctx%IOcomm, &
@@ -750,9 +719,7 @@ Contains
             Call MEF90FlowSetSourceCst(FlowCtx%source,FlowCtx,ierr);CHKERRQ(ierr)
             Call VecScale(FlowCtx%source,timeVal,ierr);CHKERRQ(ierr)
          Case (MEF90Scaling_CST)
-            Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetTransients pre-SetSourceCst\n',ierr);CHKERRQ(ierr)
             Call MEF90FlowSetSourceCst(FlowCtx%source,FlowCtx,ierr);CHKERRQ(ierr)
-            Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetTransients post-SetSourceCst\n',ierr);CHKERRQ(ierr)
       End Select
 
       Select case (gOpt%boundaryPressureScaling)
@@ -763,9 +730,7 @@ Contains
             Call MEF90FlowUpdateboundaryPressure(FlowCtx%boundaryPressure,FlowCtx,ierr);CHKERRQ(ierr)
             Call VecScale(FlowCtx%boundaryPressure,timeVal,ierr);CHKERRQ(ierr)
          Case (MEF90Scaling_CST)
-            Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetTransients pre-UpdateBC\n',ierr);CHKERRQ(ierr)
             Call MEF90FlowUpdateboundaryPressure(FlowCtx%boundaryPressure,FlowCtx,ierr);CHKERRQ(ierr)
-            Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetTransients post-UpdateBC\n',ierr);CHKERRQ(ierr)
       End Select
    End Subroutine MEF90FlowSetTransients
 
@@ -798,7 +763,6 @@ Contains
       Call VecSet(boundaryPressure,0.0_Kr,ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%DMScalSec,bcSec,ierr);CHKERRQ(ierr)
       Call SectionRealSet(bcSec,0.0_Kr,ierr);CHKERRQ(ierr)
-      Call PetscPrintf(PETSC_COMM_SELF,'Gate 3.1: UpdateBC enter\n',ierr);CHKERRQ(ierr)
 
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -806,15 +770,11 @@ Contains
       Do set = 1, size(setID)
          Call PetscBagGetDataMEF90FlowCtxCellSetOptions(FlowCtx%CellSetOptionsBag(set),cellSetOptions,ierr);CHKERRQ(ierr)
          If (cellSetOptions%Has_BC) Then
-            Write(IOBuffer,*) 'Gate 3.1: UpdateBC cell set',set,' id',setID(set),'\n'
-            Call PetscPrintf(PETSC_COMM_SELF,IOBuffer,ierr);CHKERRQ(ierr)
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),cellSetIS,ierr);CHKERRQ(ierr)
             !!! CI #54: this call used to have NO CHKERRQ, so a bad/unset bcIS
             !!! was silently passed to ISGetLocalSize and segfaulted on rank 1.
             Call MEF90ISCreateCelltoVertex(FlowCtx%DMScal,PETSC_COMM_WORLD,cellSetIS,bcIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(bcIS,nVal,ierr);CHKERRQ(ierr)
-            Write(IOBuffer,*) 'Gate 3.1: UpdateBC cell set',set,' nVal',nVal,'\n'
-            Call PetscPrintf(PETSC_COMM_SELF,IOBuffer,ierr);CHKERRQ(ierr)
             !!! A rank may own zero vertices of a boundary set. Purely local
             !!! per-point writes, safe to guard (CI #55 rank-1 pattern).
             If (nVal > 0) Then
@@ -839,12 +799,8 @@ Contains
       Do set = 1, size(setID)
          Call PetscBagGetDataMEF90FlowCtxVertexSetOptions(FlowCtx%VertexSetOptionsBag(set),vertexSetOptions,ierr);CHKERRQ(ierr)
          If (vertexSetOptions%Has_BC) Then
-            Write(IOBuffer,*) 'Gate 3.1: UpdateBC vertex set',set,' id',setID(set),'\n'
-            Call PetscPrintf(PETSC_COMM_SELF,IOBuffer,ierr);CHKERRQ(ierr)
             Call DMMeshGetStratumIS(FlowCtx%DMScal,'Vertex Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(setIS,nVal,ierr);CHKERRQ(ierr)
-            Write(IOBuffer,*) 'Gate 3.1: UpdateBC vertex set',set,' nVal',nVal,'\n'
-            Call PetscPrintf(PETSC_COMM_SELF,IOBuffer,ierr);CHKERRQ(ierr)
             If (nVal > 0) Then
                Call ISGetIndicesF90(setIS,pointIDs,ierr);CHKERRQ(ierr)
                Do v = 1, nVal
@@ -867,7 +823,6 @@ Contains
 
       Call VecAssemblyBegin(boundaryPressure,ierr);CHKERRQ(ierr)
       Call VecAssemblyEnd(boundaryPressure,ierr);CHKERRQ(ierr)
-      Call PetscPrintf(PETSC_COMM_SELF,'Gate 3.1: UpdateBC done\n',ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowUpdateboundaryPressure
 
 
@@ -899,7 +854,6 @@ Contains
       !!! step's post-UpdatePerm) already prove the SectionReal path is safe
       !!! on both ranks: write into a duplicate of cellDMScalSec, then
       !!! SectionRealToVec(SCATTER_FORWARD) into the cell-centered Vec.
-      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetSourceCst enter (SectionReal path)\n',ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,sourceSec,ierr);CHKERRQ(ierr)
       Call SectionRealSet(sourceSec,0.0_Kr,ierr);CHKERRQ(ierr)
 
@@ -917,8 +871,6 @@ Contains
          Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
          Call ISGetIndicesF90(setIS,cellIDs,ierr);CHKERRQ(ierr)
          nCell = size(cellIDs)
-         Write(IOBuffer,*) 'Gate 3.1: SetSourceCst set',set,' id',setID(set),' nCell',nCell,' src',cellSetOptions%source,'\n'
-         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
          Do cell = 1, nCell
             Call SectionRealRestrict(sourceSec,cellIDs(cell),Sptr,ierr);CHKERRQ(ierr)
             Sptr(1) = cellSetOptions%source
@@ -933,7 +885,6 @@ Contains
       Call SectionRealComplete(sourceSec,ierr);CHKERRQ(ierr)
       Call SectionRealToVec(sourceSec,FlowCtx%cellDMScalScatter,SCATTER_FORWARD,sourceVec,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(sourceSec,ierr);CHKERRQ(ierr)
-      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: SetSourceCst done\n',ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowSetSourceCst
 
 
@@ -962,7 +913,6 @@ Contains
       PetscReal                                           :: S_avg
       Type(MEF90_MATS)                                    :: A_zero
 
-      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: storage residual enter\n',ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%DMScalSec,FSec,ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%DMScalSec,pDotSec,ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,storativitySec,ierr);CHKERRQ(ierr)
@@ -1046,7 +996,6 @@ Contains
       Type(MEF90_MATS)                                    :: A_zero
       Type(SectionReal)                                   :: storativitySec
 
-      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: storage matrix enter\n',ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,storativitySec,ierr);CHKERRQ(ierr)
       Call SectionRealToVec(storativitySec,FlowCtx%cellDMScalScatter,SCATTER_REVERSE,FlowCtx%storativity,ierr);CHKERRQ(ierr)
 

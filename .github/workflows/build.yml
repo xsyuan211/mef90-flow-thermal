@@ -632,15 +632,12 @@ jobs:
               echo "    A ratio near 0.124 means the initial Dirichlet BC was NOT applied."
               exit 1
             fi
-            # CI #67: nodal variable 1 carries the Darcy pressure and must be
-            # labelled Pressure [Pa], not Temperature [K]. parse_cdf2.py is a
-            # pure-standard-library NetCDF CDF2 reader committed under vDef/data.
-            nodvar1=$(python3 -c "import sys; sys.path.insert(0,'data'); from parse_cdf2 import CDF2; c=CDF2('$out'); print(b''.join(c.read_static('name_nod_var')[:33]).rstrip(b'\x00').decode())")
-            echo "=== Gate 3.2 metadata: name_nod_var1 = '$nodvar1' ==="
-            if [ "$nodvar1" != "Pressure" ]; then
-              echo "=== FAIL: Gate 3.2 Exodus nodal variable 1 is '$nodvar1', expected Pressure ==="
-              exit 1
-            fi
+            # CI #68: verify the COMPLETE nodal variable table and report every
+            # slot's value range. Before CI #68 Flow's boundaryPressureOffset=3
+            # overwrote DefMech's Displacement_X on every ViewEXO call
+            # (DefMech is written first, Flow second). Both readers are pure
+            # standard library and committed under vDef/data.
+            python3 data/check_exodus_metadata.py "$out" || exit 1
             echo "=== Gate 3.2 probe: every 10th step pmax ==="
             grep "Gate 3.2:" /tmp/terzaghi.log | awk 'NR==1 || NR%10==0' | head -8
           fi

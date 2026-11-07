@@ -3,14 +3,19 @@
 # Analytical solution: p(z,t) = (4σ₀/π) Σ [(-1)^n/(2n+1)] cos((2n+1)πz/2H) exp(-(2n+1)²π²c_v t / 4H²)
 # c_v = k/(μ·S) — consolidation coefficient; Biot coupling f_p = -α·∇p
 #
-# Geometry: Beam1x10-tri3 — 1m(W) × 10m(H) plane-strain strip
-#   cs0001 = domain (TRI3, y=0→10, plane-strain z=0)
-#   cs0010 = top boundary (BAR2, y=10) — drained, p=0 Dirichlet
-#   cs0020 = bottom boundary (BAR2, y=0) — impermeable (natural BC), fixed u=0
+# Geometry (from the real Beam1x10-tri3_out.gen / TestMeshes binary):
+#   x in [-5,5] m (10 m long), y in [-0.5,0.5] m (1 m wide), plane strain
+#   The drainage path H=10 m runs ALONG X, not along Y.
+#   Terzaghi coordinate z = 5 - x: z=0 is the closed end at x=+5,
+#   z=H=10 is the drained end at x=-5.
+#   cs0001 = domain (TRI3)
+#   cs0010 = drained boundary at x=-5 (BAR2) — p=0 Dirichlet
+#   cs0020 = impermeable boundary at x=+5 (BAR2) — natural Neumann BC, fixed u=0
 #
 # Time scale: k_min=5e-11 m², μ=1e-3 Pa·s, S=4.6e-10 Pa⁻¹
-#   c_v = 5e-11/(1e-3 × 4.6e-10) ≈ 109 m²/s
-#   H²/c_v = 100/109 ≈ 0.92 s → 51 steps × 0.02s span T=0→2.17 (well beyond consolidation)
+#   c_v = 5e-11/(1e-3 × 4.6e-10) ≈ 108.7 m²/s
+#   H²/c_v = 100/108.7 ≈ 0.92 s (characteristic consolidation time)
+#   51 output records × dt=0.02 s span t=0→1.0 s = 50 BE steps
 #   T = c_v·t/H² → at t=1.0s, T≈1.09 (Terzaghi decay ~63% complete)
 # ============================================================================
 
@@ -61,7 +66,13 @@ flow:
     pressure_maxit: 500
     pressure_offset: 1
     source_offset: 2
-    boundary_pressure_offset: 3
+    # CI #68: 3 collided with DefMech's disp_offset=3. ViewEXO is called
+    # DefMech first, Flow second, so boundaryPressure used to OVERWRITE the
+    # Displacement_X field. bc_pressure is a known constant (0.0, see cs0010)
+    # and needs no output slot; disable it (0 = do not write / do not name).
+    # If bc_pressure_scaling is ever switched to 'file', give this a slot that
+    # does not collide with any DefMech nodal offset, or the read will be wrong.
+    boundary_pressure_offset: 0
     pressure_previous_step_offset: 6   # must not collide with source_offset (default was 2)
     perm_field_offset: 4
     darcy_velocity_offset: 5
@@ -71,7 +82,7 @@ flow:
 # cs0001/cs0010/cs0020 are mesh labels (Beam1x10-tri3 mesh cell block IDs)
 # ================================================================
 
-# ----------- cs0001: Domain (TRI3, 1m × 10m strip) -----------
+# ----------- cs0001: Domain (TRI3, x in [-5,5], y in [-0.5,0.5]) -----------
 # Poroelastic material: E=1GPa, ν=0.25, plane-strain
 # Gravity body force (0, -9.81, 0) m/s² → baseForce snapshot
 # No Flow BC here (domain interior)
@@ -102,9 +113,9 @@ cs0001:
     storativity_override: -1        # use global S
     flowBC: false                   # domain interior, no pressure BC
 
-# ----------- cs0010: Top boundary (y = 10, drained surface) -----------
-# Plane-strain symmetry: fix out-of-plane z only (u_z = 0)
+# ----------- cs0010: Drained surface (x = -5, z = H = 10) -----------
 # Flow Dirichlet BC: p = 0 (atmospheric — fully drained)
+# The 6 nodes at x=-5 carry p=0 in every output record.
 cs0010:
     displacementBC: 0, 0, 1
     boundaryDisplacement: 0, 0, 0
@@ -115,8 +126,8 @@ cs0010:
     flowBC: true
     bc_pressure: 0.0
 
-# ----------- cs0020: Bottom boundary (y = 0, rigid foundation) -----------
-# Full displacement fix (0, 0, 0) — no-slip impermeable base
+# ----------- cs0020: Closed end (x = +5, z = 0) -----------
+# Full displacement fix (0, 0, 0) — no-slip impermeable end
 # No-flow by default (natural Neumann BC)
 cs0020:
     displacementBC: 1, 1, 1
