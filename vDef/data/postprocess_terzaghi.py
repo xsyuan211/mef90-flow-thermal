@@ -267,7 +267,7 @@ def draw_chart(times, fields, x, y, z, rows):
     dr = ImageDraw.Draw(im)
     dr.text((60, 14), 'Gate 3.2  |  Terzaghi 1D consolidation: FEM vs analytic solution',
             fill=FG, font=font(22, True))
-    dr.text((60, 40), 'CI #67  -  51 steps, dt=0.02 s, cv=108.696 m2/s, H=10 m, p0=1e5 Pa',
+    dr.text((60, 40), 'CI #70 (default KSPCG)  -  51 steps, dt=0.02 s, cv=108.696 m2/s, H=10 m, p0=1e5 Pa',
             fill=(100, 106, 118), font=font(13))
 
     # (a) pmax/p0 decay
@@ -279,7 +279,7 @@ def draw_chart(times, fields, x, y, z, rows):
     poly(dr, con, C_CONT, 3, dash=True)
     poly(dr, be, C_BE, 3)
     poly(dr, fem, C_FEM, 3)
-    legend(dr, PANEL[0], [('FEM (CI #67)', C_FEM, False),
+    legend(dr, PANEL[0], [('FEM (default KSPCG)', C_FEM, False),
                           ('BE-corrected series', C_BE, False),
                           ('continuum series', C_CONT, True)])
 
@@ -317,11 +317,11 @@ def draw_chart(times, fields, x, y, z, rows):
     poly(dr, e_be, C_BE, 3)
     poly(dr, e_sh, C_SHIFT, 3, dash=True)
     legend(dr, PANEL[2], [('vs continuum', C_CONT, False),
-                          ('vs BE(n) [CI #67]', C_BE, False),
+                          ('vs BE(n)', C_BE, False),
                           ('vs BE(n-1) [old]', C_SHIFT, True)])
     x0, y0, x1, y1 = PANEL[2]
     dr.text((x0 + 250, y0 + 78),
-            'CI #67: t=0 field now satisfies the Dirichlet BC',
+            't=0 field satisfies the Dirichlet BC (CI #67+)',
             fill=(100, 106, 118), font=font(12))
     dr.text((x0 + 250, y0 + 98),
             'BE(n) is the correct reference; purple = pre-#67 one-step lag',

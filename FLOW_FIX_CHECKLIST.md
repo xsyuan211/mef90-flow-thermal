@@ -1022,4 +1022,59 @@ cell 变量是独立命名空间：`flow.source_offset=2` / `perm_field_offset=4
 
 证明本次改动是**纯输出层**，对 transient Darcy 求解零影响。后处理三份产物已用 #68 artifact 重生成，t=1 仍为 FEM `9055.7 Pa` / 连续 `8712.7` / BE `9339.3`，L2 `3.764% / 3.206%`。
 
-**当前状态**：闸门 3.1 / 3.2 稳定通过；时间轴、变量命名、全部 4 个 nodal slot 的输出内容均正确；日志已收敛到可读。剩余非阻塞清理：`pressurePreviousStep` 死写（YAML offset=6 与 `vDef.F90:508` 的 `VecCopy` 无消费者）、GMRES/CG 最终选型、DefMech AltMin 50 次 SNES WARNING、cell slot 的 offset 规划，以及构建诊断步骤里既有的 2 条 `gfortran: Only one '-J' option allowed`（Test A/B PETSc 模块探测，#67 同样存在，不影响构建）。
+**当时状态（已被 CI #69/#70 取代）**：闸门 3.1 / 3.2 稳定通过；时间轴、变量命名、全部 4 个 nodal slot 的输出内容均正确；日志已收敛到可读。剩余非阻塞清理：`pressurePreviousStep` 死写（YAML offset=6 与 `vDef.F90:508` 的 `VecCopy` 无消费者）、GMRES/CG 最终选型、DefMech AltMin 50 次 SNES WARNING、cell slot 的 offset 规划，以及构建诊断步骤里既有的 2 条 `gfortran: Only one '-J' option allowed`（Test A/B PETSc 模块探测，#67 同样存在，不影响构建）。其中 **GMRES/CG 选型已由 CI #69 定案、CI #70 落地**。
+
+## CI #69 / #70（2026-11-07 19:00）：GMRES vs CG 同源对比验证与最终选型
+
+### 背景与设计
+
+CI #63 为排查压力发散把 `-flow_ksp_type gmres` 加进命令行，覆盖了 `MEF90FlowCreateTS` 里的默认 `KSPCG`；此后一直沿用。当时发散的真实根因是 IFunction 三次 scatter（#64 修复），与求解器无关，但一直没复核 CG 是否可恢复。
+
+CI #69（`42366003387 / success`，commit `4c198b3`）在**同一个 job、同一二进制、同一网格与 YAML** 下连跑两次，只改 `-flow_ksp_type`（两者均 `-flow_ksp_rtol 1.0e-10`）：
+
+| 环节 | 做法 |
+|---|---|
+| 主运行 | GMRES，全部 Gate 3.1/3.2 判据不变，`_out.gen` 作为交付 artifact |
+| 第二运行 | CG，另存 `/tmp/terzaghi_cg.log` 与 `/tmp/out_cg.gen` |
+| 比对 | 新增 `vDef/data/compare_ksp_runs.py`（纯标准库）：51×356 压力场、Gate 3.2 ratio、KSP 收敛原因/迭代成本；从 `-flow_ts_view` 的 `KSP Object: (flow_)` 块断言选项确实生效；按 step 去重避免 job log 的 `tail` 回显污染末值 |
+| 判据 | 场差 `<= 1e-2 Pa`、ratio 差 `<= 1e-5`、两者 ratio 均在 `[0.05,0.15]`；CG 发散时输出 `CG NOT VIABLE` 结论而非误判闸门失败 |
+| 交付 | 比对结束后把 GMRES 的 `_out.gen` 复制回原位，保证既有产物不变 |
+
+静态校验：`git diff --check`、PyYAML（20 steps）、全部 `run` 块 `bash -n`、四个脚本 `py_compile`、用 #68 日志/artifact 构造 mock 做本地 dry-run。
+
+### 对比结果（CI 报告与本地复跑逐字一致）
+
+| 指标 | GMRES | CG |
+|---|---|---|
+| `-flow_ts_view` 确认的 flow KSP 类型 | `gmres` ×50 | `cg` ×50 |
+| 收敛原因 | `CONVERGED_RTOL` ×50 | `CONVERGED_RTOL` ×50 |
+| 线性迭代总数 / 均值 / 峰值 | 3043 / 60.86 / 76 | **1973 / 39.46 / 44** |
+| t=1 `pmax` | 9055.708842 | 9055.708841 |
+| Gate 3.2 ratio | 0.0905571 | 0.0905571（差 `1.46e-11`） |
+
+51×356 全场压力最大差 **2.54252e-05 Pa**（相对 `p0` = `2.54e-10`），远小于 `1e-2 Pa` 阈值。**结论：`KSPCG` 完全可用，且比 GMRES 少 35.16% 线性迭代**；`MAT_SPD` + 单次 `MatZeroRowsColumnsIS` 后的 J 确实保持对称正定，#62 当时对 CG 的怀疑不成立。默认 PC 仍是 `bjacobi`（块内 ILU），CG 在其上正常收敛。
+
+### CI #70 落地（`42366719829 / success`，commit `de9dd1e`）
+
+- workflow 主运行去掉 `-flow_ksp_type gmres`，保留 `-flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason`；`-flow_ts_view` 逐步打印 `type: cg`，确认默认生效。
+- 移除一次性双跑、`terzaghi-ksp-comparison` artifact 与相关 diagnostics 行，生产 CI 回到 19 steps 单跑。`compare_ksp_runs.py` 保留为可复用工具（docstring 记录 #69 结论与重跑方式，#69 输入归档在 `terzaghi-ksp-comparison` artifact）。
+- Gate 3.1 / 3.2 带宽 / BE 解析 / 元数据全表 **全 PASS**，`ratio=0.0905571`；51 次 `CONVERGED_RTOL`，迭代均值 38.69、峰值 44。
+
+### 三版 artifact 逐位对比（51×356 全时刻）
+
+| slot | #68 GMRES → #69 GMRES | #69 CG → #70 CG | #69 GMRES → #70 CG |
+|---|---|---|---|
+| 1 Pressure | 0 | **0** | 2.54e-5 Pa |
+| 2 Damage | 0 | **0** | 0 |
+| 3 Displacement_X | 0 | **0** | 2.22e-6 |
+| 4 Displacement_Y | 0 | **0** | 0.01204 |
+
+- #68 与 #69 GMRES **全字段逐位一致** → #69 的双跑没有污染主运行。
+- #69 的 CG 与 #70 的单跑 CG **全字段逐位一致** → 差异只来自 KSP 选择本身，与运行顺序无关，结果可复现。
+- `Displacement_Y` 的 `0.012` 差异来自 DefMech AltMin 的 **51 次非收敛 SNES**（两版都是 51 次）：非收敛的力学迭代把 `2.54e-5 Pa` 的压力扰动放大。Flow/Darcy 压力场不受影响，**但位移场目前不具备定量可比性**，若后续要分析力学量必须先解决 AltMin 非收敛。
+
+### 交付与状态
+
+`_out.gen`（#70 CG，2,845,300 B / 51 records / `Pressure | Damage | Displacement_X | Displacement_Y`）、`terzaghi_validation.png`、两份 CSV 与后处理脚本均已用 #70 artifact 重生成；图表标题改为 `CI #70 (default KSPCG)`。t=1 仍为 FEM `9055.7 Pa` / 连续 `8712.7` / BE `9339.3`，L2 `3.764% / 3.206%`。本地与远程 `main` 同步。
+
+**剩余非阻塞项**：`pressurePreviousStep` 死写、DefMech AltMin 51 次 SNES 非收敛（现已知会放大力学场差异）、cell slot 的 offset 规划、构建诊断里既有的 2 条 `-J` 噪声。CSV/PNG 仍未入库（脚本可一键重生成）。
