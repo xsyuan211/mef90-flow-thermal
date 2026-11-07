@@ -116,8 +116,14 @@ cs0001:
 # ----------- cs0010: Drained surface (x = -5, z = H = 10) -----------
 # Flow Dirichlet BC: p = 0 (atmospheric — fully drained)
 # The 6 nodes at x=-5 carry p=0 in every output record.
+# FIX (2026-11-07): displacementBC changed 0,0,1 -> 1,1,1. In 2D (DIM=2) the
+# 3rd component was ignored, so the drained end imposed NO displacement BC and the
+# DefMech displacement matrix had a free rigid-body rotation about the pinned
+# corner at x=+5. Gravity (0,-9.81,0) then torqued that mode, making the linear
+# system inconsistent -> 51x SNES_DIVERGED_MAX_IT even with the (correct) analytic
+# Jacobian. Fully pinning cs0010 removes the rotation. Drainage (p=0) is unchanged.
 cs0010:
-    displacementBC: 0, 0, 1
+    displacementBC: 1, 1, 1
     boundaryDisplacement: 0, 0, 0
     damageBC: 0
     boundaryDamage: 0
