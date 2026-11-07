@@ -1097,3 +1097,21 @@ CI #69（`42366003387 / success`，commit `4c198b3`）在**同一个 job、同�
 - 若两变体仍 -5 ⇒ 残差本身不一致 / 系统奇异。
 
 **待 CI #72 结果后决策**：若 V1 收敛→改位移 KSP 为 GMRES（或修正对称/SPD）；若 V2 收敛→定位并修 `BilinearFormDisplacement` 的 J 值 bug；两者皆收敛则双修；皆否则查残差/奇异。
+
+### CI #72 结果 + 容差分析（定位 J≠dR/du）
+
+**关键容差事实**：位移 SNES `atol=1e-7, rtol=1e-5` → 收敛阈值 ≈ `atol + rtol*F0 = 1e-7 + 1e-5*2.96e4 ≈ 0.296`。实测 fnorm 卡在 `3–10` **从不**低于 0.296 → 因此报 `-5 (MAX_IT)`，不是"差一点收敛"。这确认 **解析 Jacobian 与真导数不一致**（若 J 正确，第一步即把残差打到 ~1e-12 << 0.296，1 步收敛）。
+
+**CI #72 V1（解析 J + GMRES）**：`51× -5`，与 CG 基线一致 → 排除 CG/MAT_SPD 对称性假设（GMRES 可处理非对称/不定矩阵）。
+**CI #72 V2（FD J + GMRES）**：`rc=124`（600s 超时），仅跑到 28 步（全 -5），**无法定论**——FD 每步 ~21s，51 步需 ~1070s。
+
+**代码三重核对（已排除）**：
+- HD split 数学：`D2EEDMinus=∂²W-/∂ε²` 手算与代码行 130 一致；`D2EEDPlus=HookesLaw−D2EEDMinus` 正是 `DEEDPlus` 的正确切线 → `AGauss=∂(stressGauss)/∂ε` 严格成立，J≡dR/du。
+- deck `solverType: AltMin` → 位移子问题冻结 damage，且 Terzaghi 为压缩荷载 → HD split **激活**（非纯弹性），位移子问题本质**非线性**（split 的 SmoothPositiveSquare 引入非线性），但切线 D2EED 正确，正确 J 下应几步收敛。
+- BC：残差 `R_i=u_i−g_i`（INSERT）、Jacobian `MatZeroRowsColumnsIS(...,1.0)` 行+列清零 → Dirichlet 一致；首步即把约束自由度拉到 g_i，不影响后续。
+
+**结论**：数学上 J≡dR/du，但实测不收敛 → 必为**运行期装配/SNES 配置 bug**，无法靠阅读定位。
+
+**CI #73 设计（已提交）**：V2 改 `timeout 1500s` 跑完完整 51 步 FD Jacobian + GMRES，作为**决定性判据**：
+- FD `-5` 数骤降/为 0 ⇒ 解析 `BilinearFormDisplacement` 有值 bug（FD-coloring 可恢复）→ 后续定位/修复该 bug。
+- FD 仍 ~51× -5 ⇒ 残差 `OperatorDisplacement` 本身不一致或系统奇异 → bug 在残差侧。

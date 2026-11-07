@@ -485,19 +485,21 @@ jobs:
           # a full Newton step (basic); -disp_snes_monitor records the fnorm
           # trace for the diagnosis table at the end of this step.
           #
-          # CI #72 Jacobian/KSP diagnosis (runs BEFORE the production run so the
+          # CI #73 Jacobian diagnosis (runs BEFORE the production run so the
           # production run still owns data/Beam1x10-tri3_out.gen for Gates 3.1/3.2):
           # Baseline (production run below): analytic Jacobian + CG  -> -5 on all 51 steps.
-          # V1: analytic Jacobian + GMRES -> if this CONVERGES, the stiffness matrix is
-          #     non-symmetric / indefinite and KSPCG (with MAT_SPD) was the culprit.
-          # V2: FD Jacobian + GMRES      -> if this CONVERGES, the analytic Jacobian
+          # V1 (CI #72): analytic Jacobian + GMRES -> 51x -5, so CG/MAT_SPD symmetry is
+          #     ruled out (GMRES handles non-symmetric/indefinite matrices).
+          # V2: FD Jacobian + GMRES (1500s, full 51 steps) -> DECISIVE:
+          #     if -5 count drops sharply (or 0) the analytic Jacobian
           #     (BilinearFormDisplacement) carries a value bug that FD-coloring recovers.
-          # If BOTH still -5 -> the residual itself is inconsistent / the system singular.
+          #     If V2 still reports ~51x -5, the residual itself is inconsistent /
+          #     the system is singular and the bug is in OperatorDisplacement.
           run_variant () {
             local tag="$1"; shift
             echo ""
             echo "##### DefMech diagnosis $tag: $* #####"
-            timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            timeout -k 10s 1500 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
               -prefix data/Beam1x10-tri3 \
               -options_file_yaml data/terzaghi1D.yaml \
               -flow_ts_view -flow_ts_monitor \
@@ -510,7 +512,6 @@ jobs:
             echo "##### $tag first AltMin step fnorm tail (last 4 iters of step 1):"
             awk '/Alt\. Min\. step     1 /{f=1} f&&/SNES Function norm/{c++} f&&c>=47{print} /Alt\. Min\. step     2 /{f=0}' "/tmp/diag_${tag}.log" | head -6
           }
-          run_variant V1 -disp_ksp_type gmres -disp_ksp_gmres_restart 100
           run_variant V2 -disp_snes_fd -disp_ksp_type gmres -disp_ksp_gmres_restart 100
           timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
