@@ -403,7 +403,9 @@ jobs:
         if: always()
         # CI #57 hung for 1h in mpirun (MPI deadlock) with no step timeout.
         # Cap the step and the solver so a hang always produces diagnostics.
-        timeout-minutes: 20
+        # Bumped 20->45 for CI #76: the AT2-damage divergence plus the extra
+        # NODAMAGE (AT2Elastic) diagnostic variant need >20 min to complete.
+        timeout-minutes: 45
         run: |
           set +e
           export PETSC_DIR=$HOME/petsc-3.3-mef90
@@ -532,6 +534,34 @@ jobs:
           fi
           echo "=== terzaghi.log (last 120 lines) ==="
           tail -120 /tmp/terzaghi.log
+          # --------------------------------------------------------------------
+          # CI #76 DIAGNOSTIC: isolate the AT2 damage *evolution*.
+          # terzaghi1D_nodamage.yaml == terzaghi1D.yaml with damage.type AT2 -> AT2Elastic.
+          # AT2Elastic sets isElastic (no damage-field growth) and Stiffness=1 (no
+          # stiffness degradation): an INERT damage field. Runs BEFORE Gate 3.3 so
+          # its log is captured even when the AT2 (active-damage) run above diverges.
+          # If NODAMAGE converges while AT2 diverges, the poroelastic core is sound
+          # and the AT2 damage SNES is the culprit.
+          # --------------------------------------------------------------------
+          echo "=== NODAMAGE (AT2Elastic, inert damage) diagnostic run ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi1D_nodamage.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_monitor -disp_snes_linesearch_type basic \
+            2>&1 | tee /tmp/terzaghi_nodamage.log
+          nd_rc=${PIPESTATUS[0]}
+          echo "=== NODAMAGE mpirun exit code: $nd_rc ==="
+          echo "=== NODAMAGE: displacement/damage SNES convergence reasons ==="
+          grep -o "SNESConvergedReason -[0-9]*" /tmp/terzaghi_nodamage.log | sort | uniq -c || true
+          nd_fail=$(grep -c "SNESSolve failed with SNESConvergedReason" /tmp/terzaghi_nodamage.log || true)
+          echo "=== NODAMAGE non-convergent DefMech SNES solves: $nd_fail ==="
+          if [ "$nd_fail" -gt 0 ]; then
+            echo "=== NODAMAGE STILL DIVERGENT: poroelastic core itself is broken (deeper issue) ==="
+          else
+            echo "=== NODAMAGE CONVERGED: poroelastic core sound; AT2 damage evolution is the culprit ==="
+          fi
           echo "=== result files (3.2 analytical-comparison data source) ==="
           echo "    -prefix data/Beam1x10-tri3 -> geometry data/Beam1x10-tri3.gen, result data/Beam1x10-tri3_out.gen"
           ls -la data/Beam1x10-tri3_out.gen 2>/dev/null || echo "(no _out.gen result file)"
