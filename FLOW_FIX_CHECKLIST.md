@@ -1078,3 +1078,22 @@ CI #69（`42366003387 / success`，commit `4c198b3`）在**同一个 job、同�
 `_out.gen`（#70 CG，2,845,300 B / 51 records / `Pressure | Damage | Displacement_X | Displacement_Y`）、`terzaghi_validation.png`、两份 CSV 与后处理脚本均已用 #70 artifact 重生成；图表标题改为 `CI #70 (default KSPCG)`。t=1 仍为 FEM `9055.7 Pa` / 连续 `8712.7` / BE `9339.3`，L2 `3.764% / 3.206%`。本地与远程 `main` 同步。
 
 **剩余非阻塞项**：`pressurePreviousStep` 死写、DefMech AltMin 51 次 SNES 非收敛（现已知会放大力学场差异）、cell slot 的 offset 规划、构建诊断里既有的 2 条 `-J` 噪声。CSV/PNG 仍未入库（脚本可一键重生成）。
+
+### CI #71 + #72：DefMech 位移 SNES 非收敛根因定位
+
+**现象（CI #71, `42369005656 / failure`）**：位移 SNES 在 51/51 个外层 AltMin 步全报 `-5 (SNES_DIVERGED_MAX_IT)`。fnorm 轨迹：第 1 步从 `2.96e4` 降到 `~10`，之后在 `3–10` 之间振荡到 maxit（出现 `3.46 → 9.4` 回弹）。内层 KSP 全部 `CONVERGED_RTOL`（~40 it，KSPCG，`rtol=1e-8`）。damage 全程恒为 `α≈4e-5`（≈0）→ AT2 降阶 `a≈1`。
+
+**代码核对结论（已逐项排除）**：
+- `cellIsElastic=.FALSE.`（AT2 非 AT2Elastic），残差与 Jacobian 都走 HD split。HD `DEED` 求和恰回到 `HookesLaw*Strain`，`D2EED` 求和恰回到 `HookesLaw`（常数）。**damage≈0 时位移系统完全线性且 J≡F**，理论上 Newton 应 1 步收敛。
+- 阻尼 `dampingCoefficientDisplacement` 默认 `0.0`（vDef 默认），内聚 `cohesiveStiffness=0` → 残差里唯一的阻尼/内聚项对本卡关闭；即便开启，也存在真实 bug：残差用 `dampingCoeff/timeStep`（装配行 304）而 Jacobian 用 `dampingCoeff*timeStep`（行 600），差 `timeStep²` 倍。但本卡不触发。
+- 内层 KSP 用 `KSPCG` + `MAT_SPD` 声明；矩阵理论对称正定（HD 切线 `D2EEDPlus+D2EEDMinus=HookesLaw` 对称），BC 用 `MatZeroRowsColumnsIS` 保对称。CG 适用。
+- 已排除：null space（BC 充分约束，2D 旋转模态也被 `u_x=0@x=+5` 消去）、时间轴/几何、`smoothPS` 函数（damage≈0 时 cancel）、压力耦合（常数载荷，无 u 依赖）。
+
+**矛盾**：理论（线性+一致+SPD+CG）→ 应 1 步收敛；实测 → 停在 ~7-10 且振荡 → 必为运行期不一致。无法仅靠阅读定位，故用运行期对照实验定论。
+
+**CI #72 诊断设计（已提交）**：Gate 3.3 改回 report-only（不阻断 Gates 3.1/3.2）；主生产运行（解析 J + CG + basic 线搜索）**最后**跑以保 `_out.gen`；其前插入两个变体：
+- **V1**：解析 J + **GMRES** → 若收敛 ⇒ 矩阵非对称/不定，KSPCG（MAT_SPD）是元凶。
+- **V2**：**FD Jacobian**（`-Disp_snes_fd`）+ GMRES → 若收敛 ⇒ `BilinearFormDisplacement` 有值 bug，FD-coloring 可恢复。
+- 若两变体仍 -5 ⇒ 残差本身不一致 / 系统奇异。
+
+**待 CI #72 结果后决策**：若 V1 收敛→改位移 KSP 为 GMRES（或修正对称/SPD）；若 V2 收敛→定位并修 `BilinearFormDisplacement` 的 J 值 bug；两者皆收敛则双修；皆否则查残差/奇异。
