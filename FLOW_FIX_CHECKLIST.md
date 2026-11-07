@@ -661,3 +661,50 @@ MEF90VecSetValuesISdof: DMMeshISCreateISglobaldof → ... (DM Mesh 内部含同�
 **校验**：`git diff --check` 干净；PyYAML（19 steps）通过；`Run Terzaghi` 块 `bash -n` 通过；用 #58 的 `terzaghi.log` 回归新判据得到 `FATAL_RE 命中=0`、`nSolve=49`、`FINAL_TIME_OK`、`rejected!=0 count=0`、`_out.gen` 存在。仍为零本地编译、靠 CI 验证。
 
 **#59 判据**：① CI 首次全绿（3.1 正式通过）；② `Gate 3.1 PASS` 与 `Gate 3.2 probe` 同时出现；③ `pmax(final)/pmax(initial)` 应约 **0.09**（≈8.7e3 / 1e5），曲线单调下降且 step 16 处有一个平台；④ 若比值 > 1（压力反而增长）即为 3.2 要修的**符号反向**（`MEF90FlowOperatorCore` 的 `G(p)=+div(A∇p)` 与 `-div(k/μ∇p)=S·ṗ` 差一个负号）；⑤ 下轮用 artifact 中的 `_out.gen` 做 z 剖面与解析级数逐点比对。
+
+
+## CI #59 结果与 Gate 3.2 根因（2026-11-07 13:10，3.1 全绿 / 压力指数发散 → DM dof 映射）
+
+**状态**：run `42340345883` / job `128306409584`，**`completed success` —— 项目首次 CI 全绿**（缓存命中，约 3 分钟）。`Run Terzaghi` 输出：`mpirun exit code: 0`、DefMech 98 次非收敛被正确标为 WARNING、`Gate 3.1: 49 completed TSSolve calls, 2 skipped`、`Gate 3.1 PASS: ... valid Exodus file`。`Upload Terzaghi result mesh` artifact 上传成功（1.23 MB 压缩包 / 2,845,300 字节原始文件）。
+
+### Gate 3.2 探针暴露的物理错误（不是"绿灯即正确"）
+
+51 个 `Gate 3.2: step N pmin/pmax` 显示压力**指数发散**而非 Terzaghi 衰减：
+
+| step | pmin | pmax |
+|---|---|---|
+| 1 | 1.0e5 | 1.0e5 |
+| 2 | 0 | 1.0e5 |
+| 6 | -1.68e3 | 9.88e4 |
+| 10 | -4.04e7 | 3.23e4 |
+| 20 | -3.36e8 | 4.02e11 |
+| 30 | -3.50e16 | 3.96e19 |
+| 40 | -3.97e24 | 4.71e27 |
+| 51 | -4.70e36 | **1.65e36** |
+
+`pmax(final)/pmax(initial) = 1.65e31`（解析解应 ≈ **0.087**）。pmin/pmax 交替变号放大，是 F 与 J 不一致导致线性解被反复放大，不是物理/时间步长问题（BE 无条件稳定，且 `rejected steps=0`、KSP 均"收敛"）。
+
+### 从 `_out.gen` 直接读出的确定性证据
+
+手写 NetCDF classic (CDF2) 解析：`numrecs=51`，record 起点 23980、record 大小 55320 字节，`vals_nod_var1` = pressure（356 节点 × double），`vals_elem_var4eb1` = perm field（600 单元 × double）。
+
+- **`vals_elem_var4eb1` 全 51 步恒为 `5.0e-8`** = k/μ = 5e-11/1e-3，**渗透率正确**，排除"K=0 导致不衰减"。
+- pressure 的 min/max 与 Gate 3.2 探针逐点吻合（step 51: -4.701e36 / 1.654e36），确认探针可信。
+- `vals_nod_var2` 是 damage（3.87e-5 ~ 6.47e-4），与日志 `alpha min/max` 一致。
+
+### 根因（确定性，对照已验证 HeatXfer 模板）
+
+`MEF90FlowCtx` 里 `DM` 是**主 DM**：`vDef.F90` 调 `DMMeshSetMaxDof(Mesh,dim)` / `DMSetBlockSize(Mesh,dim)`（dim=2），DefMech 在其上设 **2 dof/vertex** 的 default section。压力 Vec、356×356 矩阵、`DMScalSec` 全部挂在 `DMScal`（`DMMeshClone` 后 `MaxDof=1`、`BlockSize=1`、`DMMeshGetVertexSectionReal(...,1,...)`，即 **1 dof/vertex**）。
+
+但 Flow 的 6 处底层装配把 **`FlowCtx%DM`** 传给 `MEF90DiffusionOperatorSet` / `MEF90DiffusionBilinearFormSet` / `MEF90DiffusionOperatorAddTransientTermSet` / `MEF90DiffusionRHSSetCell`。其中 `MEF90DiffusionBilinearFormSet` 内部 `DMMeshGetSectionReal(mesh,'default',defaultSection)` 取的是**主 DM 的 2-dof section**，于是 `DMmeshAssembleMatrix` 把 3×3 单元刚度矩阵按 6-dof 索引写进 1-dof 的 356×356 矩阵 → J 的行列完全错乱；而 IFunction 走 SectionReal 路径（按 `DMScalSec` 的 point id 写），**F 与 J 不相容**。`KSPCG` 在 `MAT_SPD` 假设下"收敛"到错误解，每步放大约 2.5 倍。`m_HeatXfer/m_MEF90_HeatXferAssembly.F90:595/466` 全程使用 `MEF90HeatXferCtx%DMScal`，正是应当对齐的模板。
+
+注意：清单 3.2 原先怀疑的「稳态算子 `+div(A∇p)` 符号反了」**并不成立** —— 弱形式 `∫A∇p·∇v` 正是 `-div(A∇p)` 的离散，F=`K p + S M ṗ`、J=`K + a S M` 的符号是自洽的。
+
+### 本轮改动（#60，2 文件）
+
+1. `m_Flow/m_MEF90_FlowAssembly.F90`：6 处 TS 路径装配的 mesh 参数 `FlowCtx%DM` → **`FlowCtx%DMScal`**（`OperatorSet` / `RHSSetCell` / `BilinearFormSet(Jac)` ×2 / `BilinearFormSet(PreJac)` / `OperatorAddTransientTermSet`）；`MEF90FlowIJacobian` 增加 `Gate 3.2 diag: ... shift a ...` 打印（前 4 步，预期 `a=1/dt=50`）。`MEF90DiffusionEnergySet` 仍用主 DM（纯后处理，不参与 TS 求解），留待后续统一。
+2. `.github/workflows/build.yml`：Gate 3.2 探针升级为**硬判据** —— `ratio=pmax(final)/pmax(initial) > 1.5` 即 `FAIL: Gate 3.2 pressure DIVERGED` 并打印 diag；`0.02 ≤ ratio ≤ 0.30` 打印 `Gate 3.2 PASS`（解析解 ≈0.087）；区间外标 WARNING。**这样 #59 那种"3.1 全绿但物理发散"不再可能通过。**
+
+**校验**：`git diff --check`、PyYAML（19 steps）、`bash -n` 全通过；6 处调用逐一核对，TS 路径已无 `Diffusion*Set(...,FlowCtx%DM,...)` 残留。仍为零本地编译、靠 CI 验证。
+
+**#60 判据**：① 编译通过、`Gate 3.1 PASS` 保持；② `Gate 3.2 diag shift a` = 50；③ pmax 单调衰减、`ratio≈0.09` → `Gate 3.2 PASS`、CI 全绿；④ 若仍发散，则下一轮用 `MatNorm(Jac)` 与 `VecNorm(F)` 逐项对比 F/J 装配，并检查 `MEF90Element_Create` 是否也需换成 `DMScal`；⑤ 收敛后把 step 16 的浮点跳步改为基于 `time(step)` 的容差驱动，再做 z 剖面与 Terzaghi 级数逐点比对。

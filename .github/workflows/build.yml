@@ -589,6 +589,20 @@ jobs:
             pLast=$(grep "Gate 3.2:" /tmp/terzaghi.log | tail -1 | awk '{print $NF}')
             echo "=== Gate 3.2 probe: first step pmax=$pFirst ; final step pmax=$pLast ==="
             awk -v a="$pFirst" -v b="$pLast" 'BEGIN{r=(a!=0)?b/a:0; printf "=== Gate 3.2 probe: pmax(final)/pmax(initial)=%.4f ; decay-to-half=%s ===\n", r, (r<0.5?"YES":"NO")}'
+            # CI #59: a green 3.1 with an exponentially growing pressure is a
+            # FALSE green. Make the physics a hard gate now that the probe exists.
+            ratio=$(awk -v a="$pFirst" -v b="$pLast" 'BEGIN{printf "%.6g",(a!=0)?b/a:0}')
+            if awk -v r="$ratio" 'BEGIN{exit !(r>1.5)}'; then
+              echo "=== FAIL: Gate 3.2 pressure DIVERGED (pmax final/initial=$ratio > 1.5) ==="
+              echo "    IFunction / IJacobian or the DM dof mapping is inconsistent."
+              grep "Gate 3.2 diag:" /tmp/terzaghi.log | head -10 || true
+              exit 1
+            fi
+            if awk -v r="$ratio" 'BEGIN{exit !(r>=0.02 && r<=0.30)}'; then
+              echo "=== Gate 3.2 PASS: Terzaghi decay ratio $ratio in [0.02,0.30] (analytic ~0.087) ==="
+            else
+              echo "=== WARNING: Gate 3.2 decay ratio $ratio outside analytic band [0.02,0.30] ==="
+            fi
             echo "=== Gate 3.2 probe: every 10th step pmax ==="
             grep "Gate 3.2:" /tmp/terzaghi.log | awk 'NR==1 || NR%10==0' | head -8
           fi

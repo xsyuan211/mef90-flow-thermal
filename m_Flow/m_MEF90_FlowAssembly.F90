@@ -98,12 +98,18 @@ Contains
                   Call SectionRealRestrict(permFieldSec,cellID(cell),permCell,ierr);CHKERRQ(ierr)
                   A_cell = permCell(1)
 
-                  !!! G(p) = div(A∇p) with λ=0 (steady storage handled separately)
-                  Call MEF90DiffusionOperatorSet(resSec,FlowCtx%DM,pSec,singleIS, &
+                  !!! Gate 3.2 (CI #59): the pressure Vec/matrix/section live on
+                  !!! DMScal (1 dof / vertex). The MAIN DM has a 2-dof default
+                  !!! section (DefMech displacement), so passing FlowCtx%DM to
+                  !!! these helpers makes DMmeshAssembleMatrix map a 3x3 element
+                  !!! matrix through a 6-dof section -> wrong rows/cols, i.e.
+                  !!! IFunction and IJacobian disagree -> exponential blow-up.
+                  !!! HeatXfer uses MEF90HeatXferCtx%DMScal throughout; mirror it.
+                  Call MEF90DiffusionOperatorSet(resSec,FlowCtx%DMScal,pSec,singleIS, &
                        A_cell,0.0_Kr,elem,elemType,ierr)
 
                   !!! Subtract source RHS: G = DiffusionOperator - Source
-                  Call MEF90DiffusionRHSSetCell(resSec,FlowCtx%DM,sourceSec,singleIS, &
+                  Call MEF90DiffusionRHSSetCell(resSec,FlowCtx%DMScal,sourceSec,singleIS, &
                        elem,elemType,ierr)
 
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
@@ -194,7 +200,7 @@ Contains
                   Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr)
                   Call SectionRealRestrict(permFieldSec,cellID(cell),permCell,ierr);CHKERRQ(ierr)
                   A_cell = permCell(1)
-                  Call MEF90DiffusionBilinearFormSet(Jac,FlowCtx%DM,singleIS, &
+                  Call MEF90DiffusionBilinearFormSet(Jac,FlowCtx%DMScal,singleIS, &
                        A_cell,0.0_Kr,elem,elemType,ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
@@ -276,8 +282,15 @@ Contains
       MatStructure,Intent(INOUT)                         :: flg
       Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
+      Character(len=256)                                 :: IOBuffer
       !!! CI #53 diagnostic: mark entry into the TS Jacobian callback.
       Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: IJacobian enter\n',ierr);CHKERRQ(ierr)
+      !!! Gate 3.2 diagnostic: report the BE shift a = d(xdot)/d(x) for the
+      !!! first few steps. Expected 1/dt = 50 for dt=0.02.
+      If (t < 0.07_Kr) Then
+         Write(IOBuffer,*) 'Gate 3.2 diag: IJacobian t',t,' shift a',a,'\n'
+         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+      End If
       !!! First, assemble steady Darcy Jacobian K = dG/dp
       Call MEF90FlowBilinearFormCore(x,Jac,PreJac,1.0_Kr,FlowCtx,ierr);CHKERRQ(ierr)
       !!! Add a·S·M (mass matrix):  K += a·S·BFB
@@ -877,7 +890,7 @@ Contains
                   Else
                      S_avg = 0.0_Kr
                   End If
-                  Call MEF90DiffusionOperatorAddTransientTermSet(FSec,FlowCtx%DM,pDotSec, &
+                  Call MEF90DiffusionOperatorAddTransientTermSet(FSec,FlowCtx%DMScal,pDotSec, &
                        singleIS,S_avg,elem,elemType,ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
@@ -950,9 +963,9 @@ Contains
                      lambda_val = 0.0_Kr
                   End If
                   !!! K += 0*∇ + λ·BFB   (lambda term only → mass matrix)
-                  Call MEF90DiffusionBilinearFormSet(Jac,FlowCtx%DM,singleIS, &
+                  Call MEF90DiffusionBilinearFormSet(Jac,FlowCtx%DMScal,singleIS, &
                        A_zero,lambda_val,elem,elemType,ierr)
-                  Call MEF90DiffusionBilinearFormSet(PreJac,FlowCtx%DM,singleIS, &
+                  Call MEF90DiffusionBilinearFormSet(PreJac,FlowCtx%DMScal,singleIS, &
                        A_zero,lambda_val,elem,elemType,ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
