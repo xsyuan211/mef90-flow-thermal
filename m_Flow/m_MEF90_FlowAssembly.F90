@@ -437,14 +437,16 @@ Contains
 
       Type(IS)                                            :: CellSetGlobalIS, bcIS
       Type(IS)                                            :: VertexSetGlobalIS, setIS, cellSetIS
-      PetscInt,dimension(:),Pointer                        :: setID, cellIDs, dofList
-      !!! PETSc 3.3: ISGetIndicesF90 associates this F90 pointer itself and
-      !!! ISRestoreIndicesF90 releases it. Never Allocate/DeAllocate dofList
-      !!! (CI #51: "Attempt to DEALLOCATE unallocated 'doflist'").
+      PetscInt,dimension(:),Pointer                        :: setID
       PetscInt                                            :: set, nVal
-      PetscReal,Allocatable                               :: resPtr(:), bcPtr(:)
+      !!! CI #56: HeatXfer-style dof mapping helpers take POINTER arrays.
+      PetscReal,Dimension(:),Pointer                      :: xPtr, bcPtr, resPtr
       Type(MEF90FlowCellSetOptions_Type),pointer          :: cellSetOptions
       Type(MEF90FlowVertexSetOptions_Type),pointer        :: vertexSetOptions
+
+      !!! CI #56: bcIS / setIS are POINT-ID IS, not dof IS. The old direct
+      !!! VecGetValues/VecSetValues would index out of range on the rank that
+      !!! owns the Dirichlet vertices. Route through MEF90Vec*ISdof.
 
       !!! Cell sets with Has_BC → Cell→Vertex IS
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -458,21 +460,19 @@ Contains
             Call ISGetLocalSize(bcIS,nVal,ierr);CHKERRQ(ierr)
             !!! CI #55: guard empty local IS (rank may own zero BC vertices).
             If (nVal > 0) Then
-               Allocate(resPtr(nVal),bcPtr(nVal),stat=ierr)
-               Call ISGetIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
-               Call VecGetValues(x,nVal,dofList,resPtr,ierr);CHKERRQ(ierr)
-               Call VecGetValues(FlowCtx%boundaryPressure,nVal,dofList,bcPtr,ierr);CHKERRQ(ierr)
-               resPtr = resPtr - bcPtr    !!! G = x - p_bc on Dirichlet dofs
-               Call VecSetValues(residual,nVal,dofList,resPtr,INSERT_VALUES,ierr);CHKERRQ(ierr)
-               Call ISRestoreIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
-               DeAllocate(resPtr,bcPtr)
+               Allocate(xPtr(nVal),bcPtr(nVal),resPtr(nVal),stat=ierr)
+               Call MEF90VecGetValuesISdof(FlowCtx%DMScal,x,xPtr,bcIS,1,ierr);CHKERRQ(ierr)
+               Call MEF90VecGetValuesISdof(FlowCtx%DMScal,FlowCtx%boundaryPressure,bcPtr,bcIS,1,ierr);CHKERRQ(ierr)
+               resPtr = xPtr - bcPtr    !!! G = x - p_bc on Dirichlet dofs
+               Call MEF90VecSetValuesISdof(FlowCtx%DMScal,residual,resPtr,bcIS,1,INSERT_VALUES,ierr);CHKERRQ(ierr)
+               DeAllocate(xPtr,bcPtr,resPtr)
             End If
             Call ISDestroy(bcIS,ierr);CHKERRQ(ierr)
             Call ISDestroy(cellSetIS,ierr);CHKERRQ(ierr)
          End If
       End Do
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
-      Call ISDestroy(CellSetGlobalIS,ierr)
+      Call ISDestroy(CellSetGlobalIS,ierr);CHKERRQ(ierr)
 
       !!! Vertex sets with Has_BC → override
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Vertex Sets',VertexSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -484,20 +484,21 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DMScal,'Vertex Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(setIS,nVal,ierr);CHKERRQ(ierr)
             If (nVal > 0) Then
-               Allocate(resPtr(nVal),bcPtr(nVal),stat=ierr)
-               Call ISGetIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
-               Call VecGetValues(x,nVal,dofList,resPtr,ierr);CHKERRQ(ierr)
-               Call VecGetValues(FlowCtx%boundaryPressure,nVal,dofList,bcPtr,ierr);CHKERRQ(ierr)
-               resPtr = resPtr - bcPtr
-               Call VecSetValues(residual,nVal,dofList,resPtr,INSERT_VALUES,ierr);CHKERRQ(ierr)
-               Call ISRestoreIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
-               DeAllocate(resPtr,bcPtr)
+               Allocate(xPtr(nVal),bcPtr(nVal),resPtr(nVal),stat=ierr)
+               Call MEF90VecGetValuesISdof(FlowCtx%DMScal,x,xPtr,setIS,1,ierr);CHKERRQ(ierr)
+               Call MEF90VecGetValuesISdof(FlowCtx%DMScal,FlowCtx%boundaryPressure,bcPtr,setIS,1,ierr);CHKERRQ(ierr)
+               resPtr = xPtr - bcPtr
+               Call MEF90VecSetValuesISdof(FlowCtx%DMScal,residual,resPtr,setIS,1,INSERT_VALUES,ierr);CHKERRQ(ierr)
+               DeAllocate(xPtr,bcPtr,resPtr)
             End If
             Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
          End If
       End Do
       Call ISRestoreIndicesF90(VertexSetGlobalIS,setID,ierr);CHKERRQ(ierr)
-      Call ISDestroy(VertexSetGlobalIS,ierr)
+      Call ISDestroy(VertexSetGlobalIS,ierr);CHKERRQ(ierr)
+
+      Call VecAssemblyBegin(residual,ierr);CHKERRQ(ierr)
+      Call VecAssemblyEnd(residual,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowApplyDirichletResidual
 
 
@@ -506,16 +507,17 @@ Contains
       Type(MEF90FlowCtx_Type),Intent(IN)                  :: FlowCtx
       PetscErrorCode,Intent(OUT)                           :: ierr
 
-      Type(IS)                                            :: CellSetGlobalIS, bcIS
+      Type(IS)                                            :: CellSetGlobalIS, bcIS, setISdof
       Type(IS)                                            :: VertexSetGlobalIS, setIS, cellIS
       PetscInt,dimension(:),Pointer                        :: setID
-      PetscInt                                            :: set, nVal, i
-      PetscReal                                           :: diagVal
-      PetscInt,Dimension(:),Pointer                       :: dofList
+      PetscInt                                            :: set, nVal
       Type(MEF90FlowCellSetOptions_Type),pointer          :: cellSetOptions
       Type(MEF90FlowVertexSetOptions_Type),pointer        :: vertexSetOptions
 
-      !!! DIRICHLET JACOBIAN: K(i,i) = 1 for all BC dofs (via MatSetValues below)
+      !!! CI #56: point-ID IS -> global dof IS, exactly as in
+      !!! MEF90HeatXferBilinearForm / MEF90HeatXferIJacobian. MatZeroRows
+      !!! used to receive raw mesh point IDs as matrix row indices.
+      !!! DIRICHLET JACOBIAN: K(i,i) = 1 for all BC dofs.
 
       !!! Cell sets with Has_BC
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -524,23 +526,23 @@ Contains
       Do set = 1, size(setID)
          Call PetscBagGetDataMEF90FlowCtxCellSetOptions(FlowCtx%CellSetOptionsBag(set),cellSetOptions,ierr);CHKERRQ(ierr)
          If (cellSetOptions%Has_BC) Then
-            !!! cellIS = cell-set StratumIS, bcIS = Cell→Vertex dof IS, dofList = vertex dof IDs
+            !!! cellIS = cell-set StratumIS, bcIS = Cell→Vertex POINT IS,
+            !!! setISdof = global dof IS (the only valid MatZeroRows input).
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),cellIS,ierr);CHKERRQ(ierr)
             Call MEF90ISCreateCelltoVertex(FlowCtx%DMScal,PETSC_COMM_WORLD,cellIS,bcIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(bcIS,nVal,ierr);CHKERRQ(ierr)
             If (nVal > 0) Then
-               Call ISGetIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
-               !!! MatZeroRows zeroes rows dofList(1:nVal), sets diagonal = 1.0 (standard Dirichlet Jacobian pattern)
-               Call MatZeroRows(Jac,nVal,dofList,1.0_Kr,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
-               Call MatZeroRows(PreJac,nVal,dofList,1.0_Kr,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
-               Call ISRestoreIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
+               Call DMMeshISCreateISglobaldof(FlowCtx%DMScal,bcIS,0,setISdof,ierr);CHKERRQ(ierr)
+               Call MatZeroRowsColumnsIS(Jac,setISdof,1.0_Kr,PETSC_NULL_OBJECT,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
+               Call MatZeroRowsColumnsIS(PreJac,setISdof,1.0_Kr,PETSC_NULL_OBJECT,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
+               Call ISDestroy(setISdof,ierr);CHKERRQ(ierr)
             End If
             Call ISDestroy(bcIS,ierr);CHKERRQ(ierr)
             Call ISDestroy(cellIS,ierr);CHKERRQ(ierr)
          End If
       End Do
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
-      Call ISDestroy(CellSetGlobalIS,ierr)
+      Call ISDestroy(CellSetGlobalIS,ierr);CHKERRQ(ierr)
 
       !!! Vertex sets with Has_BC
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Vertex Sets',VertexSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -552,16 +554,16 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DMScal,'Vertex Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(setIS,nVal,ierr);CHKERRQ(ierr)
             If (nVal > 0) Then
-               Call ISGetIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
-               Call MatZeroRows(Jac,nVal,dofList,1.0_Kr,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
-               Call MatZeroRows(PreJac,nVal,dofList,1.0_Kr,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
-               Call ISRestoreIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
+               Call DMMeshISCreateISglobaldof(FlowCtx%DMScal,setIS,0,setISdof,ierr);CHKERRQ(ierr)
+               Call MatZeroRowsColumnsIS(Jac,setISdof,1.0_Kr,PETSC_NULL_OBJECT,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
+               Call MatZeroRowsColumnsIS(PreJac,setISdof,1.0_Kr,PETSC_NULL_OBJECT,PETSC_NULL_OBJECT,ierr);CHKERRQ(ierr)
+               Call ISDestroy(setISdof,ierr);CHKERRQ(ierr)
             End If
             Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
          End If
       End Do
       Call ISRestoreIndicesF90(VertexSetGlobalIS,setID,ierr);CHKERRQ(ierr)
-      Call ISDestroy(VertexSetGlobalIS,ierr)
+      Call ISDestroy(VertexSetGlobalIS,ierr);CHKERRQ(ierr)
 
       Call MatAssemblyBegin(Jac,MAT_FINAL_ASSEMBLY,ierr);CHKERRQ(ierr)
       Call MatAssemblyEnd(Jac,MAT_FINAL_ASSEMBLY,ierr);CHKERRQ(ierr)
@@ -631,13 +633,21 @@ Contains
       Type(MEF90FlowVertexSetOptions_Type),pointer       :: vertexSetOptions
       Type(MEF90FlowCellSetOptions_Type),pointer         :: cellSetOptions
       Type(IS)                                           :: CellSetGlobalIS, cellSetIS, bcIS, VertexSetGlobalIS, setIS
-      PetscInt,dimension(:),Pointer                      :: setID, dofList
+      PetscInt,dimension(:),Pointer                      :: setID
       PetscInt                                           :: set, nVal
-      PetscReal,Allocatable                              :: val(:)
+      !!! CI #56: MEF90VecSetValuesISdof expects a Fortran POINTER array.
+      PetscReal,Dimension(:),Pointer                     :: val
       Character(len=256)                                 :: IOBuffer
 
+      !!! CI #56 ROOT CAUSE: bcIS / setIS hold MESH POINT IDs, not Vec dof
+      !!! indices. Passing them directly to VecSetValues makes rank 1 (which
+      !!! owns all top-surface vertices, while rank 0 has nVal=0) index far
+      !!! outside the boundaryPressure Vec layout -> SEGV right after the
+      !!! "UpdateBC cell set 2 nVal 0" trace. HeatXfer / DefMech always map
+      !!! BC point IS through MEF90VecSetValuesISdof (which calls
+      !!! DMMeshISCreateISglobaldof); use that same template here.
       Call VecSet(boundaryPressure,0.0_Kr,ierr);CHKERRQ(ierr)
-      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: UpdateBC enter\n',ierr);CHKERRQ(ierr)
+      Call PetscPrintf(PETSC_COMM_SELF,'Gate 3.1: UpdateBC enter\n',ierr);CHKERRQ(ierr)
 
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -646,22 +656,20 @@ Contains
          Call PetscBagGetDataMEF90FlowCtxCellSetOptions(FlowCtx%CellSetOptionsBag(set),cellSetOptions,ierr);CHKERRQ(ierr)
          If (cellSetOptions%Has_BC) Then
             Write(IOBuffer,*) 'Gate 3.1: UpdateBC cell set',set,' id',setID(set),'\n'
-            Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+            Call PetscPrintf(PETSC_COMM_SELF,IOBuffer,ierr);CHKERRQ(ierr)
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),cellSetIS,ierr);CHKERRQ(ierr)
             !!! CI #54: this call used to have NO CHKERRQ, so a bad/unset bcIS
             !!! was silently passed to ISGetLocalSize and segfaulted on rank 1.
             Call MEF90ISCreateCelltoVertex(FlowCtx%DMScal,PETSC_COMM_WORLD,cellSetIS,bcIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(bcIS,nVal,ierr);CHKERRQ(ierr)
             Write(IOBuffer,*) 'Gate 3.1: UpdateBC cell set',set,' nVal',nVal,'\n'
-            Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+            Call PetscPrintf(PETSC_COMM_SELF,IOBuffer,ierr);CHKERRQ(ierr)
             !!! A rank may own zero vertices of a boundary set. Never call
             !!! ISGetIndicesF90/size() on an empty IS (CI #55 rank-1 pattern).
             If (nVal > 0) Then
                Allocate(val(nVal),stat=ierr)
-               Call ISGetIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
                val = cellSetOptions%boundaryPressure
-               Call VecSetValues(boundaryPressure,nVal,dofList,val,INSERT_VALUES,ierr);CHKERRQ(ierr)
-               Call ISRestoreIndicesF90(bcIS,dofList,ierr);CHKERRQ(ierr)
+               Call MEF90VecSetValuesISdof(FlowCtx%DMScal,boundaryPressure,val,bcIS,1,INSERT_VALUES,ierr);CHKERRQ(ierr)
                DeAllocate(val)
             End If
             Call ISDestroy(bcIS,ierr);CHKERRQ(ierr)
@@ -678,17 +686,15 @@ Contains
          Call PetscBagGetDataMEF90FlowCtxVertexSetOptions(FlowCtx%VertexSetOptionsBag(set),vertexSetOptions,ierr);CHKERRQ(ierr)
          If (vertexSetOptions%Has_BC) Then
             Write(IOBuffer,*) 'Gate 3.1: UpdateBC vertex set',set,' id',setID(set),'\n'
-            Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+            Call PetscPrintf(PETSC_COMM_SELF,IOBuffer,ierr);CHKERRQ(ierr)
             Call DMMeshGetStratumIS(FlowCtx%DMScal,'Vertex Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             Call ISGetLocalSize(setIS,nVal,ierr);CHKERRQ(ierr)
             Write(IOBuffer,*) 'Gate 3.1: UpdateBC vertex set',set,' nVal',nVal,'\n'
-            Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+            Call PetscPrintf(PETSC_COMM_SELF,IOBuffer,ierr);CHKERRQ(ierr)
             If (nVal > 0) Then
                Allocate(val(nVal),stat=ierr)
-               Call ISGetIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
                val = vertexSetOptions%boundaryPressure
-               Call VecSetValues(boundaryPressure,nVal,dofList,val,INSERT_VALUES,ierr);CHKERRQ(ierr)
-               Call ISRestoreIndicesF90(setIS,dofList,ierr);CHKERRQ(ierr)
+               Call MEF90VecSetValuesISdof(FlowCtx%DMScal,boundaryPressure,val,setIS,1,INSERT_VALUES,ierr);CHKERRQ(ierr)
                DeAllocate(val)
             End If
             Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
@@ -699,7 +705,7 @@ Contains
 
       Call VecAssemblyBegin(boundaryPressure,ierr);CHKERRQ(ierr)
       Call VecAssemblyEnd(boundaryPressure,ierr);CHKERRQ(ierr)
-      Call PetscPrintf(PETSC_COMM_WORLD,'Gate 3.1: UpdateBC done\n',ierr);CHKERRQ(ierr)
+      Call PetscPrintf(PETSC_COMM_SELF,'Gate 3.1: UpdateBC done\n',ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowUpdateboundaryPressure
 
 

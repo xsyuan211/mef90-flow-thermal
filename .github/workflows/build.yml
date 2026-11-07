@@ -495,7 +495,7 @@ jobs:
               sed -n "${start},${crashline}p" /tmp/terzaghi.log
             fi
             echo "=== last Gate 3.1 trace reached (pinpoints the failing call) ==="
-            grep -n "Gate 3.1" /tmp/terzaghi.log | tail -60 || true
+            grep -n "Gate 3.1" /tmp/terzaghi.log | tail -100 || true
             grep -n "Caught signal number 11" /tmp/terzaghi.log | head -4
             exit 1
           fi

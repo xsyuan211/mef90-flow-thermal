@@ -559,3 +559,40 @@ SectionRealDuplicate(cellDMScalSec, sourceSec) → SectionRealSet(0)
 **校验**：`git diff --check` 干净；PyYAML 解析 workflow（18 steps）/ yaml 通过；`Run Terzaghi` 的 `run` 块 `bash -n` 通过；5 个改写子程序的 `Do/End Do`、`If/End If`、`Select Case/End Select` 配对脚本核对通过（`SetSourceCst` 的 2 个 `If` 是单行 `If (...) Cycle`，无需 `End If`）；新增的 `SectionRealDuplicate/Set/Restrict/Restore/Complete/ToVec/Destroy`、`SCATTER_FORWARD` 在本文件中分别有 16/3/8/2/4/15/16/5 处既有先例。仍为零本地编译、靠 CI 验证。
 
 **#56 判据（按顺序）**：① `SetSourceCst enter (SectionReal path)` → `set 1 id 1 nCell ... src ...` → `done`；② `UpdateBC cell set ... nVal ...` / `UpdateBC done`、`pre-TSSolve`；③ step 1 打 `TSSolve skipped (no time advance)`，step 2 起出现 `IFunction enter / post-OperatorCore / IJacobian enter / post-TSSolve` 与 `-flow_ts_monitor` 步进；④ `TSGetConvergedReason`、TS time 推进、`_out.gen` 内 pressure 是否随时间衰减（3.2 Terzaghi 解析解比对前置）。若仍 SEGV，最后一个 `Gate 3.1` 检查点仍可精确定位（缓存生效后下一轮只需几分钟）。
+
+
+## CI #56 诊断结论与修复（2026-11-07 10:45，BC 点 ID → 全局 dof 映射修复）
+
+**状态**：run `42326375284` / job `128262502342` `completed failure`（基于 `ff958c1`），01:52:49–02:29:47Z 共 37 分钟，构建 14 步全 success；`Run Terzaghi` 仍 2 秒内失败，mpirun exit **59**，完整 job 日志 3048 行。`init 01..08`、`flow enum 2 Transient 2 enabled T`、`transient Darcy TS created` 全部正常。
+
+**进展（#55 的 SectionReal 源项修复完全生效）**
+```
+Gate 3.1: SetTransients enter step 1  srcScale 0  bcScale 0
+Gate 3.1: SetTransients pre-SetSourceCst
+Gate 3.1: SetSourceCst enter (SectionReal path)
+ Gate 3.1: SetSourceCst set 1  id 1  nCell 300  src 0.0
+Gate 3.1: SetSourceCst done
+Gate 3.1: SetTransients post-SetSourceCst
+Gate 3.1: SetTransients pre-UpdateBC
+Gate 3.1: UpdateBC enter
+ Gate 3.1: UpdateBC cell set 2  id 10
+ Gate 3.1: UpdateBC cell set 2  nVal 0        <-- rank 0 在此之后被 MPI_ABORT 杀掉
+[1]PETSC ERROR: Caught signal number 11 SEGV
+```
+`SetSourceCst` 两 rank 均完成，崩溃点后移到 `MEF90FlowUpdateboundaryPressure` 内 `cs0010`（顶面 BAR2，id=10）循环。**关键：此前所有 `Gate 3.1` trace 都用 `PetscPrintf(PETSC_COMM_WORLD,...)`，只在 rank 0 打印**，所以 `nVal 0` 是 rank 0 的值；rank 1 拥有全部顶面顶点（`nVal > 0`），它是唯一会进入 `nVal > 0` 分支的 rank。
+
+**根因（确定性，同时解决遗留项）**：`bcIS` / `setIS` 里存的是 **mesh point ID**，不是 Vec/Mat 的全局 dof 索引。Flow 三个 BC 子程序把它们直接传给 `VecGetValues` / `VecSetValues` / `MatZeroRows`，rank 1 用 point id 当矩阵行/向量行索引 → release 模式下越界读写 SEGV；rank 0 因 `nVal=0` 被保护跳过，所以呈现典型 rank 相关崩溃。HeatXfer / DefMech 从来不这么写：所有 BC IS 都经 `MEF90VecSetValuesISdof` / `MEF90VecGetValuesISdof`（内部 `DMMeshISCreateISglobaldof` 做 point→dof 映射），Jacobian 用 `DMMeshISCreateISglobaldof` + `MatZeroRowsColumnsIS`。`vDef.F90:424` 在 init 阶段已调用 `MEF90DefMechUpdateboundaryDisplacement`（走同一套 helper）且两 rank 通过 —— 这证明 global-dof 路径在 vertex/vect DM 上可靠，#55 的问题只出在 cell-centered `cellDMScal` section。
+
+**本轮改动（2 文件）**
+1. `m_Flow/m_MEF90_FlowAssembly.F90` —— 三个 BC 子程序统一对齐 HeatXfer 模板：
+   - `MEF90FlowUpdateboundaryPressure`：`VecSetValues(...,dofList,...)` → `MEF90VecSetValuesISdof(FlowCtx%DMScal,boundaryPressure,val,bcIS,1,INSERT_VALUES,...)`（`val` 改 Fortran POINTER 数组）；vertex set 同理。
+   - `MEF90FlowApplyDirichletResidual`：`VecGetValues` × 2 → `MEF90VecGetValuesISdof`，`VecSetValues` → `MEF90VecSetValuesISdof`（`residual = x - p_bc` 逻辑不变）；末尾补 `VecAssemblyBegin/End`；`ISDestroy` 全补 `CHKERRQ`。
+   - `MEF90FlowApplyDirichletJacobian`：`MatZeroRows(Jac,nVal,dofList,...)` → `DMMeshISCreateISglobaldof(FlowCtx%DMScal,bcIS,0,setISdof,...)` + `MatZeroRowsColumnsIS(Jac/PreJac,setISdof,1.0,...)`；vertex set 同理。
+   - 三个函数内所有 Gate trace 从 `PETSC_COMM_WORLD` 改为 **`PETSC_COMM_SELF`**：两个 rank 各自打印，`id` 与 `nVal` 两行夹住 `MEF90ISCreateCelltoVertex`，下轮若仍崩可直接判定是该函数内部还是之后的 dof 映射。
+2. `.github/workflows/build.yml`：SEGV 诊断的 Gate grep `tail -60` → `tail -100`（容纳双 rank + step 2 的 TS 回调 trace）。
+
+**CI 缓存已落盘（重要）**：#56 末尾 3 个 `actions/cache/save@v4` 全部成功 —— `Cache saved with key: openmpi-3.1.3-ubuntu-latest-v1` / `petsc-dl-v1` / `petsc-mef90-3.3-ubuntu-latest-v1`。**#57 起 PETSc/OpenMPI 直接命中缓存，37 分钟缩短到几分钟**，迭代节奏大幅加快。
+
+**校验**：`git diff --check` 干净；三个改写子程序的 `Do/End Do`、`If/End If` 配对脚本核对通过（脚本对两处单行 `If (...) Cycle` 的假阳性已排除）；`MEF90Vec*ISdof` / `DMMeshISCreateISglobaldof` / `MatZeroRowsColumnsIS` 均由 `Use m_MEF90` 可见且在 HeatXfer/DefMech 有大量先例；全文件已无 `VecSetValues` / `VecGetValues` / `MatZeroRows(` 的实际调用（仅注释）。仍为零本地编译、靠 CI 验证。
+
+**#57 判据（按顺序）**：① 两 rank 各自打印 `UpdateBC cell set 2 id 10 / nVal ... / done`，若 rank 1 只打出 `id 10` 而无 `nVal` → 崩在 `MEF90ISCreateCelltoVertex` 内部；② `post-UpdateBC` → step 1 `TSSolve skipped (no time advance)`；③ step 2 起 `IFunction enter / post-OperatorCore / IJacobian enter / post-TSSolve` 与 `-flow_ts_monitor` 步进、`TSGetConvergedReason`；④ `_out.gen` 内 pressure 随时间从 `p0=1e5` 衰减（3.2 Terzaghi 解析解比对前置）。
