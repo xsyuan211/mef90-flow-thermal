@@ -860,3 +860,33 @@ MEF90VecSetValuesISdof: DMMeshISCreateISglobaldof → ... (DM Mesh 内部含同�
 校验：`git diff --check`、PyYAML（19 steps）、`Run Terzaghi` 块 `bash -n`、`vDef.F90` 的 34/34 个 `If/End If` 配对全通过；零本地编译。
 
 **#66 判据**：① `Gate 3.1 PASS` 保持、`nSolve=50`、无 skip（除 step 1）；② 51 步 `pmax` 严格单调、无冻结段；③ `ratio≈0.093` 落入 `[0.05,0.15]` 且打印 `Gate 3.2 PASS`；④ `diagJ` 三项与 #65 一致（K/M 未再改动）。若 ratio 仍 ≈0.124，说明冻结步来自 PETSc 3.3 `TSSetExactFinalTime` 内部裁剪而非外层目标，需改用 `TSSetDuration(ts,1,...)` 强制单步。
+
+
+## CI #66 结果（2026-11-07 16:15）：闸门 3.1 / 3.2 全部通过，解析解逐点比对完成
+
+**状态**：run `42354263842` / job `128348773869`，`completed success`，`Terzaghi mpirun exit code: 0`。
+
+| 判据 | 结果 |
+|---|---|
+| `Gate 3.1` | **PASS**（50 次 `post-TSSolve` + 1 次 step-1 skip、TS 到 t=1、rejected=0、`_out.gen` magic 有效） |
+| `Gate 3.2` | **PASS**：`ratio=0.0954738 ∈ [0.05,0.15]`（FE/BE 预测 0.0934、连续解 0.0871） |
+| 冻结步 | **0**（#65 的 step 12–16 全部消失，51 步 `pmax` 严格单调下降） |
+| `pmax` | `1e5 → 9547.383`；`pmin≈0`（无负超调） |
+| `diagJ post-Core` | `|J|inf=3.7040672351723571e-7`、diag `4.17692518e-8 / 1.85203362e-7`，与 #65/离线 FE 完全一致（K 未再改动） |
+
+**`_out.gen` 逐点解析比对**（artifact `terzaghi-out-gen`，已落盘到 `vDef/data/Beam1x10-tri3_out.gen`，2,845,300 B，`CDF\002`，51 records，`time_whole=0…1`，`REC0=23980`、`RECSZ=55320`；`z=5-x`，`H=10`，`c_v=(k/μ)/S=108.696`）：
+
+解析级数 `p/p0 = (4/π)Σ(-1)^m/(2m+1)·cos((2m+1)πz/2H)·exp(-λ_m t)`，其中 `λ_m=c_v((2m+1)π/2H)²`；BE 时间离散把每个模态的衰减替换成 `(1+λ_m dt)^(-t/dt)`。
+
+| t | pmax FEM | 连续解析 | BE 修正解析 | L2 相对误差（连续 / BE 修正） |
+|---|---|---|---|---|
+| 0.20 | 77971 | 74126 | 74687 | 6.19% / **4.66%** |
+| 0.50 | 35802 | 33306 | 34481 | 7.32% / **3.66%** |
+| 0.80 | 16200 | 14897 | 15748 | 8.56% / **2.70%** |
+| 1.00 | 9547 | 8713 | 9339 | 9.40% / **2.06%** |
+
+末步剖面（p/p0）沿 x：`0.00000 / 0.01488 / 0.02940 / 0.04318 / 0.05588 / 0.06720 / 0.07702 / 0.08494 / 0.09074 / 0.09428 / 0.09547`（x=-5→5），与 BE 修正解析解逐点相差 ~2%。**结论**：与连续 Terzaghi 解的 ~9% 偏差全部来自一阶 BE 时间离散（dt=0.02），扣除后空间有限元误差仅 ~2%，闸门 3.2 的「Terzaghi 1D 解析解比对」实质通过。
+
+**当前状态**：闸门 3.1 与 3.2 均稳定通过；transient Darcy 求解链（TS 创建 → IFunction/IJacobian → Dirichlet → 输出）物理正确；`vDef/data/Beam1x10-tri3_out.gen` 已可用于后处理。
+
+**剩余清理项（非阻塞）**：YAML 注释里的 `1m(W)×10m(H)` 与真实几何 `x∈[-5,5], y∈[-0.5,0.5]` 对齐；`pressurePreviousStep` 死写；GMRES/CG 最终选型；`Gate 3.1/3.2` 诊断 trace 与 `|F|₁`/`diagJ` 打印减噪；DefMech AltMin 每步 SNES 非收敛（50 次 WARNING，力学侧遗留）；本地 HEAD 与远程 main 分叉（远程已到 #66）。
