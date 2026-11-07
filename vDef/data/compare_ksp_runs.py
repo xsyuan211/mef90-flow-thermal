@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""CI #69: same-source comparison of two KSP choices for the transient Darcy TS.
+"""Same-source comparison of two KSP choices for the transient Darcy TS.
 
-The workflow runs vDef TWICE with the identical binary, mesh and YAML deck;
-only -flow_ksp_type differs (gmres vs cg, both with -flow_ksp_rtol 1.0e-10).
-This script compares the two Exodus result meshes and both solver logs.
+Run vDef TWICE with the identical binary, mesh and YAML deck, changing only
+-flow_ksp_type (gmres vs cg, both with -flow_ksp_rtol 1.0e-10), then compare
+the two Exodus result meshes and both solver logs.
+
+CI #69 used this to decide the final KSP choice: CG reproduces GMRES to
+2.54e-5 Pa (2.5e-10 relative) with 35% fewer linear iterations, so CI #70
+dropped the GMRES command-line override and restored the CreateTS default
+KSPCG. The one-off double run was then removed from the workflow; this
+script is kept so the comparison can be repeated at any time. The #69 inputs
+are archived in the 'terzaghi-ksp-comparison' artifact.
 
 Pure standard library (plus the committed parse_cdf2.py); no numpy / scipy /
 matplotlib on the CI runner.
@@ -120,7 +127,7 @@ def log_report(tag, log):
 
 
 def main(gen_gmres, gen_cg, log_gmres, log_cg):
-    print("=== KSP comparison (CI #69): GMRES vs CG, same binary / mesh / deck ===")
+    print("=== Same-source KSP comparison: GMRES vs CG, same binary / mesh / deck ===")
     print("  rtol = 1.0e-10 for both; only -flow_ksp_type differs")
 
     gm = read_log(log_gmres)
@@ -196,8 +203,8 @@ def main(gen_gmres, gen_cg, log_gmres, log_cg):
     print("  PASS: CG reproduces the GMRES pressure field to %.6g Pa "
           "(<= %.6g Pa); the KSP choice does not affect the physics." %
           (max_abs, TOL_ABS))
-    print("  -> The CreateTS default KSPCG is valid; the -flow_ksp_type gmres "
-          "CI override can be dropped in a later round.")
+    print("  -> KSPCG is a valid default for this problem; no GMRES override "
+          "is required (CI #70 dropped it).")
     return 0
 
 

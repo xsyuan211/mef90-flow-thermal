@@ -472,11 +472,17 @@ jobs:
           fi
           echo "=== system runtime libraries resolved for vDef ==="
           grep -E "libstdc\+\+|libgcc_s|libz\.so|libtinfo" /tmp/ldd-vDef.log || true
+          # CI #70: use the CreateTS default KSPCG (MEF90FlowCreateTS sets it).
+          # CI #69 ran GMRES and CG back-to-back on the same binary/mesh/deck:
+          # the pressure fields agree to 2.5e-5 Pa (2.5e-10 relative) and CG
+          # needs 35% fewer linear iterations (1973 vs 3043). To re-run that
+          # comparison use vDef/data/compare_ksp_runs.py, see the checklist.
+          # Keep rtol/converged_reason identical to the #68/#69 baseline.
           timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D.yaml \
             -flow_ts_view -flow_ts_monitor \
-            -flow_ksp_type gmres -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
             2>&1 | tee /tmp/terzaghi.log
           rc=${PIPESTATUS[0]}
           echo "=== Terzaghi mpirun exit code: $rc ==="
@@ -641,39 +647,6 @@ jobs:
             echo "=== Gate 3.2 probe: every 10th step pmax ==="
             grep "Gate 3.2:" /tmp/terzaghi.log | awk 'NR==1 || NR%10==0' | head -8
           fi
-          # --- CI #69: same-source KSP comparison (GMRES vs CG) ---
-          # Run the IDENTICAL binary / mesh / YAML deck a second time, changing
-          # only -flow_ksp_type. -flow_ts_view already prints the flow KSP type,
-          # so compare_ksp_runs.py can prove the option really took effect.
-          # The delivered artifact stays the GMRES result: all existing Gate
-          # 3.x numbers and the local post-processing products stay comparable.
-          cp -f "$out" /tmp/out_gmres.gen
-          rm -f "$out"
-          timeout -k 10s 300 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
-            -prefix data/Beam1x10-tri3 \
-            -options_file_yaml data/terzaghi1D.yaml \
-            -flow_ts_view -flow_ts_monitor \
-            -flow_ksp_type cg -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
-            2>&1 | tee /tmp/terzaghi_cg.log
-          cg_rc=${PIPESTATUS[0]}
-          echo "=== CI #69: CG comparison run exit code: $cg_rc ==="
-          if [ "$cg_rc" -ne 0 ] || [ ! -s "$out" ] || ! grep -q "Gate 3.1: step" /tmp/terzaghi_cg.log; then
-            echo "=== KSP comparison verdict: CG NOT VIABLE (rc=$cg_rc); keep the GMRES CLI override ==="
-            grep -Ein "DIVERGED|did not converge|PETSC ERROR|Caught signal|Unknown option" /tmp/terzaghi_cg.log | head -12 || true
-            cp -f /tmp/out_gmres.gen "$out"
-            exit $rc
-          fi
-          cp -f "$out" /tmp/out_cg.gen
-          python3 data/check_exodus_metadata.py /tmp/out_cg.gen || exit 1
-          python3 data/compare_ksp_runs.py /tmp/out_gmres.gen /tmp/out_cg.gen \
-            /tmp/terzaghi.log /tmp/terzaghi_cg.log 2>&1 | tee /tmp/ksp_comparison.txt
-          cmp_rc=${PIPESTATUS[0]}
-          cp -f /tmp/out_gmres.gen "$out"
-          if [ "$cmp_rc" -ne 0 ]; then
-            echo "=== FAIL: CI #69 GMRES/CG comparison found a real numerical discrepancy ==="
-            exit 1
-          fi
-          echo "=== CI #69: GMRES result mesh restored as the delivered artifact ==="
           exit $rc
       - name: Upload diagnostics
         uses: actions/upload-artifact@v4
@@ -688,8 +661,6 @@ jobs:
             /tmp/vDef.log
             /tmp/ldd-vDef.log
             /tmp/terzaghi.log
-            /tmp/terzaghi_cg.log
-            /tmp/ksp_comparison.txt
           retention-days: 7
       - name: Upload Terzaghi result mesh
         uses: actions/upload-artifact@v4
@@ -697,18 +668,6 @@ jobs:
         with:
           name: terzaghi-out-gen
           path: vDef/data/Beam1x10-tri3_out.gen
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Upload KSP comparison meshes
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: terzaghi-ksp-comparison
-          path: |
-            /tmp/out_gmres.gen
-            /tmp/out_cg.gen
-            /tmp/ksp_comparison.txt
-            /tmp/terzaghi_cg.log
           if-no-files-found: warn
           retention-days: 7
       - name: Save cache OpenMPI
