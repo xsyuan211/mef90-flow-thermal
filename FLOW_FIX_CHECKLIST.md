@@ -796,3 +796,39 @@ MEF90VecSetValuesISdof: DMMeshISCreateISglobaldof → ... (DM Mesh 内部含同�
 **#64 动作（收敛到 HeatXfer 的单次 scatter 结构）**：`MEF90FlowIFunction` 删除 `MEF90FlowAddStorageToResidual(F,xDot,...)` 与末尾的 `MEF90FlowApplyDirichletResidual(x,F,...)`，只保留 `MEF90FlowOperatorCore(x,F,...)` 一次 `SCATTER_FORWARD`（`OperatorCore` 内部已在最后施加 Dirichlet）。理由：`TS_LINEAR+ksponly` 下 `xDot≡0`，储存残差恒为 0，两次额外 scatter 最好情况是无操作、最坏情况会把 ghost 点值重复累加进 F（`|F|∞` 无法发现局部累加，而 J 只装配一次 K → F/J 比例失衡，正好产生 |λ|>1 的交替放大）。同时把诊断升级为 `|F|∞` + **`|F|₁`**（整体累加会立刻暴露）。GMRES 选项保留（#63 已证明它不是变量）。
 
 **判据**：① `|F|₁` 相对 #62/#63 是否变化、② `Gate 3.2 PASS` / ratio≈0.09；若仍发散，则 F/J 的 K 项映射是最后的未知量，下一轮需在同一子程序里用 `MatMult(J,x)` 与 F 逐点比对，或把 F 的装配也改走 `DMmeshAssembleMatrix` 的同一 default section。
+
+
+## CI #64 结果（2026-11-07 15:10）：发散修复，但 ratio=0.348 只在解析带外
+
+**状态**：run `42349923764`，`completed success`，`mpirun exit 0`，`Gate 3.1 PASS`（50 次 `post-TSSolve` + 1 次 skip、rejected=0、`_out.gen` 有效）。压力 `pmax` 从 `1e5` **单调衰减**到 `34806.929`，`ratio=0.348069`，CI 打 `WARNING: outside analytic band [0.02,0.30]`，不再硬 FAIL。#64 的单次 scatter 修复确实解决了 #59–#63 的指数发散。
+
+**衰减曲线**：step 1–11 `1e5→92789`，step **12–16 完全冻结**（`pmax` 逐位不变，只有 `pmin` 有 1e-10 量级舍入变化），step 17–51 单调降到 `34807`。step 16 是已知的浮点零跨度 skip；step 12–15 是 `TSSolve` 目标时间与 TS 内部时间只差 ~3e-17、`beuler` 实际步长被压成近 0 所致。晚期拟合 `λ_eff≈1.468 /s`，而理论 `λ₁=π²c_v/(4H²)=2.682 /s`。
+
+**artifact 解析**（`terzaghi-out-gen` / `Beam1x10-tri3_out.gen`，CDF2，51 records、`REC0=23980`、`RECSZ=55320`）：356 nodes、600 TRI3（`connect1`）、5 BAR2（`connect2`，6 个排水点全在 `x=-5`）、`coordx=-5…5`、`coordy=-0.5…0.5`。末步压力在固定 x 上沿 y 的变化 <1% → 有效算子是各向同性的 1D 扩散，只是系数偏小。
+
+**纯 Python/numpy 有限元复现（决定性证据，零本地编译）**：用真实 `connect1/coordx/coordy` 装配一致质量矩阵 `M_e=A/12·(1+δij)` 与刚度 `K_e=A·R·G Gᵀ`（`R=k/μ=5e-8`），Dirichlet 消除 6 个排水点，做 50 步 BE `(K+aSM)pⁿ⁺¹=aSM pⁿ`（`a=1/dt=50`、`S=4.6e-10`）：
+
+| 装配假设 | `|K|inf` | diagK max | `aSM` diag max | ratio(50) | `λ_eff` |
+|---|---|---|---|---|---|
+| 正确几何 + 各向同性 `XY=0` | 3.704e-7 | 1.852e-7 | 5.499e-10 | **0.0934** | 2.613 |
+| 正确几何 + `XY=R` | 4.805e-7 | 2.164e-7 | 5.499e-10 | — | — |
+| 全部单元复用 `elem(1)` + `XY=0` | 4.047e-7 | 2.023e-7 | **4.6072319e-10** | 0.0921 | 2.626 |
+| **全部单元复用 `elem(1)` + `XY=R`** | **6.5392496e-7** | **3.2696248e-7** | **4.6072319e-10** | 0.2977 | **1.450** |
+| **CI #64 实测** | **6.5392496e-7** | **3.2696248e-7** | **4.6072323e-10** | 0.3481 | 1.468 |
+
+`|K|inf`、diagK max、`aSM` diag max **三项逐位吻合**（第 4 行），加上 5 个冻结步把 0.2977 抬到 `0.2977·e^{1.450×0.1}≈0.344`，与 0.348 一致。解析 FE 瑞利商 `(vᵀKv)/(S vᵀMv)=2.68213` 与理论 2.68196 吻合 → **离散方程本身应是 0.093，不是 0.348**。
+
+**两个确定性根因**：
+
+1. **标量张量被写成秩 1 矩阵**。`MEF90/m_MEF90_LinAlg.F90:1693` 的 `MatS2D_Get_Real` 把 `XX=YY=XY=R1`；`A_cell = permCell(1)`（实数量赋值重载）因此得到 `[[R,R],[R,R]]`，特征值 `{2R,0}`，只沿 (1,1) 方向扩散。而库里 `MEF90MatS2DIdentity = MatS2D(1,1,0)`（`:107`）明确表明各向同性应是 `XY=0`。
+2. **`elem` 数组与 `cellIS` 错位**。`MEF90Element_Create(mesh,cellIS,elem,…)`（`m_MEF90_Elements.F90:741`）分配 `elem(size(cellID))` 且 `elem(k)` 对应 `cellIS` 的第 k 个单元；所有 `MEF90Diffusion*Set` 也按 `cellID(k)` 索引 `elem(k)`。Flow 的 5 个子程序却用**整个 `setIS`** 创建 `elem`，再对每个 cell 传 **`singleIS`（size 1）** → 600 个单元全部使用 `elem(1)` 的 `Grad_BF / Gauss_C`。质量项因此被 `elem(1)` 的面积 `A₁=1.716981e-2` 统一缩放，这正是 `aSM diag max=4.6072319e-10` 的来源。
+
+**#65 改动（仅 `m_Flow/m_MEF90_FlowAssembly.F90`）**：
+
+1. 三处 `A_cell = permCell(1)` → `A_cell = permCell(1) * MEF90_MATS_IDENTITY`（2D 展开为 `MatS2D(R,R,0)`；`mef90.inc:37` 的宏与 `DbleXMatS2D` 重载已在 DefMech 中验证可用）。`A_zero = 0.0_Kr` 本就三分量全零，保持不变。
+2. `MEF90FlowOperatorCore` / `MEF90FlowBilinearFormCore` / `MEF90FlowEnergy` / `MEF90FlowAddStorageToResidual` / `MEF90FlowAddStorageMassMatrix` 五处：删除外层 `MEF90Element_Create(FlowCtx%DM,setIS,elem,…)` 与外层 `MEF90Element_Destroy(elem,…)`；改为在 cell 循环内用**同一个 `singleIS`** 创建 `elem`（size 1），装配后立即销毁。`MEF90FlowComputePressureGradient` 用 `setIS` 且按 `elem(cell)` 索引，本来就正确，保持不变。
+3. 校验：19/19 个 `Subroutine` 块配对、6 个含单元数组的子程序各 `create=1 / destroy=1`、`git diff --check` 通过；零本地编译。
+
+**#65 判据**：`diagJ post-Core` 的 `|J|inf` 应从 `6.539e-7` 降到 `~3.70e-7`、diag max 从 `3.27e-7` 降到 `~1.85e-7`；`post-Storage` 的 diag delta 应从 `4.607e-10` 变为 `~5.50e-10`；`pmax(final)/pmax(initial)` 应进入 `0.02–0.30` 且接近解析 `0.087`（含 5 个冻结步时约 `0.12`）→ `Gate 3.2 PASS`。若仍偏高，则只剩时间轴冻结步与 `TS_LINEAR` 的 `TSSetDuration` 语义问题。
+
+**待办（本轮未动）**：step 12–16 的零跨度 `TSSolve` 改成基于 `time(step)` 的容差驱动（注意 workflow 的 `post-TSSolve>=48` 判据需同步调整）；YAML 注释里的 `1m(W)×10m(H)` 与真实几何 `x∈[-5,5], y∈[-0.5,0.5]` 对齐；`pressurePreviousStep` 死写；GMRES/CG 最终选型；诊断 trace 清理。

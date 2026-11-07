@@ -86,17 +86,33 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
             QuadratureOrder = elemType%order * 2
-            Call MEF90Element_Create(FlowCtx%DM,setIS,elem,QuadratureOrder, &
-                 cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
-
+            !!! CI #65: elem(k) is indexed by the k-th entry of the cellIS
+            !!! passed to MEF90Element_Create. Every assembly call below uses
+            !!! singleIS (size 1), so elem MUST be created from that same IS.
+            !!! Creating it once from the whole setIS made all 600 cells reuse
+            !!! elem(1)'s Grad_BF / Gauss_C (reproduced exactly by |K|inf in
+            !!! CI #64). elem is now created/destroyed inside the cell loop.
             If (elemType%Codim == 0) Then
                Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
                Do cell = 1, size(cellID)
-                  Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr)
+                  Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr);CHKERRQ(ierr)
+                  !!! CI #65: build a size-1 elem array from the SAME singleIS
+                  !!! that the MEF90Diffusion*Set routines receive. Those
+                  !!! routines index elem(k) by the position inside cellIS, so
+                  !!! elem(1) now carries THIS cell's coordinates/geometry.
+                  Call MEF90Element_Create(FlowCtx%DM,singleIS,elem,QuadratureOrder, &
+                       cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
 
                   !!! A = permField(cell) (k/μ scalar)
                   Call SectionRealRestrict(permFieldSec,cellID(cell),permCell,ierr);CHKERRQ(ierr)
-                  A_cell = permCell(1)
+                  !!! CI #65: an isotropic scalar permeability is R * Identity,
+                  !!! i.e. MatS2D(R,R,0). MatS2D_Get_Real (used by the plain
+                  !!! "A = real" assignment) sets XX=YY=XY=R, which is the
+                  !!! singular rank-1 tensor [[R,R],[R,R]] and diffuses only
+                  !!! along the (1,1) diagonal. That is the second half of the
+                  !!! Gate 3.2 ratio error (CI #64 ratio=0.348 vs analytic
+                  !!! 0.087). MEF90MatS2DIdentity is MatS2D(1,1,0).
+                  A_cell = permCell(1) * MEF90_MATS_IDENTITY
 
                   !!! Gate 3.2 (CI #59): the pressure Vec/matrix/section live on
                   !!! DMScal (1 dof / vertex). The MAIN DM has a 2-dof default
@@ -112,12 +128,12 @@ Contains
                   Call MEF90DiffusionRHSSetCell(resSec,FlowCtx%DMScal,sourceSec,singleIS, &
                        elem,elemType,ierr)
 
+                  Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
                Call ISRestoreIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
             End If
 
-            Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
             Call ISDestroy(setIS,ierr)
          End If
       End Do
@@ -192,21 +208,34 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
             QuadratureOrder = elemType%order * 2
-            Call MEF90Element_Create(FlowCtx%DM,setIS,elem,QuadratureOrder, &
-                 cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
+            !!! CI #65: elem is built from singleIS inside the cell loop below,
+            !!! NOT from the whole setIS (see MEF90FlowOperatorCore).
             If (elemType%Codim == 0) Then
                Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
                Do cell = 1, size(cellID)
-                  Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr)
+                  Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr);CHKERRQ(ierr)
+                  !!! CI #65: build a size-1 elem array from the SAME singleIS
+                  !!! that the MEF90Diffusion*Set routines receive. Those
+                  !!! routines index elem(k) by the position inside cellIS, so
+                  !!! elem(1) now carries THIS cell's coordinates/geometry.
+                  Call MEF90Element_Create(FlowCtx%DM,singleIS,elem,QuadratureOrder, &
+                       cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
                   Call SectionRealRestrict(permFieldSec,cellID(cell),permCell,ierr);CHKERRQ(ierr)
-                  A_cell = permCell(1)
+                  !!! CI #65: an isotropic scalar permeability is R * Identity,
+                  !!! i.e. MatS2D(R,R,0). MatS2D_Get_Real (used by the plain
+                  !!! "A = real" assignment) sets XX=YY=XY=R, which is the
+                  !!! singular rank-1 tensor [[R,R],[R,R]] and diffuses only
+                  !!! along the (1,1) diagonal. That is the second half of the
+                  !!! Gate 3.2 ratio error (CI #64 ratio=0.348 vs analytic
+                  !!! 0.087). MEF90MatS2DIdentity is MatS2D(1,1,0).
+                  A_cell = permCell(1) * MEF90_MATS_IDENTITY
                   Call MEF90DiffusionBilinearFormSet(Jac,FlowCtx%DMScal,singleIS, &
                        A_cell,0.0_Kr,elem,elemType,ierr)
+                  Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
                Call ISRestoreIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
             End If
-            Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
             Call ISDestroy(setIS,ierr)
          End If
       End Do
@@ -411,15 +440,31 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
             QuadratureOrder = elemType%order * 2
-            Call MEF90Element_Create(FlowCtx%DM,setIS,elem,QuadratureOrder, &
-                 cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
-
+            !!! CI #65: elem(k) is indexed by the k-th entry of the cellIS
+            !!! passed to MEF90Element_Create. Every assembly call below uses
+            !!! singleIS (size 1), so elem MUST be created from that same IS.
+            !!! Creating it once from the whole setIS made all 600 cells reuse
+            !!! elem(1)'s Grad_BF / Gauss_C (reproduced exactly by |K|inf in
+            !!! CI #64). elem is now created/destroyed inside the cell loop.
             If (elemType%Codim == 0) Then
                Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
                Do cell = 1, size(cellID)
-                  Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr)
+                  Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr);CHKERRQ(ierr)
+                  !!! CI #65: build a size-1 elem array from the SAME singleIS
+                  !!! that the MEF90Diffusion*Set routines receive. Those
+                  !!! routines index elem(k) by the position inside cellIS, so
+                  !!! elem(1) now carries THIS cell's coordinates/geometry.
+                  Call MEF90Element_Create(FlowCtx%DM,singleIS,elem,QuadratureOrder, &
+                       cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
                   Call SectionRealRestrict(permFieldSec,cellID(cell),permCell,ierr);CHKERRQ(ierr)
-                  A_cell = permCell(1)
+                  !!! CI #65: an isotropic scalar permeability is R * Identity,
+                  !!! i.e. MatS2D(R,R,0). MatS2D_Get_Real (used by the plain
+                  !!! "A = real" assignment) sets XX=YY=XY=R, which is the
+                  !!! singular rank-1 tensor [[R,R],[R,R]] and diffuses only
+                  !!! along the (1,1) diagonal. That is the second half of the
+                  !!! Gate 3.2 ratio error (CI #64 ratio=0.348 vs analytic
+                  !!! 0.087). MEF90MatS2DIdentity is MatS2D(1,1,0).
+                  A_cell = permCell(1) * MEF90_MATS_IDENTITY
 
                   Call MEF90DiffusionEnergySet(energyCell,pSec,p0Sec,FlowCtx%DM, &
                        A_cell,0.0_Kr,singleIS,elem,elemType,ierr)
@@ -429,11 +474,11 @@ Contains
                        sourceSec,singleIS,elem,elemType,ierr)
                   InjectionWork = InjectionWork + workCell
 
+                  Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
                Call ISRestoreIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
             End If
-            Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
             Call ISDestroy(setIS,ierr)
          End If
       End Do
@@ -935,12 +980,18 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
             QuadratureOrder = elemType%order * 2
-            Call MEF90Element_Create(FlowCtx%DM,setIS,elem,QuadratureOrder, &
-                 cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
+            !!! CI #65: elem is built from singleIS inside the cell loop below,
+            !!! NOT from the whole setIS (see MEF90FlowOperatorCore).
             If (elemType%Codim == 0) Then
                Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
                Do cell = 1, size(cellID)
-                  Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr)
+                  Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr);CHKERRQ(ierr)
+                  !!! CI #65: build a size-1 elem array from the SAME singleIS
+                  !!! that the MEF90Diffusion*Set routines receive. Those
+                  !!! routines index elem(k) by the position inside cellIS, so
+                  !!! elem(1) now carries THIS cell's coordinates/geometry.
+                  Call MEF90Element_Create(FlowCtx%DM,singleIS,elem,QuadratureOrder, &
+                       cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
                   !!! alpha = S(cell), pre-multiply and pass to DiffusionOperatorAddTransientTermSet
                   Call SectionRealRestrict(storativitySec,cellID(cell),SCell,ierr);CHKERRQ(ierr)
                   !!! CI #53: a rank may own zero cells in a set; guard the
@@ -956,11 +1007,11 @@ Contains
                   End If
                   Call MEF90DiffusionOperatorAddTransientTermSet(FSec,FlowCtx%DMScal,pDotSec, &
                        singleIS,S_avg,elem,elemType,ierr)
+                  Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
                Call ISRestoreIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
             End If
-            Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
             Call ISDestroy(setIS,ierr)
          End If
       End Do
@@ -1009,13 +1060,19 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
             QuadratureOrder = elemType%order * 2
-            Call MEF90Element_Create(FlowCtx%DM,setIS,elem,QuadratureOrder, &
-                 cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
+            !!! CI #65: elem is built from singleIS inside the cell loop below,
+            !!! NOT from the whole setIS (see MEF90FlowOperatorCore).
             If (elemType%Codim == 0) Then
                A_zero = 0.0_Kr
                Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
                Do cell = 1, size(cellID)
-                  Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr)
+                  Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr);CHKERRQ(ierr)
+                  !!! CI #65: build a size-1 elem array from the SAME singleIS
+                  !!! that the MEF90Diffusion*Set routines receive. Those
+                  !!! routines index elem(k) by the position inside cellIS, so
+                  !!! elem(1) now carries THIS cell's coordinates/geometry.
+                  Call MEF90Element_Create(FlowCtx%DM,singleIS,elem,QuadratureOrder, &
+                       cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
                   Call SectionRealRestrict(storativitySec,cellID(cell),SCell,ierr);CHKERRQ(ierr)
                   If (Associated(SCell)) Then
                      If (size(SCell) > 0) Then
@@ -1031,11 +1088,11 @@ Contains
                        A_zero,lambda_val,elem,elemType,ierr)
                   Call MEF90DiffusionBilinearFormSet(PreJac,FlowCtx%DMScal,singleIS, &
                        A_zero,lambda_val,elem,elemType,ierr)
+                  Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
                Call ISRestoreIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
             End If
-            Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
             Call ISDestroy(setIS,ierr)
          End If
       End Do
