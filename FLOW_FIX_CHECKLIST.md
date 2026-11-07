@@ -976,4 +976,50 @@ CDF2 布局复核：`REC0=23980`、`RECSZ=55320`、`numrecs=51`、`coordx/coordy
 
 `terzaghi_pressure_timeseries.csv`（51 行）、`terzaghi_pressure_field.csv`（18,156 行）、`terzaghi_validation.png`（四联图）。CSV 保留 `*_shift1_*` 列作为修复前对齐的历史对照；PNG 的 (c) 面板同时画出 `BE(n)`（当前基准）与 `BE(n-1)`（旧对齐），直观展示修复效果。运行 `python vDef/data/postprocess_terzaghi.py` 可一键重生成。
 
-**当前状态**：闸门 3.1 / 3.2 均稳定通过；时间轴与输出元数据正确；transient Darcy 求解链物理正确且逐时对齐解析解。剩余非阻塞清理：YAML 几何注释、`pressurePreviousStep` 死写、GMRES/CG 选型、诊断 trace 减噪、DefMech AltMin 50 次 SNES WARNING、以及 nodal slot 3 仍存在 `boundary_pressure_offset=3` 与 `disp_offset=3` 的槽位复用（名字仍是 `Displacement_X`，本次未动，需统一规划 offset 后再改）。
+**当时状态（已被 CI #68 取代）**：闸门 3.1 / 3.2 均稳定通过；时间轴与输出元数据正确；transient Darcy 求解链物理正确且逐时对齐解析解。剩余非阻塞清理：YAML 几何注释、`pressurePreviousStep` 死写、GMRES/CG 选型、诊断 trace 减噪、DefMech AltMin 50 次 SNES WARNING、以及 nodal slot 3 仍存在 `boundary_pressure_offset=3` 与 `disp_offset=3` 的槽位复用（名字仍是 `Displacement_X`，本次未动，需统一规划 offset 后再改）。下一节已修复其中三项。
+
+
+## CI #68 结果（2026-11-07 18:00）：输出完整性修复与日志减噪
+
+**状态**：commit `090781e`，run `42361549691` / job `128370821222`，`completed success`。`git push` 正常（代理可用，无需 REST API 绕行）。
+
+### 根因：Flow 覆盖了 DefMech 的 nodal slot 3
+
+`vDef.F90` 每步的写出顺序是 `MEF90DefMechViewEXO` → `MEF90FlowViewEXO`。YAML 里 `defmech.disp_offset=3`（占 nodal slot 3/4）与 `flow.boundary_pressure_offset=3` 撞在**同一个 nodal slot**；Flow 随后把常数 `boundaryPressure`（=0）写进 slot 3，把 `Displacement_X` 整场抹成 0。而 `nameV` 由 `MEF90DefMechFormatEXO` 生成、仍叫 `Displacement_X`，于是后处理看到的是"一个恒为 0 的位移分量"——纯输出数据损坏，不影响求解。
+
+cell 变量是独立命名空间：`flow.source_offset=2` / `perm_field_offset=4` / `darcy_velocity_offset=5` 不与 DefMech 的 nodal offsets 冲突，无需调整。
+
+### 改动
+
+| 文件 | 内容 |
+|---|---|
+| `vDef/data/terzaghi1D.yaml` | `boundary_pressure_offset: 3 → 0`。当前 `bc_pressure_scaling: constant`，BC 值已知且无需输出槽；`0` 只让 `MEF90FlowViewEXO` 跳过写出，不影响求解。同时修正头部几何注释（真实 `x∈[-5,5]`、`y∈[-0.5,0.5]`、排水面 `x=-5`、`H=10` 沿 x、`z=5-x`）与 51×0.02 s = 0→1 s 的时间轴 |
+| `m_Flow/m_MEF90_FlowAssembly.F90` | 删除 IFunction / IJacobian / SetTransients / UpdateboundaryPressure / SetSourceCst 中约 20 处每步诊断打印；`MEF90FlowReportJacobian` 保留为按需调试工具。**Gate 3.1 / 3.2 判据依赖的 `vDef.F90` 握手行全部不动** |
+| `.github/workflows/build.yml` | 把 #67 的 `name_nod_var1=="Pressure"` 单槽检查升级为全表检查 |
+| `vDef/data/check_exodus_metadata.py` | 新增纯标准库校验器：严格比对 4 个 nodal 变量名，打印每个 slot 在 t=0 / t=1 的值域；若 `Displacement_X` 仍恒为 0 则打 `[WARN]` |
+
+静态校验：`git diff --check`、PyYAML（19 steps）、全部 `run` 块 `bash -n`、`m_MEF90_FlowAssembly.F90` 的 `If/End If` / `Subroutine` / `Do` 配对全为 0；新增 CI 命令行在本地按原样复现通过。
+
+### CI 关键输出
+
+| 判据 | 结果 |
+|---|---|
+| Gate 3.1 | **PASS**（TS 到 t=1、rejected=0、`_out.gen` 有效） |
+| Gate 3.2 带宽 / 解析 | **PASS**：`ratio=0.0905571`，与 BE 解析 `0.09339316` 差 `0.00284`（与 #67 逐位一致） |
+| 元数据全表 | **PASS**：`Pressure \| Damage \| Displacement_X \| Displacement_Y` |
+| slot 3 | t0 `[-9.30729e-4, 0]`，t1 `[-5.40369e-5, 0]` —— **不再恒为 0**，`[WARN]` 消失 |
+| 日志量 | 每步 `Gate 3.2 diag` 行从约 50 组降到 0（job log 仅剩 1 条 shell 字面量回显） |
+
+### #67 → #68 artifact 逐位对比
+
+两版 `CDF\002`、2,845,300 B、51 records、356 节点，文件布局完全相同：
+
+| 场 | 最大差 |
+|---|---|
+| `vals_nod_var1`（压力，51×356 全时刻） | **0**（逐位一致） |
+| `vals_nod_var2`（Damage）、`vals_nod_var4`（Displacement_Y） | 0 |
+| `vals_nod_var3`（Displacement_X） | `5.40369e-5`（从全 0 恢复为真实位移） |
+
+证明本次改动是**纯输出层**，对 transient Darcy 求解零影响。后处理三份产物已用 #68 artifact 重生成，t=1 仍为 FEM `9055.7 Pa` / 连续 `8712.7` / BE `9339.3`，L2 `3.764% / 3.206%`。
+
+**当前状态**：闸门 3.1 / 3.2 稳定通过；时间轴、变量命名、全部 4 个 nodal slot 的输出内容均正确；日志已收敛到可读。剩余非阻塞清理：`pressurePreviousStep` 死写（YAML offset=6 与 `vDef.F90:508` 的 `VecCopy` 无消费者）、GMRES/CG 最终选型、DefMech AltMin 50 次 SNES WARNING、cell slot 的 offset 规划，以及构建诊断步骤里既有的 2 条 `gfortran: Only one '-J' option allowed`（Test A/B PETSc 模块探测，#67 同样存在，不影响构建）。
