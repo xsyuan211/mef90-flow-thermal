@@ -122,7 +122,7 @@
   - 改法：新增 `MEF90HeatXferFlowAdvectionOperatorSet` / `...BilinearFormSet` 两个**私有逐单元**装配子程序（镜像 `MEF90/m_MEF90_DiffusionImplementation.F90` 的两个循环，但每个 cell 从 `SectionReal` 读自己的 `v_darcy`），`advectionVector = -ρc_p·v_darcy(cell)` 保持原常数路径的符号/标度；`enable_advection=true` 时走场，`false` 时原常数路径完全不变。`MEF90` 核心库与 2D/3D 泛型接口**未改动**。
   - 验收：ADVECTION / NOADVECTION 两个诊断 deck 仅差 `flow.enable_advection`，硬判据 D1–D7 要求温度场出现**非均匀、随时间增长**的差异；生产 deck 保持 `heatxfer: null`，Gate 3.3 完全隔离。
 
-- [ ] **4.3 边界压力时间缩放语义（CI #92 覆盖性更正：原表述不成立，降级为可见性/判据工作；CI #94 待裁决）**
+- [x] **4.3 边界压力时间缩放语义（CI #92 覆盖性更正：原表述不成立，降级为可见性/判据工作；CI #94 已收口）**
   - **原清单行号过时**：实际位置是 `m_Flow/m_MEF90_FlowAssembly.F90:701-735`
     的 `MEF90FlowSetTransients`（`boundaryPressureScaling` 的 `Select case` 在 725-733）。
   - **"恒压边界被乘时间"在当前工程里根本不发生**：缩放语义已由枚举
@@ -149,10 +149,10 @@
     `flowBC = TRUE`、`bc_pressure = 0`；`bc_pressure_scaling = constant`、
     `source_scaling = constant`、`pressure_scaling = constant`；
     Gate 3.3 / 4.1 / 4.2 回归同轮全 PASS。
-  - **本轮落地（CI #94 待裁决）**：只基于上述真实格式写
-    `vDef/data/check_gate43_flowbag.py`（纯标准库 + `parse_cdf2.py`，
-    CI runner 无 PyYAML / numpy），硬判据 **C1–C7**；`build.yml` 接入
-    `--gate` 调用、延迟裁决与 `/tmp/gate43_verdict.log` artifact。
+  - **CI #94 已回（success）**：`vDef/data/check_gate43_flowbag.py` 基于上述
+    真实格式写硬判据 **C1–C7**；`build.yml` 接入 `--gate` 调用、延迟裁决与
+    `/tmp/gate43_verdict.log` artifact；真实 artifact 回放 **C1–C7 全 PASS**
+    （`GATE43_RESULT: PASS`，7 项检查 0 失败、6 份运行受检）。
     C4 做**全量 deck↔bag 比对**（6 份日志 116 项，专抓「YAML 键被静默忽略」）；
     C5 查 3 类变体信号；C6 直接读 51 步网格判恒压槽 `span=0 Pa`、
     闭端仍衰减（防全零假场）并复核 Gate 3.3 解析 L2；C7 查 4.1/4.2
@@ -2537,3 +2537,20 @@ artifact 增 `/tmp/gate43_verdict.log`。静态校验：PyYAML 6.0.3 解析、
 
 **本轮仍未勾选 4.3**：等 CI #94 实跑裁决。
 4.1b、残差平台 `3~13` 根因、damage 7 条 `-5` 仍在册。
+
+### CI #94 结果（4.3 收口，conclusion=success）
+
+`6704b0d` 的 CI #94 `conclusion=success`，四个闸门同轮全 PASS：
+
+| 闸门 | verdict | 关键结果 |
+|---|---|---|
+| 3.3 | PASS | P1–P6 + P8；P4 `0.00011036 m`、P6 压比 `0.0905571`、L2 `0.0320613` |
+| 4.1 | PASS | B1–B7；BODYFORCE `|base| 0→9.81`、slope `9.81`、R²=1、叠加误差 ~0 |
+| 4.2 | PASS | D1–D8；D5 `max|T_off|=100 K`、D6 `|dT| 0→0.0639432 K`、D8 `max\|u\|=1.13e-5 m` |
+| 4.3 | PASS | C1–C7；116 项 deck↔bag 0 失配、BC `span=0 Pa`、闭端 `1e5→9055.71`、L2 `0.03206` |
+
+真实 artifact 复核（`gate43_verdict.log`）：`GATE43_RESULT: PASS`，`7 checks, 0 failed, 6 runs inspected`。
+4.3 硬判据接入后与 4.1/4.2 同为延迟 `exit 1`，失败时必红（已用 12 例负例自测 + CI 真实回放双重验证区分力）。
+
+**结论：4.3（Flow 选项袋可见性 + 恒压 BC 语义 + 116 项 deck↔bag 比对）已收口。**
+仍在册：4.1b（互斥总应力模式）、标准 Newton 残差平台 `3~13` 根因、damage SNES 7 条 `-5`（信息性）。
