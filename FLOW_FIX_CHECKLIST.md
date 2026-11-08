@@ -122,11 +122,31 @@
   - 改法：新增 `MEF90HeatXferFlowAdvectionOperatorSet` / `...BilinearFormSet` 两个**私有逐单元**装配子程序（镜像 `MEF90/m_MEF90_DiffusionImplementation.F90` 的两个循环，但每个 cell 从 `SectionReal` 读自己的 `v_darcy`），`advectionVector = -ρc_p·v_darcy(cell)` 保持原常数路径的符号/标度；`enable_advection=true` 时走场，`false` 时原常数路径完全不变。`MEF90` 核心库与 2D/3D 泛型接口**未改动**。
   - 验收：ADVECTION / NOADVECTION 两个诊断 deck 仅差 `flow.enable_advection`，硬判据 D1–D7 要求温度场出现**非均匀、随时间增长**的差异；生产 deck 保持 `heatxfer: null`，Gate 3.3 完全隔离。
 
-- [ ] **4.3 边界压力时间缩放语义**
-  - 位置：`m_Flow/m_MEF90_FlowAssembly.F90:560-562`（`MEF90Scaling_Linear` 下 `VecScale(boundaryPressure, timeVal)`）
-  - 问题：恒压边界（如大气压 0）物理上通常应保持常数，Linear 模式对其乘时间值语义可疑。
-  - 改法：区分"恒压边界"与"渐变加载边界"两类选项；恒压走无缩放分支，渐变才乘时间/文件。
-  - 验收：恒压 BC 在瞬态中保持常数；渐变 BC 按设定 ramp。
+- [ ] **4.3 边界压力时间缩放语义（CI #92 覆盖性更正：原表述不成立，降级为可见性/判据工作）**
+  - **原清单行号过时**：实际位置是 `m_Flow/m_MEF90_FlowAssembly.F90:701-735`
+    的 `MEF90FlowSetTransients`（`boundaryPressureScaling` 的 `Select case` 在 725-733）。
+  - **"恒压边界被乘时间"在当前工程里根本不发生**：缩放语义已由枚举
+    `bc_pressure_scaling` = `constant` / `linear` / `file` 三选一区分
+    （`FlowCtx.F90:648-649` 注册；`CST` 分支直接 `UpdateboundaryPressure`
+    不缩放，`Linear` 分支才 `VecScale(..., timeVal)`）。
+    `vDef/m_vDefDefault.F90:188` 默认 `MEF90Scaling_CST`，且**7 个 deck 全部
+    显式写 `bc_pressure_scaling: constant`**。Linear 是用户主动选择的
+    "渐变加载"语义，不是 bug；Gate 3.3 的 P6 解析解比对（L2 err 0.032）
+    也间接证实恒压 BC 未随时间漂移。
+  - **真正缺的是运行期可见性**：`m_Flow/m_MEF90_FlowCtx.F90` 的
+    `MEF90FlowCtxSetFromOptions` 注册了 Global / CellSet / VertexSet 三个 bag，
+    但**从未调用 `PetscBagView`**；而 DefMech / HeatXfer / Materials /
+    MEF90Ctx 都在 `verbose>0` 下打印。所以 CI 日志里查不到
+    `bc_pressure_scaling`、`source_scaling`、`biot_coeff`、
+    `enable_advection`、`boundary_pressure_offset` —— 这正是 4.1/4.2 不得不
+    自造 `Gate 4.1:` / `Gate 4.2:` 诊断行的根本原因。
+  - **本轮落地（CI #93）**：照抄 `m_MEF90_DefMechCtx.F90:1025-1027 / 1047-1051`
+    的惯用法，在 FlowCtx 三处注册后各加一个 `verbose>0` 守卫的
+    `PetscBagView(..., PETSC_VIEWER_STDOUT_WORLD, ...)`。**纯打印，物理与
+    选项值零改动**；生产 deck `verbose: 1`，CI 日志立即可见。
+  - 验收（待 CI #93 后）：从真实 bag view 确认 `bc_pressure_scaling = constant`
+    与 cell/vertex set 的 `boundaryPressure` 值，再加一条恒压槽随时间为常数的
+    硬判据；届时 4.3 可勾选。**不先猜 PetscBagView 的输出格式写判据**。
 
 - [ ] **4.4 源项符号对齐**
   - 位置：`m_Flow/m_MEF90_FlowAssembly.F90:105-107`（调 `MEF90DiffusionRHSSetCell`，底层 `ADD_VALUES`）
@@ -2416,3 +2436,36 @@ Gate 3.3（P1-P6/P8）、Gate 4.1（B1-B7）回归同轮全 PASS。
 生产 deck、Gate 3.x / 4.1 核心 Fortran 全程未改动，开关默认关闭。
 仍在册：4.1b（互斥总应力模式）、标准 Newton 残差平台 `3~13` 根因、
 damage SNES 7 条 `-5`（本轮生产日志仍为 7 条，信息性，不影响物理判据）。
+
+### CI #92：稳态复跑（纯文档提交触发，conclusion=success）
+
+`e8710c2` 只改文档，CI 自动重跑。Gate 4.2 D1-D8 与 Gate 3.3 / 4.1 的
+**全部数值与 CI #91 逐位相同**（D6 `0.0639432 K` / `rel 0.0006394`、
+D8 `1.13e-05 m`、P4 `0.00011036 m`、P6 L2 `0.0320613`、B3 slope `9.81`）。
+
+离线网格级硬比对（零本地编译 / 零求解器运行）：
+
+| 结果网格 | 记录数 | 变量数 | `max\|CI #91 − CI #92\|` |
+|---|---|---|---|
+| `out_main.gen` | 51 / 51 | 31 | 0 |
+| `out_advection.gen` | 51 / 51 | 31 | 0 |
+| `out_noadvection.gen` | 51 / 51 | 31 | 0 |
+
+→ 阈值型判据 D6（余量约 6×）**可重复、非偶发**，4.2 收口确认。
+
+### 4.3 覆盖性复核与 Flow bag 可见性（CI #93 待回）
+
+静态复核推翻了原清单 4.3 的前提，详见上方 4.3 条目更正。要点：
+`bc_pressure_scaling` 的 `constant`/`linear`/`file` 三态已实现、默认 CST、
+7 个 deck 全写 `constant`，所以"恒压边界被乘时间"不成立；缺的是
+Flow 三个 bag 从不 `PetscBagView`，导致所有 Flow 开关在 CI 日志里不可验证。
+
+本轮改动**仅 1 个文件、+16 行**：`m_Flow/m_MEF90_FlowCtx.F90` 三处
+`verbose>0` 守卫的 `PetscBagView`（Global / CellSet / VertexSet），
+照抄 DefMech 惯用法。静态校验：18 yaml、5 py、10 run 块 `bash -n`、
+FlowCtx 全文 IF/DO 终态 0/0、三处 view 均在守卫内、`git diff --check`、
+判据隔离（所有 ROW_RE 要求 `Gate 4.x:` 前缀，`TEMP_OFFSET_RE` 有词边界，
+新增 bag 行不会污染 D1-D8 / B1-B7 / P1-P8）。
+
+**下一轮再基于真实 bag 输出格式加 4.3 硬判据**，不猜格式。
+4.1b、残差平台 `3~13` 根因、damage 7 条 `-5` 仍在册。

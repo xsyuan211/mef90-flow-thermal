@@ -757,6 +757,16 @@ Contains
            'flow','flow_',defaultGlobalOptions,ierr);CHKERRQ(ierr)
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
 
+      !!! CI #93 / Gate 4.3 visibility: DefMech, HeatXfer, Materials and
+      !!! MEF90Ctx all dump their bags under verbose>0, but Flow never did.
+      !!! That is why bc_pressure_scaling / source_scaling / biot_coeff /
+      !!! enable_advection / boundary_pressure_offset were absent from every
+      !!! CI log and Gates 4.1/4.2 had to invent their own trace lines.
+      !!! Pure print-out: NO physics, NO option values are changed.
+      If (MEF90CtxGlobalOptions%verbose > 0) Then
+         Call PetscBagView(FlowCtx%GlobalOptionsBag,PETSC_VIEWER_STDOUT_WORLD,ierr);CHKERRQ(ierr)
+      End If
+
       !!! Cell set bags — per-set prefix + EXO elem type auto-detection (DefMech pattern)
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',setIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,setIS,ierr);CHKERRQ(ierr)
@@ -773,6 +783,9 @@ Contains
          myDefaultCellSetOptions%elemTypeShortID = ElemTypeScal(set)%ShortID
          Call PetscBagRegisterMEF90FlowCtxCellSetOptions(FlowCtx%CellSetOptionsBag(set), &
               setName,setprefix,myDefaultCellSetOptions,ierr);CHKERRQ(ierr)
+         If (MEF90CtxGlobalOptions%verbose > 0) Then
+            Call PetscBagView(FlowCtx%CellSetOptionsBag(set),PETSC_VIEWER_STDOUT_WORLD,ierr);CHKERRQ(ierr)
+         End If
       End Do
       Call ISRestoreIndicesF90(setIS,setID,ierr);CHKERRQ(ierr)
       Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
@@ -789,6 +802,9 @@ Contains
          myDefaultVertexSetOptions = defaultVertexSetOptions
          Call PetscBagRegisterMEF90FlowCtxVertexSetOptions(FlowCtx%VertexSetOptionsBag(set), &
               setName,setprefix,myDefaultVertexSetOptions,ierr);CHKERRQ(ierr)
+         If (MEF90CtxGlobalOptions%verbose > 0) Then
+            Call PetscBagView(FlowCtx%VertexSetOptionsBag(set),PETSC_VIEWER_STDOUT_WORLD,ierr);CHKERRQ(ierr)
+         End If
       End Do
       Call ISRestoreIndicesF90(setIS,setID,ierr);CHKERRQ(ierr)
       Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
