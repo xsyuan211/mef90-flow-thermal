@@ -122,7 +122,7 @@
   - 改法：新增 `MEF90HeatXferFlowAdvectionOperatorSet` / `...BilinearFormSet` 两个**私有逐单元**装配子程序（镜像 `MEF90/m_MEF90_DiffusionImplementation.F90` 的两个循环，但每个 cell 从 `SectionReal` 读自己的 `v_darcy`），`advectionVector = -ρc_p·v_darcy(cell)` 保持原常数路径的符号/标度；`enable_advection=true` 时走场，`false` 时原常数路径完全不变。`MEF90` 核心库与 2D/3D 泛型接口**未改动**。
   - 验收：ADVECTION / NOADVECTION 两个诊断 deck 仅差 `flow.enable_advection`，硬判据 D1–D7 要求温度场出现**非均匀、随时间增长**的差异；生产 deck 保持 `heatxfer: null`，Gate 3.3 完全隔离。
 
-- [ ] **4.3 边界压力时间缩放语义（CI #92 覆盖性更正：原表述不成立，降级为可见性/判据工作）**
+- [ ] **4.3 边界压力时间缩放语义（CI #92 覆盖性更正：原表述不成立，降级为可见性/判据工作；CI #94 待裁决）**
   - **原清单行号过时**：实际位置是 `m_Flow/m_MEF90_FlowAssembly.F90:701-735`
     的 `MEF90FlowSetTransients`（`boundaryPressureScaling` 的 `Select case` 在 725-733）。
   - **"恒压边界被乘时间"在当前工程里根本不发生**：缩放语义已由枚举
@@ -144,9 +144,28 @@
     的惯用法，在 FlowCtx 三处注册后各加一个 `verbose>0` 守卫的
     `PetscBagView(..., PETSC_VIEWER_STDOUT_WORLD, ...)`。**纯打印，物理与
     选项值零改动**；生产 deck `verbose: 1`，CI 日志立即可见。
-  - 验收（待 CI #93 后）：从真实 bag view 确认 `bc_pressure_scaling = constant`
-    与 cell/vertex set 的 `boundaryPressure` 值，再加一条恒压槽随时间为常数的
-    硬判据；届时 4.3 可勾选。**不先猜 PetscBagView 的输出格式写判据**。
+  - **CI #93 已回（success）**：6 份求解日志全部出现 `flow Flow Global Options`
+    （23 个必需键）与 3 个 `Flow CellSet Options`；生产 `cs10` 是唯一
+    `flowBC = TRUE`、`bc_pressure = 0`；`bc_pressure_scaling = constant`、
+    `source_scaling = constant`、`pressure_scaling = constant`；
+    Gate 3.3 / 4.1 / 4.2 回归同轮全 PASS。
+  - **本轮落地（CI #94 待裁决）**：只基于上述真实格式写
+    `vDef/data/check_gate43_flowbag.py`（纯标准库 + `parse_cdf2.py`，
+    CI runner 无 PyYAML / numpy），硬判据 **C1–C7**；`build.yml` 接入
+    `--gate` 调用、延迟裁决与 `/tmp/gate43_verdict.log` artifact。
+    C4 做**全量 deck↔bag 比对**（6 份日志 116 项，专抓「YAML 键被静默忽略」）；
+    C5 查 3 类变体信号；C6 直接读 51 步网格判恒压槽 `span=0 Pa`、
+    闭端仍衰减（防全零假场）并复核 Gate 3.3 解析 L2；C7 查 4.1/4.2
+    回归、致命签名与挂接线。**不猜 PetscBagView 的输出格式**。
+  - 离线验收（零本地编译 / 零求解器运行）：CI #93 真实数据回放 C1–C7
+    全 PASS（116 项比对 0 失配、BC `span=0 Pa`、闭端 `1e5→9055.71`、
+    `L2=0.03206`）；**12 例负例自测**逐条命中目标判据（删 bag 键、
+    翻转 cellset BC、删 deck 显式声明、deck/bag 值不符、μ(T) 悄悄打开、
+    BC 压力漂移、全零假场、4.2 回归、缺挂接线、缺运行日志），
+    `--gate` 失败时 `rc=1` 且打印 `GATE43_RESULT: FAIL`；
+    静态校验 PyYAML / 10 个 `run` 块 `bash -n` / 9 个 py `ast.parse` /
+    新增行非 ASCII=0 / `git diff --check` 全绿。
+  - **勾选条件**：CI #94 `conclusion=success` 且 `GATE43_RESULT: PASS`。
 
 - [ ] **4.4 源项符号对齐**
   - 位置：`m_Flow/m_MEF90_FlowAssembly.F90:105-107`（调 `MEF90DiffusionRHSSetCell`，底层 `ADD_VALUES`）
@@ -2468,4 +2487,53 @@ FlowCtx 全文 IF/DO 终态 0/0、三处 view 均在守卫内、`git diff --chec
 新增 bag 行不会污染 D1-D8 / B1-B7 / P1-P8）。
 
 **下一轮再基于真实 bag 输出格式加 4.3 硬判据**，不猜格式。
+4.1b、残差平台 `3~13` 根因、damage 7 条 `-5` 仍在册。
+
+### CI #93 结果 + 4.3 硬判据落地（CI #94 待回）
+
+`7651aee` 的 CI #93 `conclusion=success`，三处 `PetscBagView` 编译通过、
+6 份日志全部可见 Flow Global / 3 个 CellSet bag；Gate 3.3 / 4.1 / 4.2
+回归同轮全 PASS，**物理场零改动**。真实 bag 片段（与判据正则一致）：
+
+```
+PetscBag Object:  flow Flow Global Options
+  biot_coeff = 1 ; Biot poroelastic coefficient α (0 = no coupling)
+  temp_dep_viscosity =  FALSE; Enable temperature-dependent viscosity μ(T)
+  enable_advection =  FALSE; Add v_darcy·∇T convection term to HeatXfer
+  pressure_offset = 1 ; EXO file offset for pressure
+  bc_pressure_scaling = constant; (MEF90scaling) Boundary pressure scaling
+  pressure_scaling = constant; (MEF90scaling) Scaling law for pressure
+PetscBag Object:  cs10 Flow CellSet Options
+  flowBC =  TRUE; Cell set has pressure boundary condition
+  bc_pressure = 0 ; Pressure value on BC surface (Pa)
+```
+
+基于该格式写 `vDef/data/check_gate43_flowbag.py`（纯标准库）：C1 六份日志
+各 23 个必需 Global 键；C2 三个 CellSet bag 且 `cs0010` 的
+`flowBC` / `bc_pressure` 与 deck 一致；C3 三个 scaling 全为 `constant`
+且 bc/source 在每个 deck 显式声明（`pressure_scaling` 是库默认，只比对 bag）；
+C4 逐个比对 deck `flow:` 段**每一个键**与 bag 值；C5 复核 nobiot α=0、
+advection 开关、4.2 的 `pressure_offset=0`、μ(T) 关闭；C6 读生产网格
+51 步压力场判恒压 BC `span=0 Pa`、闭端衰减、Gate 3.3 解析 L2；C7 查
+4.1/4.2 verdict、致命签名与每份日志恰好一次挂接线。
+
+**离线回放（CI #93 真实 artifact）**：C1–C7 全 PASS，
+`116` 项 deck↔bag 比对 0 失配，BC 节点 6 个 / 51 步 `span=0 Pa`、
+`mean=0 Pa` 与 bag 的 `bc_pressure=0` 一致，闭端
+`100000 → 9055.71 Pa`（decay 11，防全零假场），`P6 L2=0.03206`。
+
+**负例自测 12 例 / 0 missed**：基线全 PASS；逐条篡改后目标判据必 FAIL
+（N1 删 `enable_advection`→C1；N2 翻转 cs10 `flowBC`→C2；N3 删 deck
+`source_scaling`→C3；N4 改 `pressure_atol`→C4；N5 悄悄打开 μ(T)→C5；
+N6 把一个 BC 节点第 10 步改成 12345 Pa→C6；N6b 整个压力场清零→C6；
+N7 改 4.2 verdict→C7；N8 删挂接线→C7；N9 删一份运行日志→C1）；
+`--gate` 失败用例 `rc=1` 且输出 `GATE43_RESULT: FAIL`。
+
+`build.yml` 接入：Gate 3.3 之后调用（需 `gate33_verdict.log`），
+`g43_rc` 延迟到 Gate 4.1/4.2 裁决之后再 `exit 1`（CI #82 早退教训），
+artifact 增 `/tmp/gate43_verdict.log`。静态校验：PyYAML 6.0.3 解析、
+10 个 `run` 块 `bash -n`、9 个 py `ast.parse`、新增行非 ASCII=0、
+`git diff --check`、判据调用/裁决顺序断言全绿。
+
+**本轮仍未勾选 4.3**：等 CI #94 实跑裁决。
 4.1b、残差平台 `3~13` 根因、damage 7 条 `-5` 仍在册。

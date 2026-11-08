@@ -886,6 +886,29 @@ jobs:
             exit 1
           fi
           echo "=== Gate 3.3 PASS: P1-P6 + P8 physics criteria satisfied on /tmp/out_main.gen ==="
+          # --- Gate 4.3 (hard): Flow option bags visible AND the CST BC stays
+          # constant ------------------------------------------------------
+          # Checklist 4.3's original premise ("a constant BC is multiplied by
+          # time") was disproved by CI #92: bc_pressure_scaling already has
+          # constant/linear/file modes, defaults to CST, and all decks declare
+          # `constant`. The REAL gap was observability: FlowCtxSetFromOptions
+          # registered three bags but never called PetscBagView, so no CI log
+          # could prove which Flow options were actually parsed -- the same
+          # silent-ignore bug class as 4.1a's `Force: 0, -9.81, 0` and CI #52.
+          # CI #93 added three verbose-guarded PetscBagView calls (print only,
+          # zero physics change); this checker reads that REAL bag format.
+          # C1/C2 23 Global keys + 3 CellSet bags in each of 6 runs; C3 CST
+          # semantics explicitly declared in every deck; C4 full deck<->bag
+          # value agreement (116 comparisons); C5 variant signals still
+          # discriminate; C6 drained BC pressure span=0 across 51 records,
+          # closed end still decays (guards an all-zero fake field) plus Gate
+          # 3.3 analytic L2; C7 Gate 4.1/4.2 regression, no fatal, wired.
+          # Must run AFTER Gate 3.3 (needs gate33_verdict.log); its exit 1 is
+          # DEFERRED until after 4.1/4.2 (CI #82 early-exit lesson).
+          python3 data/check_gate43_flowbag.py --gate \
+            /tmp data /tmp/out_main.gen \
+            2>&1 | tee /tmp/gate43_verdict.log
+          g43_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -907,6 +930,16 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.2 PASS: cell-wise v_darcy measurably changes the thermal field ==="
+          # Gate 4.3 deferred verdict (see the deferred-exit note above).
+          if [ "$g43_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.3 rejected the Flow option bags / constant BC (rc=$g43_rc) ==="
+            echo "    Check /tmp/gate43_verdict.log: C1 Global bag keys,"
+            echo "    C2 CellSet bags, C3 CST scaling declared, C4 deck<->bag"
+            echo "    agreement, C5 variant signals, C6 BC span/decay + L2,"
+            echo "    C7 Gate 4.1/4.2 regression, fatal scan, coupling wire."
+            exit 1
+          fi
+          echo "=== Gate 4.3 PASS: Flow bags visible, every deck option parsed, constant BC holds over 51 steps ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1047,6 +1080,7 @@ jobs:
             /tmp/gate33_verdict.log
             /tmp/gate41_verdict.log
             /tmp/gate42_verdict.log
+            /tmp/gate43_verdict.log
             /tmp/out_main.gen
             /tmp/out_ksponly.gen
             /tmp/out_nobiot.gen
