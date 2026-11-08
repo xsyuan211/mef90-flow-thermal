@@ -1172,5 +1172,19 @@ CI #69（`42366003387 / success`，commit `4c198b3`）在**同一个 job、同�
 
 **关键旁证（已确认）**：V2 之前已用 `-disp_ksp_type gmres`（小写前缀，日志证实生效为 `Disp_ KSP type: gmres`），但 PC 仍是默认弱 `bjacobi/ILU(0)`，仍 -5 → 光换 `ksp_type` 不够，**必须换强 PC（GAMG/LU）**，这正是 ROBUSTKSP 的测试点。
 
+---
+
+## CI #78 实际结果（纠正：ROBUSTKSP 并未收敛）
+
+**断言修正**：watcher 首报 `rk_fail=0 / CONVERGED` 是**脚本误判**。实际 ROBUSTKSP 运行在初始化阶段即 **SEGV 崩溃**（`MPI_ABORT` + `Caught signal number 11 SEGV`，PETSc 3.3.0-p7）。崩溃发生在 `type: gamg` PC 创建后约 0.5ms（GAMG setup 阶段）。
+
+**根因**：`disp_addNullSpace = TRUE` 为位移矩阵注册了 near-null-space；PETSc 3.3 的 GAMG 与该 near-null-space 组合触发崩溃（GAMG 用 near-null-space 做粗化时越界）。这**不是**位移矩阵装配 bug（flow KSP 用 ILU 不崩，且代码精读已确认 R/J 一致）。
+
+**PETSc 构建能力**（来自 Configure 行）：编了 `--download-ml=1`（Trilinos ML AMG）、`--download-hypre=1`（BoomerAMG）、`--download-metis/parmetis/chaco`，**未编 MUMPS/SuperLU**（无直接 LU）。
+
+**结论**：CI #78 因 GAMG 崩溃**无有效结论**，原"弱 KSP 是元凶"假设既不能证实也不能排除。
+
+**CI #79 修正**：ROBUSTKSP 改用 **ML**（`-disp_pc_type ml`，独立于 GAMG 的成熟 AMG，near-null-space 处理不同，PETSc 3.3 中更稳），并修复诊断脚本——增加崩溃检测（`grep Caught signal|SEGV|MPI_ABORT|PETSC ERROR` → 判为 CRASHED，不再误判 CONVERGED）。若 ML 收敛则坐实弱 KSP 假设；若 ML 仍崩/发散，下一轮改用非 AMG 强 PC（如 `-disp_pc_type bjacobi -disp_sub_pc_type ilu -disp_sub_pc_factor_levels 2`）作对照。
+
 - 收敛 ⇒ 确认是线性求解/预条件问题 → 改位移 KSP 配置即可（符合零编译约束）。
 - 仍失败 ⇒ 是装配/Jacobian 近零空间 bug → 需 Fortran，超出零本地编译约束，交用户。
