@@ -56,7 +56,11 @@ Module m_MEF90_FlowCtx_Type
       !!! read it (via MEF90HeatXferCtx%flowVelocitySec) during SNES/TS
       !!! residual + Jacobian assembly. SectionRealDuplicate of
       !!! cellDMVectSec creates an independent section with the same layout.
-      Type(SectionReal)                :: cellDarcyVelocitySec
+      !!! TARGET is required: vDef does
+      !!!   MEF90HeatXferCtx%flowVelocitySec => MEF90FlowCtx%cellDarcyVelocitySec
+      !!! and a pointer-assignment target must carry the TARGET attribute
+      !!! (MEF90FlowCtx itself is an ordinary local variable, not a pointer).
+      Type(SectionReal),Target         :: cellDarcyVelocitySec
 
       !!! Solvers
       Type(SNES)                       :: SNESPressure

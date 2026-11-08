@@ -2152,3 +2152,80 @@ J  += ∫ [advectionVector(cell)·∇φ_j] · φ_i
 
 改动已提交推送、CI #87 结果待回。**4.1b（互斥总应力模式）未实现**；
 残差平台 `3~13` 的 Fortran 装配根因、damage SNES 的 7 条 `-5` 仍在册。
+
+---
+
+## CI #87 结果：编译层失败（未进入任何 Gate 判据）
+
+`conclusion=failure`，`RUNID=42485231934`，耗时约 2 分钟即终止。
+`vDef` 二进制未生成，因此 **Gate 3.3 / 4.1 / 4.2 一律没有运行**，
+`gate42_verdict.log` 为空 —— 这是「判据读不到数据即 FAIL」的设计前提，
+不是判据本身失败。
+
+### 根因（唯一阻断）
+
+`m_HeatXfer/m_MEF90_HeatXferAssembly.F90:699,749` 两个新增 helper 把
+`elem` 声明成 `Type(MEF90_ELEMENTTYPE)`。该宏**不是** `mef90.inc` 的宏，
+而是 Makefile 只给 `MEF90/m_MEF90_DiffusionImplementation.F90` 注入的
+编译参数 `-DMEF90_ELEMENTTYPE=MEF90Element2D_Scal`（3D 版同理）。
+`m_MEF90_HeatXferAssembly.F90` 的编译命令没有这个 `-D`，模块内所有既有
+subroutine 一律用 `MEF90_ELEMENT_SCAL`。因此 gfortran 报
+`Derived type 'mef90_elementtype' ... used before it is defined`，连带
+`elem has no IMPLICIT type`、`Expecting END IF statement`、以及 4 处调用点
+`Type mismatch in argument 'elem'`（98/248/462/618），
+`m_MEF90_HeatXferAssembly2D.o` / `3D.o` 失败并被 make `Error 1 (ignored)`
+吞掉，最终 `m_MEF90_HeatXfer.o` 缺 .mod、`vDef` 无规则可建。
+
+`f951: Only one '-J' option allowed` 两条是 CI 既有的 PETSc `TS` 探针
+（Test A / `use petsctsdef`、Test B / `use petsc`）噪声，与本次无关，
+CI #86 成功时同样存在。
+
+### 本轮一并修掉的、下一轮必然暴露的两个问题
+
+1. **指针关联缺 TARGET**：`vDef.F90:161` 做
+   `MEF90HeatXferCtx%flowVelocitySec => MEF90FlowCtx%cellDarcyVelocitySec`，
+   而 `MEF90FlowCtx` 是普通局部变量、组件无 TARGET 属性 —— 首次编译
+   `vDef` 时会被 Fortran 指针赋值规则拒绝。现给
+   `cellDarcyVelocitySec` 加 `,Target`（仅属性，不改生命周期）。
+2. **温度输出槽被压力覆盖**：离线读 CI #86 主网格确认结果文件只有
+   **4 个 nodal var**：`Pressure(1) / Damage(2) / Displacement_X(3) /
+   Displacement_Y(4)`，变量表由 `MEF90DefMechFormatEXO` 固定，没有第 5 个槽。
+   每步调用顺序是 `MEF90HeatXferViewEXO`(384) →
+   `MEF90DefMechViewEXO`(748) → `MEF90FlowViewEXO`(749)，
+   而 HeatXfer 的 `tempOffset` 默认 1、Flow 的 `pressure_offset: 1`，
+   Flow 后写会把温度覆盖成 ~1e5 Pa；`check_gate42_advection.py` 的
+   `TEMP_HI=1e4` 会让 D5 必 FAIL。
+   修法（**纯数据层，只动两个诊断 deck，生产 deck 与核心代码不动**）：
+   `flow.pressure_offset: 0`（`MEF90FlowViewEXO` 有 `> 0` 守卫，安全），
+   显式 `temp_Offset: 1` 让 HeatXfer 独占槽 1，并把
+   `flux_Offset` / `externalTemp_Offset` 置 0 避免写 elem var 1/2。
+   主网格仍走生产 deck，D7 依旧验证其槽 1 是压力。两 deck 仍**仅差
+   `flow.enable_advection` 一个键**。
+
+### 已实证的运行期前提（静态复核，非零编译）
+
+- CI #86 主运行 bag view 为 `heatxfer_timeStepping_type = null`、
+  `Thermal energies` 计数 0 → YAML 嵌套 `heatxfer.timestepping.type`
+  确实生效；4.2 deck 的 `steadystate` 会真正启用热场。
+- `MEF90Mathium2D` 默认 `Density=1 / SpecificHeat=1 /
+  ThermalConductivity=I` → `rhoCp=1`、K 非奇异，稳态热场可解。
+- `MEF90HeatXferSetTransients` 的 `MEF90Scaling_Linear` 分支对
+  `boundaryTemperature` 做 `VecScale(...,time)` → `T_bc = 100*t`，
+  满足 D5 的 `span>1` 与 D6 的「差异随时间增长」。
+- cell set `Has_BC` 走 `MEF90ISCreateCelltoVertex`，BAR2 边界集
+  cs0010/cs0020 的 `tempBC` 会落到顶点 Dirichlet；`tempBC: 1` 统一改为
+  `true` 以避开 PETSc 3.3 Bool 解析歧义。
+- `MEF90_VECT` 的 `Vect2D_Get_VectR(Dimension(2))` /
+  `Vect3D_Get_VectR(Dimension(3))` 赋值重载使
+  `-rhoCp * vPtr(1:MEF90_DIM)` 合法。
+- 4 处调用点的 mesh 参数与原版 advection 分支逐位一致：
+  Operator 用 `%DM`、BilinearForm 用 `%DMScal`。
+
+### 校验
+
+`PyYAML`(18 yaml)、10 个 `run` 块 `bash -n`、5 个 Python `ast.parse`、
+`git diff --check`、Fortran `If/Do` 配对（两 helper 终态 0/0，
+7 `Subroutine` / 7 `End Subroutine`）全过。
+
+**CI #88 待回：编译是否全绿、Gate 4.2 D1-D7 是否 PASS。**
+4.1b、残差平台 `3~13` 根因、damage 7 条 `-5` 仍在册。

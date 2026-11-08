@@ -696,7 +696,7 @@ Contains
       Type(IS),Intent(IN)                                :: cellIS
       Type(SectionReal),Intent(IN)                       :: vSec
       PetscReal,Intent(IN)                               :: rhoCp
-      Type(MEF90_ELEMENTTYPE), Dimension(:), Pointer     :: elem
+      Type(MEF90_ELEMENT_SCAL),Dimension(:),Pointer      :: elem
       Type(MEF90Element_Type),Intent(IN)                 :: elemType
       PetscErrorCode,Intent(OUT)                         :: ierr
 
@@ -746,7 +746,7 @@ Contains
       Type(IS),Intent(IN)                                :: cellIS
       Type(SectionReal),Intent(IN)                       :: vSec
       PetscReal,Intent(IN)                               :: rhoCp
-      Type(MEF90_ELEMENTTYPE), Dimension(:), Pointer     :: elem
+      Type(MEF90_ELEMENT_SCAL),Dimension(:),Pointer      :: elem
       Type(MEF90Element_Type),Intent(IN)                 :: elemType
       PetscErrorCode,Intent(OUT)                         :: ierr
 

@@ -35,13 +35,26 @@ time:
     numstep: 51
     interpolation: linear        # Gate 3.1: BE uses a fixed dt = time(2)-time(1); a uniform grid makes each outer step exactly ONE TS step and matches the Terzaghi analytical solution (was quadratic, which contradicts the 0.02s comment above)
 
-# ----------- HEAT TRANSFER (disabled) -----------
+# ----------- HEAT TRANSFER (LIVE, Gate 4.2) -----------
 heatxfer:
     timestepping:
         type: steadystate
 
 boundaryTemp:
     scaling: linear              # Gate 4.2: T_bc = 100*t, field grows from 0
+
+# The result mesh declares exactly 4 nodal variables (Pressure, Damage,
+# Displacement_X, Displacement_Y); the table is fixed by
+# MEF90DefMechFormatEXO, so there is NO free 5th slot for temperature.
+# HeatXferViewEXO runs BEFORE FlowViewEXO in every step, so a temperature
+# written to the default temp_Offset=1 would be overwritten by the Flow
+# pressure (~1e5 Pa) and Gate 4.2 D5 (TEMP_HI=1e4) would fail.
+# For these two DIAGNOSTIC decks ONLY, Flow yields nodal slot 1
+# (flow.pressure_offset: 0 below) and HeatXfer owns it. The production
+# deck is untouched, and D7 still verifies its slot 1 is the pressure.
+temp_Offset: 1
+flux_Offset: 0
+externalTemp_Offset: 0
 
 # ----------- DEFECT MECHANICS (quasi-static poroelasticity) -----------
 defmech:
@@ -73,7 +86,7 @@ flow:
     pressure_atol: 1.0e-08
     pressure_rtol: 1.0e-05
     pressure_maxit: 500
-    pressure_offset: 1
+    pressure_offset: 0            # Gate 4.2: yield nodal slot 1 to temperature (diagnostic decks only)
     source_offset: 2
     # CI #68: 3 collided with DefMech's disp_offset=3. ViewEXO is called
     # DefMech first, Flow second, so boundaryPressure used to OVERWRITE the
@@ -151,7 +164,7 @@ cs0010:
     damageBC: 0
     boundaryDamage: 0
     # Gate 4.2: Dirichlet T=0 on the drained end
-    tempBC: 1
+    tempBC: true
     boundaryTemp: 0
     # ------ Flow Dirichlet BC on this surface ------
     source: 0.0
@@ -167,7 +180,7 @@ cs0020:
     damageBC: 0
     boundaryDamage: 0
     # Gate 4.2: Dirichlet T=100 on the closed end -> dT/dx != 0
-    tempBC: 1
+    tempBC: true
     boundaryTemp: 100
     # ------ Flow: natural Neumann (no explicit BC) ------
     source: 0.0
