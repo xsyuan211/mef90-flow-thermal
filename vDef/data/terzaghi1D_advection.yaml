@@ -1,0 +1,175 @@
+# Gate 4.2 ADVECTION CONTROL - production deck + a LIVE thermal field.
+# Differences vs terzaghi1D.yaml: heatxfer null->steadystate,
+# cs0010/cs0020 tempBC+boundaryTemp, flow.enable_advection true.
+# HeatXferAssembly then reads the cell-wise FlowCtx%cellDarcyVelocity.
+# DIAGNOSTIC VARIANT ONLY: Gates 3.1/3.2/3.3 use the frozen production
+# mesh, saved BEFORE any variant runs.
+# ============================================================================
+# Terzaghi 1D Consolidation — Water-Force Coupled Benchmark
+# Analytical solution: p(z,t) = (4σ₀/π) Σ [(-1)^n/(2n+1)] cos((2n+1)πz/2H) exp(-(2n+1)²π²c_v t / 4H²)
+# c_v = k/(μ·S) — consolidation coefficient; Biot coupling f_p = -α·∇p
+#
+# Geometry (from the real Beam1x10-tri3_out.gen / TestMeshes binary):
+#   x in [-5,5] m (10 m long), y in [-0.5,0.5] m (1 m wide), plane strain
+#   The drainage path H=10 m runs ALONG X, not along Y.
+#   Terzaghi coordinate z = 5 - x: z=0 is the closed end at x=+5,
+#   z=H=10 is the drained end at x=-5.
+#   cs0001 = domain (TRI3)
+#   cs0010 = drained boundary at x=-5 (BAR2) — p=0 Dirichlet
+#   cs0020 = impermeable boundary at x=+5 (BAR2) — natural Neumann BC, fixed u=0
+#
+# Time scale: k_min=5e-11 m², μ=1e-3 Pa·s, S=4.6e-10 Pa⁻¹
+#   c_v = 5e-11/(1e-3 × 4.6e-10) ≈ 108.7 m²/s
+#   H²/c_v = 100/108.7 ≈ 0.92 s (characteristic consolidation time)
+#   51 output records × dt=0.02 s span t=0→1.0 s = 50 BE steps
+#   T = c_v·t/H² → at t=1.0s, T≈1.09 (Terzaghi decay ~63% complete)
+# ============================================================================
+
+verbose: 2
+# CI #51 belt-and-braces: if a PETSc 3.3 YAML build flattens the 'flow:' block
+# without its prefix, this top-level alias still activates the transient enum.
+# The Flow bag itself reads -flow_timestepping_type (prefix 'flow_').
+timestepping_type: Transient
+time:
+    min: 0.0
+    max: 1.0
+    numstep: 51
+    interpolation: linear        # Gate 3.1: BE uses a fixed dt = time(2)-time(1); a uniform grid makes each outer step exactly ONE TS step and matches the Terzaghi analytical solution (was quadratic, which contradicts the 0.02s comment above)
+
+# ----------- HEAT TRANSFER (disabled) -----------
+heatxfer:
+    timestepping:
+        type: steadystate
+
+boundaryTemp:
+    scaling: linear              # Gate 4.2: T_bc = 100*t, field grows from 0
+
+# ----------- DEFECT MECHANICS (quasi-static poroelasticity) -----------
+defmech:
+    timestepping:
+        type: quasistatic
+    solver:
+        type: AltMin
+    disp:
+        addNullSpace: true
+    disp_offset: 3
+    damage_offset: 2
+
+# ----------- DARCY FLOW (Biot coupled) -----------
+# These keys map to -flow_<key> (global PetscBag prefix 'flow_').
+# Enum values must match MEF90ScalingList: constant / linear / file / null
+# ('CST' is the Fortran enumerator name, NOT a legal PetscBag option value).
+flow:
+    timestepping_type: Transient        # exact match for MEF90Flow_timeSteppingTypeList(3)='Transient' (gate-3.1 TS path)
+    perm_min: 5.0e-11               # k_min [m²] — T=c_v·t/H² ≈ 1 at t=1s
+    perm_max: 1.0e-09               # k_max [m²] — 20× broken
+    viscosity: 1.0e-03             # μ [Pa·s] — water
+    storativity: 4.6e-10            # S [Pa⁻¹]
+    biot_coeff: 1.0                 # α = 1.0 — full Biot coupling
+    enable_advection: true           # Gate 4.2: feed cell-wise v_darcy into HeatXfer
+    residual_damage: 0.0
+    p0: 1.0e5                       # initial pore pressure σ₀ (gate-3 transient decay from this value)
+    source_scaling: constant
+    bc_pressure_scaling: constant
+    pressure_atol: 1.0e-08
+    pressure_rtol: 1.0e-05
+    pressure_maxit: 500
+    pressure_offset: 1
+    source_offset: 2
+    # CI #68: 3 collided with DefMech's disp_offset=3. ViewEXO is called
+    # DefMech first, Flow second, so boundaryPressure used to OVERWRITE the
+    # Displacement_X field. bc_pressure is a known constant (0.0, see cs0010)
+    # and needs no output slot; disable it (0 = do not write / do not name).
+    # If bc_pressure_scaling is ever switched to 'file', give this a slot that
+    # does not collide with any DefMech nodal offset, or the read will be wrong.
+    boundary_pressure_offset: 0
+    pressure_previous_step_offset: 6   # must not collide with source_offset (default was 2)
+    perm_field_offset: 4
+    darcy_velocity_offset: 5
+
+# ================================================================
+# CELL SET OPTIONS — combined material + DefMech + Flow per set
+# cs0001/cs0010/cs0020 are mesh labels (Beam1x10-tri3 mesh cell block IDs)
+# ================================================================
+
+# ----------- cs0001: Domain (TRI3, x in [-5,5], y in [-0.5,0.5]) -----------
+# Poroelastic material: E=1GPa, ν=0.25, plane-strain
+# Body-force free: Terzaghi consolidation has no gravity (CI #85).
+# No Flow BC here (domain interior)
+cs0001:
+    # ------ Material properties (DefMech) ------
+    hookeslaw:
+        type: Isotropic
+        YoungsModulus: 1.0e9
+        PoissonRatio: 0.25
+        planeStress: false
+    fracturetoughness: 27000.0
+    residualstiffness: 1.0e-03
+    internalLength: 0.2
+
+    # ------ DefMech options ------
+    damage:
+        type: AT2
+    plasticity:
+        type: NONE
+    # CI #82: Terzaghi is a PURE poroelastic consolidation benchmark; a strain
+    # energy split (unilateral contact) does not belong to this physics.
+    # Worse, with damage.type AT2/AT2Elastic (cellIsElastic=TRUE) the residual
+    # unconditionally calls Split%DEED (Assembly.F90:287) while the Jacobian
+    # uses the full constant HookesLaw (Assembly.F90:649-650) -> J != dR/du,
+    # Newton step is wrong, line search collapses alpha to 0 and the residual
+    # plateaus at O(8) -> -5 / false SNORM_RELATIVE convergence. 'None' makes
+    # DEED and D2EED both degenerate to linear Hooke so R/J are consistent.
+    unilateralContact:
+        type: None
+    # CI #85: PETSc 3.3 RealArray keeps only the FIRST element when a
+    # comma is followed by a space, so the old "0, -9.81, 0" silently
+    # evaluated to 0 0 0. Write the zero explicitly. A NON-ZERO body
+    # force is exercised only in terzaghi1D_bodyforce.yaml (B3/B4).
+    Force: 0,0,0
+
+    # ------ Flow options ------
+    source: 0.0                     # no well injection (gate-2 TEMP source reverted; gate-3 decay starts from p0=1.0e5)
+    perm_override: 0.0              # use global perm_min/perm_max
+    storativity_override: -1        # use global S
+    flowBC: false                   # domain interior, no pressure BC
+
+# ----------- cs0010: Drained surface (x = -5, z = H = 10) -----------
+# Flow Dirichlet BC: p = 0 (atmospheric — fully drained)
+# The 6 nodes at x=-5 carry p=0 in every output record.
+# FIX (2026-11-07): both displacement components are pinned (u_x AND u_y).
+# ROOT CAUSE of the old non-convergence: MEF90/PETSc's YAML BoolArray reader only
+# honours the FIRST element when there is a SPACE after the comma, so the original
+# `displacementBC: 1, 1, 1` was parsed as TRUE FALSE FALSE -> u_y was NEVER
+# constrained, leaving a free rigid translation under gravity and a singular
+# DefMech matrix (51x SNES_DIVERGED_MAX_IT). Removing the spaces after commas
+# (i.e. `1,1,1`, matching the format PetscBagView writes and the repo's other
+# decks) makes the reader accept all three components, so u_x and u_y are both
+# pinned. Drainage (p=0) is unchanged.
+cs0010:
+    displacementBC: 1,1,1
+    boundaryDisplacement: 0,0,0
+    damageBC: 0
+    boundaryDamage: 0
+    # Gate 4.2: Dirichlet T=0 on the drained end
+    tempBC: 1
+    boundaryTemp: 0
+    # ------ Flow Dirichlet BC on this surface ------
+    source: 0.0
+    flowBC: true
+    bc_pressure: 0.0
+
+# ----------- cs0020: Closed end (x = +5, z = 0) -----------
+# Full displacement fix (0, 0, 0) — no-slip impermeable end
+# No-flow by default (natural Neumann BC)
+cs0020:
+    displacementBC: 1,1,1
+    boundaryDisplacement: 0,0,0
+    damageBC: 0
+    boundaryDamage: 0
+    # Gate 4.2: Dirichlet T=100 on the closed end -> dT/dx != 0
+    tempBC: 1
+    boundaryTemp: 100
+    # ------ Flow: natural Neumann (no explicit BC) ------
+    source: 0.0
+    flowBC: false

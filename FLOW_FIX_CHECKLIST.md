@@ -99,12 +99,13 @@
 
 ## 闸门 4 — 物理增强与工程闭环
 
-- [x] **4.1a Biot 体力：叠加而非覆盖 + 体力缩放不回滚**（CI #85 落地，见文末专节）
+- [x] **4.1a Biot 体力：叠加而非覆盖 + 体力缩放不回滚**（CI #85 落地、**CI #86 全绿收口**，见文末专节）
   - 实际位置（原清单行号已过时）：`m_Flow/m_MEF90_FlowAssembly.F90:1180-1256`；`vDef/vDef.F90:520-533`（**时间步层**，不是每个 AltMin 迭代）。
   - **覆盖性复核**：原清单写的「`VecCopy` 重置体力 → 步内 CST/Linear 缩放被回滚」在当前代码里**不成立**。Phase 2b 的实现是 `VecCopy(baseForce,force)` + `VecAXPy(force,-α,∇p)`，快照在时间步层、`MEF90DefMechSetTransients` 之后、AltMin 之外，每次 AltMin 调用都从快照重建 → 幂等、不累积、不回滚。
-  - **原清单「仅作首次快照」的建议是错的**：`m_vDefDefault.F90:43/79` 默认 `ForceScaling = MEF90Scaling_Linear`，`SetTransients` 每步把 `force` 缩放到 `9.81×t`；若只在启动时快照一次，`baseForce` 会恒为 t=0 的值（0），重力被静默丢弃。**正确语义是每时间步快照一次**，已写入 `vDef.F90` 注释。
+  - **原清单「仅作首次快照」的建议是错的**：`m_vDefDefault.F90:43/79` 默认 `ForceScaling = MEF90Scaling_Linear`，`SetTransients` 每步把 `force` 缩放到 `Force × t`；若只在启动时快照一次，`baseForce` 会恒为 t=0 的值（0），非零体力被静默丢弃。**正确语义是每时间步快照一次**，已写入 `vDef.F90` 注释。
+  - **CI #86 覆盖性更正**：这里写的 `9.81×t` 只对 `terzaghi1D_bodyforce.yaml` 成立。生产 deck 的 `Force: 0, -9.81, 0` 因逗号后空格被 RealArray 只读成首元素（`0 0 0`），`linear × 0 = 0`；CI #85 实测生产 `|baseForce| ≡ 0`。CI #86 把 4 个既有 deck 改成显式 `0,0,0`（解析值不变），另建 BODYFORCE 诊断 deck 写 `0,-9.81,0`，**bag view 实测 `Force = 0 -9.81 0`**、`|baseForce|` 线性 `0 → 9.81`，B3/B4 从此才有区分力。
   - 本轮落地：`VecCopy+VecAXPy` → 单次 `VecWAXPY(force,-α,∇p,baseForce)`（清单要求的写法，数学等价、无中间态）；每步输出一条 `Gate 4.1:` 诊断；新增 `terzaghi1D_nobiot.yaml`（仅 `biot_coeff 1.0→0.0`）、`check_gate41_biot.py`、CI 硬闸门 **B1–B7**。
-  - 验收：B3 用「`|baseForce|` 线性增长 0→9.81、R²≥0.98」直接判「Linear 缩放不回滚」；B4 用 `‖force−(base−α∇p)‖∞≈0` 判「叠加而非覆盖/累积」；B6 用 NOBIOT 对照网格判「耦合真实生效」；Gate 3.3 P1–P8 保持回归。
+  - 验收（CI #86 起）：B3 判 **BODYFORCE** 日志「`|baseForce|` 线性增长 0→9.81、R²≥0.98」，B4 也判 **BODYFORCE**「`‖force−(base−α∇p)‖∞≈0` 且 `max|base|≥5`」（生产 `base≡0` 时该误差对叠加/覆盖无区分力）；B6 用 NOBIOT 对照网格判「耦合真实生效」；Gate 3.3 P1–P8 保持回归。
 
 - [ ] **4.1b 有效应力项：改为「互斥模式」，不是「再补一项」**（物理裁决后重定义）
   - **原清单表述有误**：「力学侧缺 `σ' = σ + α·p·I`，当前只做了体力近似」并非缺项。分部积分
@@ -115,11 +116,11 @@
   - 验收：互斥模式下位移场与体力模式**等价**（两端 Dirichlet 固定时差异只可能来自侧面自然边界），Gate 3.3 P1–P8 仍 PASS；两种模式同时启用应被明确拒绝。
   - 状态：**本轮未实现**（零本地编译下改 4–5 个 Fortran 文件风险过高，且会混淆 4.1a 的判据信号）。单列待做，不阻塞 4.1a 勾选。
 
-- [ ] **4.2 平流：把 `cellDarcyVelocity` 喂入 HeatXfer**
-  - 位置：`m_HeatXfer/m_MEF90_HeatXferAssembly.F90:95-97 / 239-241 / 447-449 / 597-599`（已用常数 `advectionVector` 调 `MEF90DiffusionOperatorAdvectionSet`）；`m_Flow/...cellDarcyVelocity` 全库无消费者（grep 确认）
-  - 问题：`enableFlowAdvection`/`fluidDensity` 是占位：HeatXfer 已有常数平流能力，但 Flow 算出的随空间变化的 `cellDarcyVelocity` 从未送入。
-  - 改法：在 `MEF90HeatXferAssembly` 的平流分支，当 `enableFlowAdvection` 为真时用 `FlowCtx%cellDarcyVelocity` 替代 `cellSetOptions%advectionVector` 作为平流速度传入 `MEF90DiffusionOperatorAdvectionSet`。
-  - 验收：开启 `enable_advection` 后热场受 v_darcy 平流影响；或若暂不支持，明确标注该选项。
+- [x] **4.2 平流：把 `cellDarcyVelocity` 喂入 HeatXfer**（CI #87 落地，见文末专节）
+  - 位置：`m_HeatXfer/m_MEF90_HeatXferAssembly.F90` 的 4 处平流装配（稳态残差/Jacobian、瞬态 IFunction/IJacobian）；`m_Flow/m_MEF90_Flow{F,Ctx}.F90` 的持久 `cellDarcyVelocitySec`；`vDef/vDef.F90` 的 Ctx 挂接与 `Gate 4.2:` 诊断。
+  - 问题：`enableFlowAdvection`/`fluidDensity` 原是占位；`cellDarcyVelocity` 全库无消费者。且 `MEF90Diffusion*AdvectionSet` 只接受**一个常向量**（整个 cell IS 共用），直接替换会丢掉逐单元空间结构。
+  - 改法：新增 `MEF90HeatXferFlowAdvectionOperatorSet` / `...BilinearFormSet` 两个**私有逐单元**装配子程序（镜像 `MEF90/m_MEF90_DiffusionImplementation.F90` 的两个循环，但每个 cell 从 `SectionReal` 读自己的 `v_darcy`），`advectionVector = -ρc_p·v_darcy(cell)` 保持原常数路径的符号/标度；`enable_advection=true` 时走场，`false` 时原常数路径完全不变。`MEF90` 核心库与 2D/3D 泛型接口**未改动**。
+  - 验收：ADVECTION / NOADVECTION 两个诊断 deck 仅差 `flow.enable_advection`，硬判据 D1–D7 要求温度场出现**非均匀、随时间增长**的差异；生产 deck 保持 `heatxfer: null`，Gate 3.3 完全隔离。
 
 - [ ] **4.3 边界压力时间缩放语义**
   - 位置：`m_Flow/m_MEF90_FlowAssembly.F90:560-562`（`MEF90Scaling_Linear` 下 `VecScale(boundaryPressure, timeVal)`）
@@ -182,7 +183,7 @@
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
 - 闸门 2（可见）：4 / 4
 - 闸门 3（瞬态+符号）：1 / 2（3.1 静态实现 + 二轮正确性修正；**#47 首次完整编译通过，但仍未运行到物理求解**；3.2 必须运行）
-- 闸门 4（物理+工程）：**4.1a 已收口（CI #85 待回）**；4.1b 有效应力互斥模式单列待做；其余 10 项未动（4.11 的「CI 可信化」前置已做）。
+- 闸门 4（物理+工程）：**4.1a 已收口（CI #86 全绿）；4.2 已落地（CI #87 待回）**；4.1b 有效应力互斥模式单列待做；其余 9 项未动（4.11 的「CI 可信化」前置已做）。
 - 合计：8 项功能已落地，12 项待做
 
 **提交 / CI 状态**
@@ -1950,7 +1951,13 @@ PETSc 3.3 的 `PetscBagRegisterRealArray(...,3,'Force',...)`
   对照网格同值 / 缺失 → B6；gradp 恒定 → B5；Fortran `D` 指数与无空格标签均可解析。
   `--gate` 的 PASS / 参数错误 / 缺日志 / 判据失败四种退出码正确，report 模式恒 0。
 
-### 5. 诚实说明（本轮唯一未验证项）
+### 5. 诚实说明（落地时唯一未验证项 —— **CI #86 已实测通过**）
+
+**结果**：`terzaghi_bodyforce.log` 的 CellSet bag view 实测打印
+`Force = 0 -9.81 0`（cs0001；其余两个 CellSet 仍 `0 0 0`），生产与 NOBIOT
+日志全部 `Force = 0 0 0`；B3 的 `|baseForce|` 线性 `0 → 9.81`、slope `9.81`、
+`R² = 1.00000`、最大残差 `1.776e-15`。**「无空格 RealArray」假设成立**，
+不需要换格式。详见文末「CI #86 结果」节。以下保留落地时的风险说明存档：
 
 **无法在零本地编译约束下确证 `Force: 0,-9.81,0`（无空格）会被 PETSc 3.3
 的 RealArray 读成三个分量。** 历史证据是 `displacementBC: 1,1,1` 修好了
@@ -1961,10 +1968,187 @@ BoolArray、`boundaryDisplacement: 0,0,0` 也是无空格写法，但 RealArray 
 也不够，需要换格式（例如 PETSc bag view 原样输出的方括号 / 分号形式），
 那将是**下一轮**的新实验，不是本轮可以假设的结论。
 
-另：退役 V2 后预计 job 从 ~17 min 降到 ~3 min；`timeout-minutes: 75`
+另：退役 V2 后 job 实测 `0:03:02`（CI #85 为 `14m27s`）；`timeout-minutes: 75`
 作为上限保持不变（不依赖它来压缩实际耗时）。
 
 ### 6. 状态
 
-改动已提交推送、CI #86 结果待回。**4.1b（互斥总应力模式）未实现**；
+改动已提交推送，**CI #86 `conclusion = success`**，Gate 4.1 / 3.3 / 3.2 / 3.1
+全绿，4.1a 收口。**4.1b（互斥总应力模式）未实现**；
+残差平台 `3~13` 的 Fortran 装配根因、damage SNES 的 7 条 `-5` 仍在册。
+
+---
+
+## CI #86 结果：4.1a 收口（run `42481503794`，commit `949f096`）
+
+`conclusion = success`、`GATE41_RESULT: PASS`、`GATE33_RESULT: PASS`。
+job 墙钟 `12:42:29 → 12:45:31 = 0:03:02`（CI #85 为 `14m27s`，
+退役 V2 后缩短约 79%）。artifact `build-diagnostics` 17 文件齐全，
+含 `out_main/gen`、`out_ksponly.gen`、`out_nobiot.gen`、`out_bodyforce.gen`
+与两份 verdict 日志。
+
+### 1. Gate 4.1 判据表（B1–B7 全 PASS）
+
+| # | 实测 | 判据 |
+|---|---|---|
+| B1 | 生产 51 行 / 51 探针，BODYFORCE 51 行 / 51 探针，`0 unparsed` | 两份日志完整、全有限 |
+| B2 | `max\|α−1\| = 0` | α 恒为 1 |
+| **B3** | BODYFORCE `\|base\| 0 → 9.81`、slope `9.81`、`R²=1.00000`、max resid `1.776e-15`；生产 `\|base\|max=0`（预期） | Linear 缩放在**非零体力**下未回滚 |
+| **B4** | BODYFORCE `max superpos_err/\|force\| = 0`，且 `max\|base\|≥5` 具备区分力 | 叠加而非覆盖 / 累积 / 丢 Biot |
+| B5 | 生产 `\|gradp\| 1417 … 7.609e5`（比值 537） | ∇p 时变、Biot 项活跃 |
+| B6 | 主 `peak\|u_x\|=1.1036e-4 m` vs NOBIOT `0 m` → `NOBIOT identically zero (exact decoupling)` | 不再出现 `ratio=inf` |
+| B7 | 两份日志 51/51 探针，crash=False、unknown_option=False | 运行完整 |
+
+两段轨迹：生产 `|base|` 全程 `0`、`|gradp| 7.609e5 → 1417`；BODYFORCE
+`|base| 0 → 4.905 → 9.81`、`superpos_err` 全程 `0`。
+
+### 2. 唯一未验证项的实测裁决
+
+`terzaghi_bodyforce.log` 的 bag view 打印 **`Force = 0 -9.81 0`**（1 个 CellSet），
+另两个 CellSet `0 0 0`；`terzaghi.log` / `terzaghi_nobiot.log` 各 3 个 CellSet
+全部 `Force = 0 0 0`。原始 `Gate 4.1:` 行也显示 `|base|inf` 从
+`0.0000` 经 `0.1962`（step 2）涨到 `9.6138`、`9.8100`。
+⇒ **PETSc 3.3 的 RealArray 与 BoolArray 一样，要求逗号后无空格**；
+`Force: 0,0,0` 与 `Force: 0, -9.81, 0` 都只读首元素，这是继 `displacementBC`
+之后同类坑的第二次实证。
+
+### 3. 防假绿核实（跨 CI 物理场）
+
+| 对比 | `vals_nod_var1` (p) | `vals_nod_var3` (ux) | `vals_nod_var4` (uy) |
+|---|---|---|---|
+| CI #86 主网格 vs CI #85 主网格 | `0` | `0` | `0` |
+| CI #86 主网格 vs BODYFORCE 网格 | `0` | `4.1249e-7 m` | `2.7215e-6 m` |
+| CI #86 主网格 vs NOBIOT 网格 | `0` | `1.1036e-4 m` | `9.1998e-6 m` |
+
+- 生产 deck 的 `Force` 写法清理**物理场逐位不变**（三槽全 0 差），
+  Gate 3.3 P1–P6/P8 数值与 CI #84/#85 完全一致
+  （`0.00011036 m`、`0.0320613`、`8.17189e-7 m`、`0.0905571`）。
+- BODYFORCE 的重力确实进了位移场（非零但很小的 `~1e-6 m` 量级差），
+  NOBIOT 的 `ux/uy` 严格为 0 ⇒ 三个变体是**独立、可区分**的物理实验。
+- job log 中 `FAIL` 关键字 27 处，逐条归类为 **26 条 `echo` 脚本文案 +
+  1 条注释**，无任何真实判据失败；两条 `f951: Only one -J` 与 CI #84/#85
+  相同，属既有编译噪音，二进制与 15 个构建 artifact 齐全。
+- `Gate 3.3 diagnostics: displacement-msgs=0 damage-msgs=7 (INFORMATIONAL ONLY)`：
+  damage 的 7 条 `-5` 仍是已知残留，P8 兜底。
+
+### 4. 状态与遗留
+
+- **闸门 3 全绿 + 闸门 4.1a 全绿**；4.1a 勾选状态已按 CI #86 实测更正，
+  并修掉清单 4.1a 里「`9.81×t` 对生产 deck 成立」的错误句。
+- **4.1b（互斥总应力模式）未实现**：需新增 cell-based 孔压场并改
+  4–5 个 Fortran 文件，零本地编译下风险高，且与 4.1a 判据信号冲突。
+- 残差平台 `3~13` 的 Fortran 装配根因、damage SNES 的 7 条 `-5` 仍在册。
+- 下一候选：4.2（把 `cellDarcyVelocity` 喂入 HeatXfer，纯 Fortran 局部改动，
+  可用同类「变体 + 硬判据」模式验收）；或 B 方向追残差平台；或 4.1b。
+
+**本轮动作**：只读核对 job log + `build-diagnostics` artifact
+（bag `Force` 原始行、`Gate 4.1:` 原始行、四份网格全步物理场对比、
+跨 CI 回归、API 时长、FAIL 归类），并把结论写入本文档与工作日志；
+**未改任何代码 / deck / 工作流 / 判据脚本，未提交、未推 CI**。
+
+---
+
+## CI #87：4.2 落地（逐单元 Darcy 速度 → HeatXfer）
+
+### 1. 物理/接口裁决
+
+原清单写「用 `FlowCtx%cellDarcyVelocity` 替代 `cellSetOptions%advectionVector`」
+**不能照字面做**：`MEF90DiffusionOperatorAdvectionSet` 与
+`MEF90DiffusionBilinearFormAdvectionSet`（`MEF90/m_MEF90_DiffusionImplementation.F90:118/223`）
+的 `advectionVector` 是**一个** `MEF90_VECT`，在整个 `cellIS` 循环里复用；
+而 `cellDarcyVelocity` 是 `cellDMVect` 上每 cell `dim` 个分量的**向量场**。
+直接替换必须丢弃空间结构，只剩一个常数（平均值），4.2 就失去意义。
+
+因此不改 `MEF90` 核心库，在 `m_HeatXfer/m_MEF90_HeatXferAssembly.F90` 内新增两个
+私有子程序，镜像库里的两个装配循环，但每个 cell 从 `SectionReal` 读自己的速度：
+
+```
+advectionVector(cell) = -ρc_p · v_darcy(cell)      ! 与常数路径同号同标度
+R  += ∫ [advectionVector(cell)·∇T] · φ
+J  += ∫ [advectionVector(cell)·∇φ_j] · φ_i
+```
+
+四处调用点（稳态残差 95 / 稳态 Jacobian 239 / 瞬态残差 447 / 瞬态 Jacobian 597）
+统一改为开关分支：`enable_advection=true` 走逐单元场；`false` 时**完全保留**
+原 `-density*SpecificHeat*cellSetOptions%advectionVector` 常数路径。
+
+数据通道（避免给 HeatXferCtx 加 Flow 模块依赖、避免循环引用）：
+
+| 文件 | 改动 |
+|---|---|
+| `m_Flow/m_MEF90_FlowCtx.F90` | 新增持久 `cellDarcyVelocitySec`（`SectionRealDuplicate(cellDMVectSec)`），在 `SetSections` 创建、`Destroy` 销毁 |
+| `m_Flow/m_MEF90_Flow.F90` | `MEF90FlowComputeDarcyVelocity` 把局部 `vSec` 换成该持久 section，去掉 `duplicate/destroy`；速度场在子程序返回后仍可读，且仍 scatter 到 `cellDarcyVelocity` Vec |
+| `m_HeatXfer/m_MEF90_HeatXferCtx.F90` | Ctx 加 `flowVelocitySec` 指针 + `enableFlowAdvection` 标志，`CtxCreate` 里 `Nullify` / `PETSC_FALSE` |
+| `vDef/vDef.F90` | `FlowCtxSetSections` 后挂接 `MEF90HeatXferCtx%flowVelocitySec => MEF90FlowCtx%cellDarcyVelocitySec`、复制 bag 开关；每步输出一条 `Gate 4.2: enabled=... \|v_darcy\|inf=...` |
+
+`MEF90FlowComputeDarcyVelocity` 原本就在 `vDef.F90:585` 每个 AltMin 迭代调用，
+速度场现成；本轮只是让它可消费。生产 deck 的 `heatxfer: timestepping: type: null`
+保持不变 ⇒ Gate 3.1/3.2/3.3 与交付网格完全不受影响。
+
+### 2. 对照实验（与 4.1a 的 BODYFORCE 同一套方法论）
+
+| deck | 相对生产 deck 的差异 |
+|---|---|
+| `terzaghi1D_advection.yaml` | `heatxfer.type null→steadystate`；`cs0010 tempBC:1 / boundaryTemp:0`；`cs0020 tempBC:1 / boundaryTemp:100`；顶层 `boundaryTemp.scaling: linear`；`flow.enable_advection: true` |
+| `terzaghi1D_noadvection.yaml` | 与上**逐字相同**，唯一差异 `enable_advection: false`（PyYAML 语义 diff 已核：1 个键） |
+
+温度 BC 使 `T_bc = 100·t`，域内 `∇T ≠ 0`；材料默认
+`Density=SpecificHeat=ThermalConductivity=1`（`MEF90Mathium2D`），Péclet 温和，
+稳态热 SNES 不至于因强对流失稳。两个变体都跑 ksponly，网格分别在
+`/tmp/out_advection.gen` / `/tmp/out_noadvection.gen`，都在恢复生产网格之前保存。
+
+### 3. 硬判据 D1–D7（`check_gate42_advection.py --gate`）
+
+| # | 判据 | FAIL 条件 |
+|---|---|---|
+| D1 | 两份日志各 ≥50 `Gate 3.2` 探针 / `Gate 4.2 enabled=` 行、各有 `coupling wired`、无致命签名 / `Unknown option` | 运行不完整 |
+| D2 | adv 全 `T`、noadv 全 `F` | 开关没传到位 / deck 写错 |
+| D3 | `\|v_darcy\|inf` 有限、>0、首 > 末（随 ∇p 衰减），且两份日志**逐行一致** | 速度场没算 / 开关影响了流场 |
+| D4 | 三份网格 51 记录、节点数一致、共享槽全有限 | 网格缺失或损坏 |
+| D5 | 自动发现的响应槽在 noadv 末步 `max\|T\| ∈ [1,1e4] K`、空间跨度 >1 K | 热场没启用 / 温度恒 0 |
+| **D6** | `\|T_on−T_off\|/max\|T_off\| ≥ 1e-4`、去均值后的**空间结构** ≥ 5% 差异、末步差异 > 首步 | 平流未生效 / 只是常数平移 |
+| D7 | 生产网格槽 1 仍是 `~1e5 Pa` 压力量级 | 生产 deck 被热场污染 |
+
+判据**不看**求解器消息、fnorm 占位、收敛原因码、失败计数（前五次假收敛教训）。
+判据脚本自动扫描全部记录槽并报告每槽差异，因此不依赖「温度在第几槽」的假设
+（`tempOffset=1` 与 `pressureOffset=1` 在诊断变体里会重叠）。
+`--gate` 输出机读 `GATE42_RESULT` 并退出 0/1；判定插在 Gate 3.3 之前、
+`exit 1` 延迟到 Gate 3.3/4.1 PASS 之后（CI #82 早退教训）。
+
+### 4. 校验（零本地编译 / 零求解器运行）
+
+- `PyYAML`、10 个 `run` 块 `bash -n`、三个判据脚本 `ast.parse`、
+  `git diff --check` 全过；deck 语义差异核对（adv↔noadv 仅 1 键）。
+- Fortran 静态检查：`If/EndIf`、`Do/EndDo`（含带标签的 `mainloopQS:` / `AltMin:`）、
+  续行、子程序定义/结束、两个新子程序各 1 定义 + 2 调用、持久 section 生命周期
+  （`duplicate=1` / `destroy=1`，`Flow.F90` 中 0 次误销毁）全过。
+- 判据离线自测 **15/15 通过**：完整 PASS；开关相同 / 速度不衰减 / 速度两份不一致 /
+  行数不足 / 探针不足 / 崩溃签名 / 缺日志 / 缺主网格 / 温度恒 0 / 平流未生效 /
+  纯常数平移 / 差异不增长 / 生产隔离失效，全部按预期 FAIL。
+  自测过程中**抓到并修复了判据脚本一个真实缺陷**：主网格缺失时 `finite_ok`
+  未定义导致 D5 `UnboundLocalError`，现改为 D5 自行校验温度场有限性。
+  `--gate` 缺网格 / 参数错误的退出码以及 CI #86 真实网格读取亦通过。
+- `subprocess --gate` 的 PASS 分支通过 monkeypatch 覆盖；真实 PASS 需 CI 实测。
+
+### 5. 诚实说明（本轮未验证项，需 CI #87 实测）
+
+1. **首次启用 HeatXfer 求解路径**：所有 vDef deck 历史上都是 `heatxfer: null`，
+   `MEF90HeatXferCreateSNES` / `SetTransients` / `ViewEXO` 从未在 CI 上跑过。
+   `enable_advection`、`tempBC`、`boundaryTemp`、`steadystate` 等键名以及温度写入的 EXO 槽号，均需由 CI 日志的 bag view 与
+   两份诊断网格确认。判据设计成「读不到/不合理即 FAIL」，不会假绿。
+2. **`SectionReal` 点编号匹配**：`cellDarcyVelocitySec` 基于 `FlowCtx%cellDMVect`
+   的 cell chart，HeatXfer 的 `cellID` 来自同一 `Mesh` 的 `'Cell Sets'` stratum，
+   静态判断一致，但零编译下无法实证；若不匹配会在 CI 表现为崩溃或速度全 0。
+3. **`MEF90_VECT` 逐单元赋值** `-rhoCp * vPtr(1:MEF90_DIM)` 沿用仓库既有写法
+   （`advectionVector = -density*SpecificHeat*advectionVector(1:MEF90_DIM)`），
+   但未编译验证。
+4. `vDef` 主程序 `Do/EndDo` 计数 4/6 是检查器漏掉两个带标签 `Do`
+   （`mainloopQS:` / `AltMin:`）的口径问题，本次改动**零新增循环**。
+
+若 CI #87 红，按日志定位是「编译层 / 热场配置层 / 平流装配层」哪一类，
+再按同一套「变体 + 物理判据」模式修；不因失败放宽判据。
+
+### 6. 状态
+
+改动已提交推送、CI #87 结果待回。**4.1b（互斥总应力模式）未实现**；
 残差平台 `3~13` 的 Fortran 装配根因、damage SNES 的 7 条 `-5` 仍在册。

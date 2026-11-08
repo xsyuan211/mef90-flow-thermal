@@ -741,6 +741,39 @@ jobs:
           else
             echo "=== WARN: BODYFORCE produced no result mesh; Gate 4.1 B3/B4 must FAIL ==="
           fi
+          # --------------------------------------------------------------------
+          # Gate 4.2 (CI #87): feed the CELL-WISE FlowCtx%cellDarcyVelocity
+          # into HeatXfer. The two decks are byte-identical except for
+          # flow.enable_advection (true/false), and both enable a LIVE
+          # steady heat field (heatxfer null->steadystate, T=0 at cs0010,
+          # T=100*t at cs0020). Any temperature difference between the two
+          # result meshes can therefore ONLY come from v_darcy.grad(T).
+          # DIAGNOSTIC ONLY: the production mesh is already frozen in
+          # /tmp/out_main.gen and restored below, so Gates 3.1/3.2/3.3 and
+          # the delivered artifact are completely isolated.
+          # --------------------------------------------------------------------
+          for g42tag in advection noadvection; do
+            echo "=== Gate 4.2 $g42tag diagnostic run (heatxfer steadystate, ksponly) ==="
+            timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+              -prefix data/Beam1x10-tri3 \
+              -options_file_yaml "data/terzaghi1D_${g42tag}.yaml" \
+              -flow_ts_view -flow_ts_monitor \
+              -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+              -disp_snes_type ksponly -disp_snes_converged_reason \
+              2>&1 | tee "/tmp/terzaghi_${g42tag}.log"
+            g42rc=${PIPESTATUS[0]}
+            echo "=== Gate 4.2 $g42tag mpirun exit code: $g42rc ==="
+            echo "=== Gate 4.2 $g42tag: thermal/advection bag values as parsed ==="
+            grep -aiE "enable_advection|heatxfer_timeStepping_type|TempBC|boundaryTemp =" \
+              "/tmp/terzaghi_${g42tag}.log" | sort -u | head -8 || true
+            echo "=== Gate 4.2 $g42tag Gate 4.2 rows: $(grep -ac 'Gate 4.2: enabled=' "/tmp/terzaghi_${g42tag}.log" || true) ==="
+            if [ -s data/Beam1x10-tri3_out.gen ]; then
+              cp -f data/Beam1x10-tri3_out.gen "/tmp/out_${g42tag}.gen"
+              echo "=== saved $g42tag result mesh -> /tmp/out_${g42tag}.gen ==="
+            else
+              echo "=== WARN: $g42tag produced no result mesh; Gate 4.2 D4-D6 must FAIL ==="
+            fi
+          done
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
           # artifact stay the main-run output (diagnostic variants overwrite it).
           if [ -s /tmp/out_main.gen ]; then
@@ -800,6 +833,19 @@ jobs:
             /tmp/terzaghi_bodyforce.log \
             2>&1 | tee /tmp/gate41_verdict.log
           g41_rc=${PIPESTATUS[0]}
+          # --- Gate 4.2 (hard): does cell-wise v_darcy reach the heat field? -
+          # Checklist 4.2: "开启 enable_advection 后热场受 v_darcy 平流影响".
+          # Two identical decks (only flow.enable_advection differs) produce
+          # two meshes; check_gate42_advection.py auto-discovers the record
+          # slot that responds and requires a NON-UNIFORM, growing, relative
+          # temperature difference. Solver messages / fnorm / reason codes
+          # are never trusted. Verdict printed here, exit 1 DEFERRED until
+          # after Gate 3.3 (CI #82 lesson).
+          python3 data/check_gate42_advection.py --gate \
+            /tmp/terzaghi_advection.log /tmp/terzaghi_noadvection.log \
+            /tmp/out_advection.gen /tmp/out_noadvection.gen /tmp/out_main.gen \
+            2>&1 | tee /tmp/gate42_verdict.log
+          g42_rc=${PIPESTATUS[0]}
           # --- Gate 3.3 (hard): PHYSICS VERDICT on the production field -----
           # CI #83 proved the old criterion -- counting "SNESSolve failed"
           # lines -- is WRONG (FLOW_FIX_CHECKLIST.md, section "CI #83 结果"):
@@ -847,6 +893,16 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.1 PASS: Linear force scaling preserved on non-zero baseForce, superposition error ~0 ==="
+          # Gate 4.2 deferred verdict (see the deferred-exit note above).
+          if [ "$g42_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.2 rejected the Darcy-driven thermal advection (rc=$g42_rc) ==="
+            echo "    Check /tmp/gate42_verdict.log: D1 both runs complete,"
+            echo "    D2 enable flag differs, D3 velocity alive/decaying/same,"
+            echo "    D4 mesh integrity, D5 live thermal field, D6 non-uniform"
+            echo "    growing temperature response, D7 production isolation."
+            exit 1
+          fi
+          echo "=== Gate 4.2 PASS: cell-wise v_darcy measurably changes the thermal field ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -981,13 +1037,18 @@ jobs:
             /tmp/terzaghi_ksponly_phys.log
             /tmp/terzaghi_nobiot.log
             /tmp/terzaghi_bodyforce.log
+            /tmp/terzaghi_advection.log
+            /tmp/terzaghi_noadvection.log
             /tmp/terzaghi_verdict.log
             /tmp/gate33_verdict.log
             /tmp/gate41_verdict.log
+            /tmp/gate42_verdict.log
             /tmp/out_main.gen
             /tmp/out_ksponly.gen
             /tmp/out_nobiot.gen
             /tmp/out_bodyforce.gen
+            /tmp/out_advection.gen
+            /tmp/out_noadvection.gen
           retention-days: 7
       - name: Upload Terzaghi result mesh
         uses: actions/upload-artifact@v4

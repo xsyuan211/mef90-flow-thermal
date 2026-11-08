@@ -92,9 +92,15 @@ Contains
             Call MEF90Element_Create(MEF90HeatXferCtx%DM,setIS,elem,QuadratureOrder,CellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
             If (elemType%Codim == 0) Then
                Call MEF90DiffusionOperatorSet(residualSec,MEF90HeatXferCtx%DM,xSec,setIS,matpropSet%ThermalConductivity,cellSetOptions%SurfaceThermalConductivity,elem,elemType,ierr);CHKERRQ(ierr)
-               advectionVector = -matPropSet%density * matPropSet%SpecificHeat * cellSetOptions%advectionVector(1:MEF90_DIM)
-               If (norm(adVectionVector) /= 0.0_Kr) Then
-                  Call MEF90DiffusionOperatorAdvectionSet(residualsec,MEF90HeatXferCtx%DM,xSec,setIS,advectionVector,elem,elemType,ierr);CHKERRQ(ierr)
+               If (MEF90HeatXferCtx%enableFlowAdvection .AND. Associated(MEF90HeatXferCtx%flowVelocitySec)) Then
+                  Call MEF90HeatXferFlowAdvectionOperatorSet(residualSec,MEF90HeatXferCtx%DM,xSec,setIS, &
+                       MEF90HeatXferCtx%flowVelocitySec,matPropSet%density*matPropSet%SpecificHeat, &
+                       elem,elemType,ierr);CHKERRQ(ierr)
+               Else
+                  advectionVector = -matPropSet%density * matPropSet%SpecificHeat * cellSetOptions%advectionVector(1:MEF90_DIM)
+                  If (norm(adVectionVector) /= 0.0_Kr) Then
+                     Call MEF90DiffusionOperatorAdvectionSet(residualsec,MEF90HeatXferCtx%DM,xSec,setIS,advectionVector,elem,elemType,ierr);CHKERRQ(ierr)
+                  End If
                End If
             End If
 
@@ -236,9 +242,15 @@ Contains
                QuadratureOrder = 2 * elemType%order
                Call MEF90Element_Create(MEF90HeatXferCtx%DMScal,setIS,elem,QuadratureOrder,CellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
                Call MEF90DiffusionBilinearFormSet(A,MEF90HeatXferCtx%DMScal,setIS,matpropSet%ThermalConductivity,cellSetOptions%SurfaceThermalConductivity,elem,elemType,ierr);CHKERRQ(ierr)
-               advectionVector = -matPropSet%density * matPropSet%SpecificHeat * cellSetOptions%advectionVector(1:MEF90_DIM)
-               If (norm(adVectionVector) /= 0.0_Kr) Then
-                  Call  MEF90DiffusionBilinearFormAdvectionSet(A,MEF90HeatXferCtx%DMScal,setIS,advectionVector,elem,elemType,ierr);CHKERRQ(ierr)
+               If (MEF90HeatXferCtx%enableFlowAdvection .AND. Associated(MEF90HeatXferCtx%flowVelocitySec)) Then
+                  Call MEF90HeatXferFlowAdvectionBilinearFormSet(A,MEF90HeatXferCtx%DMScal,setIS, &
+                       MEF90HeatXferCtx%flowVelocitySec,matPropSet%density*matPropSet%SpecificHeat, &
+                       elem,elemType,ierr);CHKERRQ(ierr)
+               Else
+                  advectionVector = -matPropSet%density * matPropSet%SpecificHeat * cellSetOptions%advectionVector(1:MEF90_DIM)
+                  If (norm(adVectionVector) /= 0.0_Kr) Then
+                     Call  MEF90DiffusionBilinearFormAdvectionSet(A,MEF90HeatXferCtx%DMScal,setIS,advectionVector,elem,elemType,ierr);CHKERRQ(ierr)
+                  End If
                End If
                Call MEF90Element_Destroy(elem,ierr)
                Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
@@ -444,9 +456,15 @@ Contains
             If (elemType%codim == 0) Then
                Call MEF90DiffusionOperatorSet(FSec,MEF90HeatXferCtx%DMScal,xSec,setIS,matpropSet%ThermalConductivity,cellSetOptions%SurfaceThermalConductivity,elem,elemType,ierr);CHKERRQ(ierr)
                Call MEF90DiffusionOperatorAddTransientTermSet(FSec,MEF90HeatXferCtx%DMScal,xdotSec,setIS,matpropSet%density*matpropSet%SpecificHeat,elem,elemType,ierr)
-               advectionVector = -matPropSet%density * matPropSet%SpecificHeat * cellSetOptions%advectionVector(1:MEF90_DIM)
-               If (norm(advectionVector) /= 0.0_Kr) Then
-                  Call MEF90DiffusionOperatorAdvectionSet(Fsec,MEF90HeatXferCtx%DM,xSec,setIS,advectionVector,elem,elemType,ierr);CHKERRQ(ierr)
+               If (MEF90HeatXferCtx%enableFlowAdvection .AND. Associated(MEF90HeatXferCtx%flowVelocitySec)) Then
+                  Call MEF90HeatXferFlowAdvectionOperatorSet(FSec,MEF90HeatXferCtx%DM,xSec,setIS, &
+                       MEF90HeatXferCtx%flowVelocitySec,matPropSet%density*matPropSet%SpecificHeat, &
+                       elem,elemType,ierr);CHKERRQ(ierr)
+               Else
+                  advectionVector = -matPropSet%density * matPropSet%SpecificHeat * cellSetOptions%advectionVector(1:MEF90_DIM)
+                  If (norm(advectionVector) /= 0.0_Kr) Then
+                     Call MEF90DiffusionOperatorAdvectionSet(Fsec,MEF90HeatXferCtx%DM,xSec,setIS,advectionVector,elem,elemType,ierr);CHKERRQ(ierr)
+                  End If
                End If
             End If
             !!! Modified flux is flux + surfaceThermalConductivity * refTemp      
@@ -594,9 +612,15 @@ Contains
                Call MEF90Element_Create(MEF90HeatXferCtx%DMScal,setIS,elem,QuadratureOrder,CellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
                Call MEF90DiffusionBilinearFormSet(A,MEF90HeatXferCtx%DMScal,setIS,matpropSet%ThermalConductivity,cellSetOptions%SurfaceThermalConductivity,elem,elemType,ierr);CHKERRQ(ierr)
                Call MEF90_MassMatrixAssembleSet(A,MEF90HeatXferCtx%DMScal,setIS,shift*matpropSet%density*matpropSet%SpecificHeat,elem,elemType,ierr)
-               advectionVector = -matPropSet%density * matPropSet%SpecificHeat * cellSetOptions%advectionVector(1:MEF90_DIM)
-               If (norm(adVectionVector) /= 0.0_Kr) Then
-                  Call  MEF90DiffusionBilinearFormAdvectionSet(A,MEF90HeatXferCtx%DMScal,setIS,advectionVector,elem,elemType,ierr);CHKERRQ(ierr)
+               If (MEF90HeatXferCtx%enableFlowAdvection .AND. Associated(MEF90HeatXferCtx%flowVelocitySec)) Then
+                  Call MEF90HeatXferFlowAdvectionBilinearFormSet(A,MEF90HeatXferCtx%DMScal,setIS, &
+                       MEF90HeatXferCtx%flowVelocitySec,matPropSet%density*matPropSet%SpecificHeat, &
+                       elem,elemType,ierr);CHKERRQ(ierr)
+               Else
+                  advectionVector = -matPropSet%density * matPropSet%SpecificHeat * cellSetOptions%advectionVector(1:MEF90_DIM)
+                  If (norm(adVectionVector) /= 0.0_Kr) Then
+                     Call  MEF90DiffusionBilinearFormAdvectionSet(A,MEF90HeatXferCtx%DMScal,setIS,advectionVector,elem,elemType,ierr);CHKERRQ(ierr)
+                  End If
                End If
                Call MEF90Element_Destroy(elem,ierr)
                Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
@@ -644,4 +668,120 @@ Contains
       
       flg = SAME_NONZERO_PATTERN
    End Subroutine MEF90HeatXferIJacobian
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!  GATE 4.2 — FLOW-DRIVEN (CELL-WISE) THERMAL ADVECTION
+!!!
+!!!  The stock MEF90Diffusion*AdvectionSet routines take ONE constant
+!!!  MEF90_VECT for an entire cell IS. FlowCtx%cellDarcyVelocity is a
+!!!  CELL-CENTERED VECTOR FIELD (dim dofs per cell), so a constant would
+!!!  throw away exactly the spatial structure Gate 4.2 is about.
+!!!
+!!!  These two private helpers mirror MEF90/m_MEF90_DiffusionImplementation.F90
+!!!  (MEF90DiffusionOperatorAdvectionSet and
+!!!   MEF90DiffusionBilinearFormAdvectionSet) but read the velocity from the
+!!!  persistent SectionReal owned by FlowCtx, one cell at a time.
+!!!  advectionVector = -rhoCp * v_darcy(cell) reproduces the sign/scale of
+!!!  the existing constant-vector path:
+!!!      advectionVector = -density * SpecificHeat * advectionVector(1:DIM)
+!!!  so switching the flag on/off changes ONLY where v comes from.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#undef __FUNCT__
+#define __FUNCT__ "MEF90HeatXferFlowAdvectionOperatorSet"
+
+   Subroutine MEF90HeatXferFlowAdvectionOperatorSet(G,mesh,V,cellIS,vSec,rhoCp,elem,elemType,ierr)
+      Type(SectionReal),Intent(IN)                       :: G
+      Type(DM),Intent(IN)                                :: mesh
+      Type(SectionReal),Intent(IN)                       :: V
+      Type(IS),Intent(IN)                                :: cellIS
+      Type(SectionReal),Intent(IN)                       :: vSec
+      PetscReal,Intent(IN)                               :: rhoCp
+      Type(MEF90_ELEMENTTYPE), Dimension(:), Pointer     :: elem
+      Type(MEF90Element_Type),Intent(IN)                 :: elemType
+      PetscErrorCode,Intent(OUT)                         :: ierr
+
+      PetscInt,Dimension(:),Pointer                      :: cellID
+      PetscInt                                           :: cell,iDoF1,iGauss
+      PetscReal,Dimension(:),Pointer                     :: Gloc,Vloc,vPtr
+      Type(MEF90_VECT)                                   :: advectionVector,gradVelem
+      PetscReal                                          :: VdotGradVelem
+      PetscLogDouble                                     :: flops
+
+      Call ISGetIndicesF90(cellIS,cellID,ierr);CHKERRQ(ierr)
+      If (Size(cellID) > 0) Then
+         Allocate(Vloc(elemType%numDof))
+         Allocate(Gloc(elemType%numDof))
+         Do cell = 1,size(cellID)
+            Gloc = 0.0_Kr
+            Call SectionRealRestrict(vSec,cellID(cell),vPtr,ierr);CHKERRQ(ierr)
+            advectionVector = -rhoCp * vPtr(1:MEF90_DIM)
+            Call SectionRealRestore(vSec,cellID(cell),vPtr,ierr);CHKERRQ(ierr)
+            Call SectionRealRestrictClosure(V,mesh,cellID(cell),elemType%numDof,Vloc,ierr);CHKERRQ(ierr)
+            Do iGauss = 1,size(elem(cell)%Gauss_C)
+               gradVelem = 0.0_Kr
+               Do iDoF1 = 1,elemType%numDof
+                  gradVelem = gradVelem + Vloc(iDoF1) * elem(cell)%Grad_BF(iDoF1,iGauss)
+               End Do
+               VdotGradVelem = advectionVector .dotP. gradVElem
+               Do iDoF1 = 1,elemType%numDof
+                  Gloc(iDoF1) = Gloc(iDoF1) + elem(cell)%Gauss_C(iGauss) * VdotGradVelem * elem(cell)%BF(iDoF1,iGauss)
+               End Do
+            End Do
+            Call SectionRealUpdateClosure(G,mesh,cellID(cell),Gloc,ADD_VALUES,ierr);CHKERRQ(ierr)
+         End Do
+         flops = 2 * elemType%numDof * size(elem(1)%Gauss_C) * size(cellID)
+         Call PetscLogFlops(flops,ierr);CHKERRQ(ierr)
+         DeAllocate(Gloc)
+         DeAllocate(Vloc)
+      End If
+      Call ISRestoreIndicesF90(cellIS,cellID,ierr);CHKERRQ(ierr)
+   End Subroutine MEF90HeatXferFlowAdvectionOperatorSet
+
+#undef __FUNCT__
+#define __FUNCT__ "MEF90HeatXferFlowAdvectionBilinearFormSet"
+
+   Subroutine MEF90HeatXferFlowAdvectionBilinearFormSet(K,mesh,cellIS,vSec,rhoCp,elem,elemType,ierr)
+      Type(Mat),Intent(IN)                               :: K
+      Type(DM),Intent(IN)                                :: mesh
+      Type(IS),Intent(IN)                                :: cellIS
+      Type(SectionReal),Intent(IN)                       :: vSec
+      PetscReal,Intent(IN)                               :: rhoCp
+      Type(MEF90_ELEMENTTYPE), Dimension(:), Pointer     :: elem
+      Type(MEF90Element_Type),Intent(IN)                 :: elemType
+      PetscErrorCode,Intent(OUT)                         :: ierr
+
+      PetscInt,Dimension(:),Pointer                      :: cellID
+      PetscInt                                           :: cell,iDoF1,iDoF2,iGauss
+      PetscReal,Dimension(:,:),Pointer                   :: MatElem
+      PetscReal,Dimension(:),Pointer                     :: vPtr
+      Type(MEF90_VECT)                                   :: advectionVector
+      Type(SectionReal)                                  :: defaultSection
+      PetscLogDouble                                     :: flops
+
+      Call DMMeshGetSectionReal(mesh,'default',defaultSection,ierr);CHKERRQ(ierr)
+      Call ISGetIndicesF90(cellIS,cellID,ierr);CHKERRQ(ierr)
+      If (Size(cellID) > 0) Then
+         Allocate(MatElem(elemType%numDof,elemType%numDof))
+         Do cell = 1,size(cellID)
+            Call SectionRealRestrict(vSec,cellID(cell),vPtr,ierr);CHKERRQ(ierr)
+            advectionVector = -rhoCp * vPtr(1:MEF90_DIM)
+            Call SectionRealRestore(vSec,cellID(cell),vPtr,ierr);CHKERRQ(ierr)
+            MatElem = 0.0_Kr
+            Do iGauss = 1,size(elem(cell)%Gauss_C)
+               Do iDoF1 = 1,elemType%numDof
+                  Do iDoF2 = 1,elemType%numDof
+                     MatElem(iDoF2,iDoF1) = MatElem(iDoF2,iDoF1) + elem(cell)%Gauss_C(iGauss) * &
+                                    (advectionVector .dotP. elem(cell)%Grad_BF(iDoF2,iGauss)) * elem(cell)%BF(iDoF1,iGauss)
+                  End Do
+               End Do
+            End Do
+            Call DMmeshAssembleMatrix(K,mesh,defaultSection,cellID(cell),MatElem,ADD_VALUES,ierr);CHKERRQ(ierr)
+         End Do
+         flops = 5 * elemType%numDof**2 * size(elem(1)%Gauss_C) * size(cellID)
+         Call PetscLogFlops(flops,ierr);CHKERRQ(ierr)
+         DeAllocate(MatElem)
+      End If
+      Call ISRestoreIndicesF90(cellIS,cellID,ierr);CHKERRQ(ierr)
+      Call SectionRealDestroy(defaultSection,ierr);CHKERRQ(ierr)
+   End Subroutine MEF90HeatXferFlowAdvectionBilinearFormSet
 End Module MEF90_APPEND(m_MEF90_HeatXferAssembly,MEF90_DIM)D

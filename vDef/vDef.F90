@@ -50,6 +50,8 @@ Program vDef
    !!! undrained bottom pressure -> Terzaghi decay probe (zero local compile,
    !!! VecMin/VecMax already used in m_MEF90_DefMechAssembly.F90:91-92).
    PetscReal                                          :: pressureMin, pressureMax
+   !!! Gate 4.2: per-step infinity norm of the cell-centered Darcy velocity
+   PetscReal                                          :: darcyVmin, darcyVmax
 
    SNESConvergedReason                                :: snesDispConvergedReason
    Type(Vec)                                          :: residualDisp
@@ -151,6 +153,16 @@ Program vDef
    Call PetscBagGetDataMEF90FlowCtxGlobalOptions(MEF90FlowCtx%GlobalOptionsBag,MEF90FlowGlobalOptions,ierr);CHKERRQ(ierr)
    Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 04 FlowSetSections\n",ierr);CHKERRQ(ierr)
    Call MEF90FlowCtxSetSections(MEF90FlowCtx,ierr);CHKERRQ(ierr)
+   !!! Gate 4.2: wire the persistent cell-wise v_darcy section into the
+   !!! HeatXfer context. MUST come after FlowCtxSetSections (which creates
+   !!! cellDarcyVelocitySec) and after the Flow global bag is read. When
+   !!! enable_advection is false HeatXferAssembly keeps using the legacy
+   !!! constant cellSetOptions%advectionVector path, so this is a no-op.
+   MEF90HeatXferCtx%flowVelocitySec => MEF90FlowCtx%cellDarcyVelocitySec
+   MEF90HeatXferCtx%enableFlowAdvection = MEF90FlowGlobalOptions%enableFlowAdvection
+   Write(IOBuffer,*) 'Gate 4.2: coupling wired, enable_advection=', &
+                     MEF90HeatXferCtx%enableFlowAdvection,'\n'
+   Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
    Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 05 FlowCreateVectors\n",ierr);CHKERRQ(ierr)
    Call MEF90FlowCtxCreateVectors(MEF90FlowCtx,ierr);CHKERRQ(ierr)
    Call VecDuplicate(MEF90FlowCtx%pressure,residualPressure,ierr);CHKERRQ(ierr)
@@ -581,6 +593,16 @@ Program vDef
                         !!! Stepv_darcy: 为热对流项 v·∇T 预计算 Darcy 速度场
                         !!! 启用 enableFlowAdvection 时 HeatXferAssembly 将读取 cellDarcyVelocity
                         Call MEF90FlowComputeDarcyVelocity(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
+                        !!! Gate 4.2 diagnostic: one row per outer step. The
+                        !!! velocity field is computed in BOTH variants; only
+                        !!! the enable flag differs, so |v|inf must track the
+                        !!! pressure gradient in both logs.
+                        Call VecMin(MEF90FlowCtx%cellDarcyVelocity,PETSC_NULL_INTEGER,darcyVmin,ierr);CHKERRQ(ierr)
+                        Call VecMax(MEF90FlowCtx%cellDarcyVelocity,PETSC_NULL_INTEGER,darcyVmax,ierr);CHKERRQ(ierr)
+                        Write(IOBuffer,*) 'Gate 4.2: enabled=',MEF90HeatXferCtx%enableFlowAdvection, &
+                             ' |v_darcy|inf=',max(abs(darcyVmin),abs(darcyVmax)), &
+                             ' vmin=',darcyVmin,' vmax=',darcyVmax,'\n'
+                        Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
 
                         Call SNESSolve(MEF90DefMechCtx%snesDisp,PETSC_NULL_OBJECT,MEF90DefMechCtx%displacement,ierr);CHKERRQ(ierr)
                         Call SNESGetConvergedReason(MEF90DefMechCtx%snesDisp,snesDispConvergedReason,ierr);CHKERRQ(ierr)

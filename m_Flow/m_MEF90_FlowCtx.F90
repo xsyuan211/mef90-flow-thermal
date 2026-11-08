@@ -51,6 +51,12 @@ Module m_MEF90_FlowCtx_Type
       Type(SectionReal)                :: DMScalSec
       Type(SectionReal)                :: cellDMScalSec
       Type(SectionReal)                :: cellDMVectSec
+      !!! Gate 4.2: persistent cell-centered v_darcy section, kept alive
+      !!! between MEF90FlowComputeDarcyVelocity calls so HeatXferAssembly can
+      !!! read it (via MEF90HeatXferCtx%flowVelocitySec) during SNES/TS
+      !!! residual + Jacobian assembly. SectionRealDuplicate of
+      !!! cellDMVectSec creates an independent section with the same layout.
+      Type(SectionReal)                :: cellDarcyVelocitySec
 
       !!! Solvers
       Type(SNES)                       :: SNESPressure
@@ -372,6 +378,8 @@ Contains
       Call DMMeshSetSectionReal(FlowCtx%cellDMVect,"default",FlowCtx%cellDMVectSec,ierr);CHKERRQ(ierr)
       Call DMSetBlockSize(FlowCtx%cellDMVect,dim,ierr);CHKERRQ(ierr)
       Call DMMeshCreateGlobalScatter(FlowCtx%cellDMVect,FlowCtx%cellDMVectSec,FlowCtx%cellDMVectScatter,ierr);CHKERRQ(ierr)
+      !!! Gate 4.2: independent section that will hold v_darcy per cell.
+      Call SectionRealDuplicate(FlowCtx%cellDMVectSec,FlowCtx%cellDarcyVelocitySec,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowCtxSetSections
 
 
@@ -536,6 +544,7 @@ Contains
       Call SectionRealDestroy(FlowCtx%DMScalSec,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(FlowCtx%cellDMScalSec,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(FlowCtx%cellDMVectSec,ierr);CHKERRQ(ierr)
+      Call SectionRealDestroy(FlowCtx%cellDarcyVelocitySec,ierr);CHKERRQ(ierr)
       Call DMDestroy(FlowCtx%DMScal,ierr);CHKERRQ(ierr)
       Call DMDestroy(FlowCtx%cellDMScal,ierr);CHKERRQ(ierr)
       Call DMDestroy(FlowCtx%cellDMVect,ierr);CHKERRQ(ierr)

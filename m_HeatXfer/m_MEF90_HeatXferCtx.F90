@@ -31,6 +31,12 @@ Module m_MEF90_HeatXferCtx_Type
       
       Type(SectionReal)                :: DMScalSec
       Type(SectionReal)                :: cellDMScalSec
+
+      !!! Gate 4.2 (Flow -> Thermal advection coupling). These are set by
+      !!! vDef AFTER the FlowCtx exists; HeatXferCtx never owns the velocity
+      !!! section, it only reads it during residual/Jacobian assembly.
+      Type(SectionReal),pointer        :: flowVelocitySec
+      PetscBool                        :: enableFlowAdvection
    End Type MEF90HeatXferCtx_Type
    
    Type MEF90HeatXferGlobalOptions_Type
@@ -246,6 +252,10 @@ Contains
       Call MEF90HeatXferCtxInitialize_Private(ierr)
       HeatXferCtx%DM => Mesh
       HeatXferCtx%MEF90Ctx => MEF90Ctx
+      !!! Gate 4.2: default OFF / unassociated; vDef wires these when the
+      !!! Flow context and its cellDarcyVelocitySec are available.
+      Nullify(HeatXferCtx%flowVelocitySec)
+      HeatXferCtx%enableFlowAdvection = PETSC_FALSE
       Call DMMeshClone(HeatXferCtx%DM,HeatXferCtx%DMScal,ierr);CHKERRQ(ierr)
       Call DMMeshClone(HeatXferCtx%DM,HeatXferCtx%cellDMScal,ierr);CHKERRQ(ierr)
       Call DMMeshSetMaxDof(HeatXferCtx%DMScal,1,ierr);CHKERRQ(ierr) 

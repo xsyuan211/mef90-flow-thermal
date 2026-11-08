@@ -647,7 +647,7 @@ Contains
 
       Type(MEF90FlowGlobalOptions_Type),pointer          :: gOpt
       Type(MEF90FlowCellSetOptions_Type),pointer         :: cellOpt
-      Type(SectionReal)                                    :: permFieldSec, gradpSec, vSec
+      Type(SectionReal)                                    :: permFieldSec, gradpSec
       Type(IS)                                            :: CellSetGlobalIS, setIS
       PetscInt,dimension(:),Pointer                       :: setIdx
       PetscInt,dimension(:),Pointer                       :: setID
@@ -666,7 +666,9 @@ Contains
       !!! Sections for read/write
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,permFieldSec,ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%cellDMVectSec,gradpSec,ierr);CHKERRQ(ierr)
-      Call SectionRealDuplicate(FlowCtx%cellDMVectSec,vSec,ierr);CHKERRQ(ierr)
+      !!! Gate 4.2: write v_darcy into the PERSISTENT section owned by FlowCtx.
+      !!! HeatXferCtx%flowVelocitySec points here, so the heat assembly can
+      !!! read the same values long after this subroutine returns.
 
       !!! Scatter global Vecs → local Sections
       Call SectionRealToVec(permFieldSec,FlowCtx%cellDMScalScatter,SCATTER_REVERSE,FlowCtx%permField,ierr);CHKERRQ(ierr)
@@ -695,7 +697,7 @@ Contains
 
             !!! v_darcy = -permField·∇p   (permField already is k/μ)
             !!! Then add gravity contribution if enabled:  v_grav = permField·(ρ_f · g_vec)  [signed differently]
-            Call SectionRealRestrict(vSec,setIdx(cell),vPtr,ierr);CHKERRQ(ierr)
+            Call SectionRealRestrict(FlowCtx%cellDarcyVelocitySec,setIdx(cell),vPtr,ierr);CHKERRQ(ierr)
             vPtr(1:dim) = -permCell(1) * gradpPtr(1:dim)
 
             If (hasGravity) Then
@@ -703,7 +705,7 @@ Contains
                vPtr(1:dim) = vPtr(1:dim) + permCell(1) * gravityContrib(1:dim) * gOpt%fluidDensity
             End If
 
-            Call SectionRealRestore(vSec,setIdx(cell),vPtr,ierr);CHKERRQ(ierr)
+            Call SectionRealRestore(FlowCtx%cellDarcyVelocitySec,setIdx(cell),vPtr,ierr);CHKERRQ(ierr)
          End Do
 
          Call ISRestoreIndicesF90(setIS,setIdx,ierr);CHKERRQ(ierr)
@@ -714,13 +716,13 @@ Contains
       Call ISDestroy(CellSetGlobalIS,ierr)
 
       !!! Scatter local Section → global Vec
-      Call SectionRealComplete(vSec,ierr);CHKERRQ(ierr)
-      Call SectionRealToVec(vSec,FlowCtx%cellDMVectScatter,SCATTER_FORWARD,FlowCtx%cellDarcyVelocity,ierr);CHKERRQ(ierr)
+      Call SectionRealComplete(FlowCtx%cellDarcyVelocitySec,ierr);CHKERRQ(ierr)
+      Call SectionRealToVec(FlowCtx%cellDarcyVelocitySec,FlowCtx%cellDMVectScatter,SCATTER_FORWARD,FlowCtx%cellDarcyVelocity,ierr);CHKERRQ(ierr)
 
-      !!! Clean up Sections
+      !!! Clean up ONLY the two temporary sections. cellDarcyVelocitySec is
+      !!! persistent (owned by FlowCtx) and MUST NOT be destroyed here.
       Call SectionRealDestroy(permFieldSec,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(gradpSec,ierr);CHKERRQ(ierr)
-      Call SectionRealDestroy(vSec,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowComputeDarcyVelocity
 
 
