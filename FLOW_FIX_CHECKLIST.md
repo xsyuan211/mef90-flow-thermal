@@ -1289,5 +1289,30 @@ CI #78(GAMG)/#79(ML) 都是在 SNESView 打印 `PC Object: (Disp_) type: ...` �
 - ML 在真正 PC setup 时仍崩 ⇒ near-null-space 悬空假设重新成立，再测 `-disp_addNullSpace 0`。
 - ML 不崩但位移仍 -5 ⇒ 弱 KSP 假设证伪，转查装配层（可能需 Fortran）。
 
+### CI #80 结果 + CI #81 KSPINIT 诊断（已发起）
+
+**CI #80 = failure，但实验有效**：
+- `rc=0 crash=0 nonconvergent=50 linear-solves=2583 last-step=51` → `verbose: 1`
+  确实绕过 SNESView SEGV；ML 真正完成 PC setup 与 2583 次线性求解（全部 converged），
+  跑完 51 步，压力场正确（pmax 9055.7）。复核结论（SNESView 是崩溃元凶）成立。
+- 但位移 SNES 仍 `51/51 -5`。fnorm 统计：2584 条中**无一条 < 1e-2**（最小 0.0317），
+  首步 2.08e4→0.876 后在 0.03–16 间振荡 → **弱 KSP/PC 假设彻底证伪**。
+- Gate 3.3 硬闸门报 60 次非收敛 → FAIL（预期）。
+
+**新根因假设（代码级，可零 Fortran 验证）**：`m_MEF90_DefMech.F90:1476`
+`KSPSetInitialGuessNonzero(kspDisp, PETSC_TRUE)`。CI #80 的 KSP 迭代直方图：
+`1221 × iterations 0`、`1163 × iterations 1`、仅约 51 次为 39–44 迭代（每外层步一次
+真正的求解）；日志多处打印 `using nonzero initial guess`。机制：第一次 Newton 步长解出
+后，KSP 复用上一次增量作初值 → 立即 `CONVERGED_ATOL` → SNES 反复施加同一步长 →
+残差振荡 → MAX_IT。这与 PC 类型、损伤、压力、BC、R/J 一致性都无关，且解释了为何
+强 PC 也无效。
+
+**CI #81**：ROBUSTKSP 变体改造为 KSPINIT —— 恢复默认 KSP（CG+bjacobi/ILU），
+叠加 `-disp_ksp_initial_guess_nonzero 0`。因 `KSPSetFromOptions`（1481 行）在
+`KSPSetInitialGuessNonzero`（1476 行）之后调用，命令行可覆盖 Fortran 设置，**零 Fortran**。
+deck 仍为 `terzaghi1D_robustksp.yaml`（NODAMAGE + verbose 1）。
+判定：收敛 ⇒ 修复就是这一个选项（主 deck 加上即可，可顺势收口 Gate 3.3）；
+仍 -5 ⇒ 排除该假设，转查装配层。
+
 - 收敛 ⇒ 确认是线性求解/预条件问题 → 改位移 KSP 配置即可（符合零编译约束）。
 - 仍失败 ⇒ 是装配/Jacobian 近零空间 bug → 需 Fortran，超出零本地编译约束，交用户。

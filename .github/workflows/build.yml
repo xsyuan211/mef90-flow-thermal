@@ -565,33 +565,39 @@ jobs:
             echo "=== NODAMAGE CONVERGED: poroelastic core sound; AT2 damage evolution is the culprit ==="
           fi
           # --------------------------------------------------------------------
-          # CI #80 ROBUSTKSP diagnostic: bypass the SNESView SEGV via verbose 1.
+          # CI #81 KSPINIT diagnostic (variant name ROBUSTKSP kept for script
+          # continuity). CI #80 proved verbose: 1 bypasses the SNESView SEGV:
+          # ML really ran (rc=0, no crash, 2583 linear solves all converged,
+          # 51 steps completed) yet the displacement SNES still diverged 51/51
+          # at -5, with fnorm stuck oscillating in 0.03..16 (never < 1e-2).
+          # => the weak-KSP/PC hypothesis is RULED OUT.
           #
-          # What CI #78/#79 ACTUALLY showed: with deck verbose: 2,
-          # m_MEF90_DefMech.F90:1499 calls SNESView, and the source itself notes
-          # "SNESView seems to segfault when PC ml is used". Both GAMG and ML
-          # SEGV'd while SNESView printed "PC Object: (Disp_) type: ...", with
-          # 0 linear iterations -- BEFORE any PC setup or solve. So the strong
-          # preconditioner was NEVER actually tested in either run.
+          # New root-cause suspect, from m_MEF90_DefMech.F90:1476:
+          #   Call KSPSetInitialGuessNonzero(kspDisp, PETSC_TRUE, ...)
+          # CI #80 KSP iteration histogram: 1221 solves with 0 iterations,
+          # 1163 with 1 iteration, and only ~51 with 39-44 iterations (one
+          # real solve per outer step). After the first Newton solve, KSP
+          # keeps reusing the previous increment as its initial guess, reports
+          # CONVERGED_ATOL immediately, and SNES applies the SAME step again
+          # -> oscillation -> MAX_IT. Log confirms "using nonzero initial guess".
           #
-          # This round uses terzaghi1D_robustksp.yaml = NODAMAGE deck with the
-          # single change verbose 2 -> 1, which disables SNESView. The only
-          # remaining variable vs the NODAMAGE run is the displacement KSP:
-          # GMRES + ML (strong AMG PC) vs default CG + bjacobi/ILU(0).
-          #   - CONVERGES -> weak KSP/PC was the culprit; fix = KSP/PC config
-          #     on the production deck (zero Fortran, within the constraint).
-          #   - Still -5 -> weak-KSP hypothesis ruled out; check assembly.
-          #   - Crashes during REAL PC setup -> near-null-space suspect.
-          # Gate prints are unconditional PetscPrintf, unaffected by verbose.
+          # This variant restores the DEFAULT KSP (CG + bjacobi/ILU) and adds
+          #   -disp_ksp_initial_guess_nonzero 0
+          # KSPSetFromOptions (line 1481) runs AFTER KSPSetInitialGuessNonzero,
+          # so the command-line option overrides the Fortran setting with NO
+          # Fortran edit. Deck is terzaghi1D_robustksp.yaml (NODAMAGE + verbose 1).
+          #   - CONVERGES -> fix = this one option on the production deck
+          #     (zero Fortran, satisfies the zero-local-compile constraint).
+          #   - Still -5 -> initial-guess hypothesis ruled out; check assembly.
           # --------------------------------------------------------------------
-          echo "=== ROBUSTKSP (verbose 1 + AT2Elastic + Disp KSP=GMRES/ML) diagnostic run ==="
+          echo "=== ROBUSTKSP/KSPINIT (verbose 1 + AT2Elastic + zero KSP initial guess) diagnostic run ==="
           timeout -k 10s 900 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D_robustksp.yaml \
             -flow_ts_view -flow_ts_monitor \
             -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
             -disp_snes_monitor -disp_snes_linesearch_type basic \
-            -disp_ksp_type gmres -disp_pc_type ml -disp_ksp_converged_reason \
+            -disp_ksp_initial_guess_nonzero 0 -disp_ksp_converged_reason \
             2>&1 | tee /tmp/terzaghi_robustksp.log
           rk_rc=${PIPESTATUS[0]}
           echo "=== ROBUSTKSP mpirun exit code: $rk_rc ==="
@@ -621,9 +627,9 @@ jobs:
           elif [ "$rk_solves" -eq 0 ]; then
             echo "=== ROBUSTKSP INCONCLUSIVE: no linear solve was recorded ==="
           elif [ "$rk_fail" -gt 0 ]; then
-            echo "=== ROBUSTKSP STILL DIVERGENT: weak-KSP hypothesis NOT confirmed; check assembly ==="
+            echo "=== KSPINIT STILL DIVERGENT: nonzero-initial-guess hypothesis NOT confirmed; check assembly ==="
           else
-            echo "=== ROBUSTKSP CONVERGED: strong displacement KSP/PC fixes -5; fix = KSP/PC config (zero Fortran) ==="
+            echo "=== KSPINIT CONVERGED: KSPSetInitialGuessNonzero(TRUE) was the -5 culprit; fix = -disp_ksp_initial_guess_nonzero 0 (zero Fortran) ==="
           fi
           echo "=== result files (3.2 analytical-comparison data source) ==="
           echo "    -prefix data/Beam1x10-tri3 -> geometry data/Beam1x10-tri3.gen, result data/Beam1x10-tri3_out.gen"
