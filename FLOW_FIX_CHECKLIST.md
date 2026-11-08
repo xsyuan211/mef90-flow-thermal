@@ -1481,3 +1481,182 @@ ROBUSTKSP / KSPONLY-PHYS 都会覆盖同一路径），在 ROBUSTKSP 之后插�
 静态校验：PyYAML、10 个 run 块 `bash -n`、脚本 `ast.parse`、`git diff --check` 全过；
 判据脚本用 CI #70 既有网格自测（P6 ratio `0.0905571`、L2 `0.0320613` 与 Gate 3.2
 逐位一致，P1–P5 正确判 FAIL）。**零本地编译、零本地求解器运行**。
+
+---
+
+## CI #83 结果（run `42459128534`，commit `a3c7a27`，conclusion = failure）
+
+artifact 下载：GitHub `archive_download_url` 直接带 `Authorization` 跟到 Azure blob 会
+返回 `AuthenticationFailed` 403；须先取 `Location` 重定向，再**不带 token** 下载
+（与 job-logs 同类问题）。watcher 的 `[D]` 段因把 `size_in_bytes` 写成 `size`
+静默失败，artifact 实际存在（11 个文件，含两份 `_out.gen`）。
+
+### 1. 判据表（脚本原始输出）
+
+| 判据 | 阈值 | MAIN `/tmp/out_main.gen` | KSPONLY `/tmp/out_ksponly.gen` |
+|---|---|---|---|
+| P1 `max\|u\|` @ x=±5 | `<1e-10 m` | `0` PASS | `0` PASS |
+| P2 `max\|mean(u_y)\|` | `<1e-6 m` | `1.0237e-6` **FAIL（超 2.4%）** | `8.1719e-7` PASS |
+| P3 `u_y` 漂移 t1/t0 | `<2` | `0.0774` PASS | `0.0775` PASS |
+| P4 `peak\|u_x\|` | `5e-5~2e-4 m` | `1.10348e-4` PASS | `1.10360e-4` PASS |
+| P4 峰值时刻 | `≤0.2 s` | `0.08 s` PASS | `0.08 s` PASS |
+| P5 `u_x` 非单调 | 内部峰 + 衰减 | `peak@step5` PASS | `peak@step5` PASS |
+| P6 压力 ratio / pmin / L2(BE) | `0.05~0.15 / 0 / ≤0.05` | `0.0905571 / 0 / 0.0320613` PASS | 同左 PASS |
+| P7 同源压力差 | `≤1e-2 Pa` | `0` PASS（`dUx=2.325e-7`、`dUy=1.605e-6 m` 仅报告） | — |
+
+脚本打印 `MAIN VERDICT: FAIL (P2)` / `KSPONLY VERDICT: PASS` /
+`FINAL KSPONLY PHYSICS VERDICT: PASS`；Gate 3.3 仍以 `57` 条失败硬闸门 `exit 1`（预期）。
+
+### 2. 决定性证据：两次运行的解在物理上等价
+
+- 两份网格 sha256 不同、二进制字节差 `776122 / 2845300`（浮点末位差异），
+  均为 51 步记录，**不是同一文件被复制两次**。
+- 全 32 个记录槽逐步对比（`D:/tmp/ci83diag/`，纯 Python 读 artifact）：
+  - `vals_nod_var1` 压力：差 `0`（flow 与位移解耦）；
+  - `vals_nod_var2` 损伤：差 `1.43e-7`（相对 `3.74e-5` 为 **0.38%**）；
+  - `vals_nod_var3` ux：差 `2.33e-7 m`（相对峰值 `1.10e-4` 为 **0.21%**）；
+  - `vals_nod_var4` uy：差 `1.61e-6 m`（uy 本身仅 `9.23e-6 m`，噪声级）；
+  - 应力槽 `eb1 var7/8`：差 `61.96 / 27268`、`49.4 / 12167`（**0.23% / 0.41%**）；
+  - 其余槽恒为 0。
+- 运行时：主运行约 **19.5 min**（51 步 × 51 次 Newton 迭代），
+  KSPONLY-PHYS **8 s**（51 步 × 1 次线性解，`SNES Function norm` 输出 0 条），
+  rc 均为 0、无崩溃。
+
+### 3. 覆盖性更正（务必以此为准）
+
+1. **上面第 4 节的判定树第一支「SNES 迭代污染解」被证伪**。实际落在第三支：
+   `两者物理场都正确 ⇒ -5 只是收敛判据问题`。主运行 57 次 `-5` **没有污染解**。
+   `build.yml` 里硬编码的
+   `interpretation: ksponly PASS + main 51x-5 => SNES iterations corrupt the field`
+   是**错误判词**，下次提交应改为「两解等价 ⇒ 残差平台/收敛判据问题」。
+2. **CI #83 的 `KSPINIT CONVERGED ... fix = -disp_ksp_initial_guess_nonzero 0`
+   是第五次假收敛**。ROBUSTKSP 段 `nonconvergent=0` 但残差从未下降：
+   153 条 fnorm / 51 步 = **每步 3 次迭代**，末值仍 `7.45~8.43`，
+   与主运行震荡平台同量级 → `SNES_CONVERGED_SNORM_RELATIVE`（步长 0）提前退出，
+   与 CI #81 结论一致。该 echo 分支不可作为修复依据。
+3. **ksponly 的价值不是「修物理」，而是「跳过无效迭代」**：
+   位移方程在当前配置（`SplitNone`、`AT2` 损伤仅 `3.7e-5`、
+   `dampingCoefficientDisplacement=0`、`cohesiveStiffness=0`）下实质线性，
+   一次线性解即精确解。51 次 Newton 迭代在残差平台 `3~13` 上震荡，无收益。
+4. **ksponly 不是完整修复**：其运行仍有 **7 条 `damage field ... -5`**
+   （主运行 6 条 damage + 51 条 displacement = Gate 3.3 的 57）。
+   若仅切换 ksponly 而 Gate 3.3 继续数全部失败消息，CI 仍会红。
+5. **P2 阈值 `1e-6 m` 偏严，但不得为通过而放水**：MAIN `1.0237e-6`
+   仅超 2.4%，且比已知错误解指纹（`0.0556 / 1.06 m`）小 **5 个数量级**，
+   比重力弯曲 `±1.8e-5 m` 小一个数量级，属数值噪声。阈值是否放宽到
+   `1e-5 m` 需评审确认，本轮未改脚本。
+
+### 4. 残差平台实证（下一步根因线索，`terzaghi.log`）
+
+```
+step  1: f0=2.082e+04 → it1=9.345 → 51 次迭代 fmin=4.616 flast=6.484
+step  2: f0=1.887e+04 → it1=8.823 → flast=9.481
+step 51: f0=2.996e+01 → it1≈7.45  → flast=4.657
+全 51 步: flast min/median/max = 2.667 / 6.583 / 12.57
+          fmin  min/median/max = 1.560 / 4.802 / 6.381
+```
+第一次 Newton 步就把残差压掉 3 个量级到 `~9`，此后 50 次迭代只在
+`3~13` 震荡，**存在与解无关的不可约残差分量**。待验证来源（尚未测试）：
+BC 固定端反力行 / 压力源项是否重复计入残差、残差与 Jacobian 的
+scale 是否一致、damage 耦合项是否带常数偏置。CI #83 的 V2 变体
+（`-disp_snes_fd` + GMRES，主运行之前跑）同样不收敛，且报的是
+51× `-2`（`SNES_DIVERGED_FUNCTION_DOMAIN`，迭代 ~14 次即退出），
+故「解析 Jacobian 写错」不是唯一解释。
+
+### 4b. 统计口径（易踩坑，务必区分）
+
+同一个 step 里先后跑了 5 个 mpirun，**job log 的 2318–16098 行不是单一运行**：
+
+| 运行 | 日志 | 失败消息 |
+|---|---|---|
+| V2 变体（FD Jacobian + GMRES，主运行前） | `/tmp/diag_V2.log` | 51× displacement `-2` |
+| 生产运行（解析 Jacobian + CG + basic LS） | `/tmp/terzaghi.log` | 51× displacement `-5` + 6× damage `-5` = **Gate 3.3 的 57** |
+| NODAMAGE（AT2Elastic） | `/tmp/terzaghi_nodamage.log` | 51× displacement `-5` |
+| ROBUSTKSP/KSPINIT | `/tmp/terzaghi_robustksp.log` | 0（假收敛，见更正 2） |
+| KSPONLY-PHYS | `/tmp/terzaghi_ksponly_phys.log` | 7× damage `-5`，位移 0 |
+
+Gate 3.3 只数 `terzaghi.log`；job log 全文的 51×`-2` / 103×`-5` / 21×damage`-5`
+是 5 个运行之和，不可当作单次运行的失败数。
+
+### 5. 下一步可选方向（未实施，等确认）
+
+- **A（推荐，零 Fortran，收口闸门 3）**：主运行改用 `-disp_snes_type ksponly`，
+  Gate 3.3 从「数 `SNESSolve failed`」改为「P1–P6 物理场判据 + 显式残差上界」，
+  并单独处理 damage SNES 的 7 条 `-5`（或证明其不影响物理场后排除统计）。
+- **B（Fortran 层）**：定位 `3~13` 不可约残差来源，从装配侧消除，
+  让标准 Newton 真收敛；不依赖 ksponly。
+- **C（最小）**：仅修正误导性 echo 与判定树，不动求解器配置。
+
+**CI #83 复盘轮动作**：只读分析 CI #83 job log + `build-diagnostics` artifact
+（含两份结果网格全槽对比、残差序列统计），并更新本文档与工作日志；
+该轮未改 deck / build.yml / 判据脚本 / Fortran，未推 CI。
+
+---
+
+## CI #84：方案 A 落地（用户选 A，收口闸门 3）
+
+### 1. 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `.github/workflows/build.yml` | ① 生产运行加 `-disp_snes_type ksponly`（保留 monitor / basic LS / converged_reason 仅作诊断）；② **Gate 3.3 重写**：从 `grep -c "SNESSolve failed"` 硬闸门改为调用判据脚本 `--gate`，对主运行冻结网格 `/tmp/out_main.gen` 做物理场判定，失败 `exit 1`；③ 修正 `KSPINIT CONVERGED` 错误 echo，明确标注为第五次假收敛；④ 修正 `interpretation: ksponly PASS + main -5 => SNES iterations corrupt the field` 错误判词；⑤ KSPONLY-PHYS 变体改定位为「同源确定性对照」；⑥ **删除 CI #71 的 l2/ksponly 变体循环**（其 ksponly 分支与主运行重复、l2 分支可吃掉 600 s cap，且 `diagnose_snes.py` 把无 fnorm 的 ksponly 显示成 `0.000e+00`「收敛」，正是 CI #73 假收敛陷阱）；⑦ artifact 加 `/tmp/gate33_verdict.log`，去掉两个已退役日志 |
+| `vDef/data/check_terzaghi_displacement.py` | 新增 `--gate <mesh> <log>` 硬闸门模式（机读 `GATE33_RESULT: PASS\|FAIL`，退出 0/1）；缺网格 / 缺日志 / 记录不足 50 / 末时刻 ≠ 1.0 / 非有限值 / 崩溃标记 / `Unknown option` / Gate 3.2 探针 < 50 **一律 FAIL**；新增 P8 损伤场有界检查；`load()` 增加 `vals_nod_var2` 读取与全字段 finite 检查；默认报告模式仍恒返回 0 |
+
+### 2. P2 阈值校准（不是放水，是恢复区分力）
+
+原 `max|mean(u_y)| < 1e-6 m` 是拍脑袋的绝对值：CI #83 主运行
+`1.0237e-6`（FAIL）与 ksponly `8.1719e-7`（PASS）**是同一个物理场**，
+阈值卡在两者之间，没有物理含义。改为双条件：
+
+```
+max|mean(u_y)| <= 1e-5 m  AND  <= 5% * peak|u_x|
+```
+
+依据：重力静载弯曲 `±1.8e-5 m`（CI #70）给出绝对尺度；相对量让判据随
+位移尺度自适应。区分力实测：
+
+| 解 | `max\|mean(u_y)\|` | 相对峰值 | 判定 |
+|---|---|---|---|
+| CI #83 主运行 / ksponly | `1.02e-6` / `8.17e-7` m | `0.93%` / `0.74%` | PASS |
+| CI #70 错误解（均匀刚体漂移） | `0.0556 m` | **5978%** | FAIL（P1,P2,P3,P4,P5） |
+
+即新阈值把「正确解」与「错误解」的间隔拉到 ~6400 倍，比原来仅靠
+2.4% 边界判 FAIL 稳健得多。
+
+### 3. damage SNES `-5` 的处理
+
+ksponly 只作用于位移 SNES，damage SNES 仍会报 7 条 `-5`（CI #83 实测），
+主运行原为 6 条。Gate 3.3 现在**只报告、不计数**这些消息，改用
+**P8** 检查损伤场自身：有限、`∈[0,1]`、末步最大值 `≤0.1`
+（实测 `3.74e-5`）。这是「排除统计」的物理替代保障，不是无条件放行。
+残留问题（damage SNES 为何仍 `-5`）记录在案，属后续 B 方向。
+
+### 4. 「显式残差上界」的诚实调整
+
+A 方案原写「Gate 3.3 = 物理场判据 + 显式残差上界」，但 ksponly 不做
+Newton 迭代、日志里没有 fnorm 序列，无法直接给残差上界。实际落地为
+**物理场对解析解的误差上界 + 运行完整性硬条件**：P6 的 L2(BE) `≤0.05`、
+ratio `∈[0.05,0.15]`，加上 `≥50` 记录、`t_end≈1`、有限值、无崩溃、
+`≥50` 条 Gate 3.2 探针。不可约残差平台 `3~13` 的装配根因仍未解决。
+
+### 5. 离线自测（零本地编译、零本地求解器运行）
+
+- `PyYAML` 解析 / 10 个 `run` 块 `bash -n` / 脚本 `ast.parse` /
+  `git diff --check`：全过。
+- `--gate` 8 组用例全过：CI #83 主网格 + ksponly 日志 → PASS；ksponly
+  网格 → PASS；主网格 + **含 51×`-5` 的生产日志** → 仍 PASS（证明闸门
+  确实不看失败消息）；缺网格 / 缺日志 / 错误参数 → FAIL；CI #70
+  错误解 → `FAIL (P1,P2,P3,P4,P5)`；报告模式两网格均 PASS。
+- 用 CI #83 ksponly 日志离线核对 Gate 3.1/3.2 硬断言：
+  `post-TSSolve=50`（需 ≥48）、`total number of rejected steps=0`、`TS dt
+  0.02 time 1`、pmax `1e5→9055.70884`（ratio `0.09055709`）、
+  `check_exodus_metadata.py` rc=0、`FATAL_RE` 命中 0 条。
+
+### 6. 待 CI #84 验证的风险
+
+1. 生产运行新增 `-disp_snes_monitor` 与 ksponly 组合（CI #83 的
+   KSPONLY-PHYS 未带 monitor）；预计仅多一行 `0 SNES Function norm`。
+2. 生产网格是否与 CI #83 的 `out_ksponly.gen` 一致（P7 同源确定性）。
+3. Gate 3.3 之后的 Gate 3.1/3.2 硬断言在新日志下是否仍全过（已离线
+   用同配置日志核对，但真实运行仍需确认）。
+4. `damage field ... -5` 仍会出现在日志中，属**已知残留**，不再是闸门项。

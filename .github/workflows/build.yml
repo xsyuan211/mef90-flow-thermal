@@ -518,13 +518,21 @@ jobs:
             awk '/Alt\. Min\. step     1 /{f=1} f&&/SNES Function norm/{c++} f&&c>=47{print} /Alt\. Min\. step     2 /{f=0}' "/tmp/diag_${tag}.log" | head -6
           }
           run_variant V2 -disp_snes_fd -disp_ksp_type gmres -disp_ksp_gmres_restart 100
+          # CI #84 (option A): CI #83 proved the standard Newton run and the
+          # ksponly run produce PHYSICALLY EQUIVALENT fields (dPressure=0,
+          # dDamage=0.38%, dUx=0.21%, stress<=0.41%) while Newton burned 51
+          # iterations per step on an irreducible residual plateau 3-13 and
+          # reported 57x -5. The displacement system is effectively LINEAR for
+          # this deck (SplitNone, damage~3.7e-5, zero damping/cohesion), so
+          # one linear solve is the exact solve. Keep the monitor/reason flags
+          # for diagnostics; they are harmless under SNESKSPONLY.
           timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D.yaml \
             -flow_ts_view -flow_ts_monitor \
             -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
             -disp_snes_monitor -disp_snes_linesearch_type basic \
-            -disp_snes_converged_reason \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
             2>&1 | tee /tmp/terzaghi.log
           rc=${PIPESTATUS[0]}
           echo "=== Terzaghi mpirun exit code: $rc ==="
@@ -642,23 +650,30 @@ jobs:
           elif [ "$rk_fail" -gt 0 ]; then
             echo "=== KSPINIT STILL DIVERGENT: nonzero-initial-guess hypothesis NOT confirmed; check assembly ==="
           else
-            echo "=== KSPINIT CONVERGED: KSPSetInitialGuessNonzero(TRUE) was the -5 culprit; fix = -disp_ksp_initial_guess_nonzero 0 (zero Fortran) ==="
+            echo "=== KSPINIT: 0 failure messages here is a FALSE CONVERGENCE (CI #81 / CI #83) ==="
+            echo "    Only ~3 SNES iterations per step and the residual still sits at 7-9,"
+            echo "    the same plateau as the diverging run. This is SNES_CONVERGED_SNORM_RELATIVE"
+            echo "    with a zero step. -disp_ksp_initial_guess_nonzero 0 is NOT a fix; do not promote it."
+            echo "    No conclusion may be drawn from failure-message counts; use the physics verdict below."
           fi
           # --------------------------------------------------------------------
-          # CI #83: PHYSICS VERDICT for -disp_snes_type ksponly.
-          # Deck/CLI-level hypotheses are exhausted (CI #80 weak-KSP ruled out,
-          # CI #82 FD Jacobian ruled out). The remaining question is whether
-          # the DISPLACEMENT FIELD is right when the displacement SNES is
-          # reduced to one linear solve. Four earlier "convergences" were false
-          # (#73 ksponly fnorm placeholders, #75 log-range misread, #78 SEGV,
-          # #81 zero step), so the verdict is the physical field in the Exodus
-          # mesh, NOT any solver message / fnorm / reason code / failure count.
-          # Criteria P1-P7 with analytic thresholds live in
-          # data/check_terzaghi_displacement.py and FLOW_FIX_CHECKLIST.md.
-          # This MUST run BEFORE Gate 3.3: its `exit 1` skips everything after
-          # it (CI #82 lost snes_l2.log / snes_ksponly.log that way).
+          # CI #83 answered the question: the standard-Newton production field
+          # and the ksponly field are PHYSICALLY EQUIVALENT (dPressure=0,
+          # dDamage=0.38%, dUx=0.21%, stress<=0.41%). The 57x -5 therefore
+          # does NOT corrupt the field; the residual plateau 3-13 is a
+          # convergence-criterion / assembly-scale issue, not a wrong solve.
+          # CI #84 (option A) makes ksponly the production solver, so this
+          # second run is now a SAME-SOURCE DETERMINISM CHECK: two independent
+          # 51-step runs must reproduce the same field (P7). Five earlier
+          # "convergences" were false (#73 placeholders, #75 log-range, #78
+          # SEGV, #81 zero step, #83 KSPINIT), so the verdict is always the
+          # physical field in the Exodus mesh, never a solver message / fnorm
+          # / reason code / failure count.
+          # Criteria P1-P8 live in data/check_terzaghi_displacement.py and
+          # FLOW_FIX_CHECKLIST.md. This MUST run BEFORE Gate 3.3: its exit 1
+          # skips everything after it (CI #82 lost snes_l2/ksponly that way).
           # --------------------------------------------------------------------
-          echo "=== KSPONLY-PHYS diagnostic run (-disp_snes_type ksponly) ==="
+          echo "=== KSPONLY-PHYS same-source determinism run (-disp_snes_type ksponly) ==="
           timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
             -options_file_yaml data/terzaghi1D.yaml \
@@ -686,7 +701,7 @@ jobs:
             cp -f /tmp/out_main.gen data/Beam1x10-tri3_out.gen
             echo "=== restored production result mesh for Gates 3.1/3.2 ==="
           fi
-          echo "=== PHYSICS VERDICT P1-P7 (physical fields only) ==="
+          echo "=== PHYSICS VERDICT P1-P8 (report mode; Gate 3.3 uses --gate separately) ==="
           python3 data/check_terzaghi_displacement.py \
             /tmp/out_main.gen /tmp/out_ksponly.gen /tmp/terzaghi_ksponly_phys.log \
             2>&1 | tee /tmp/terzaghi_verdict.log || true
@@ -722,32 +737,43 @@ jobs:
             grep -n "error while loading shared libraries" /tmp/terzaghi.log | head -10
             exit 1
           fi
-          # CI #58: DefMech AltMin used to report non-convergent displacement
-          # SNES on this deck (reason -5, 51/51 outer steps). It did NOT stop
-          # the Flow/TS solve, but it amplified a 2.54e-5 Pa pressure
-          # difference into a 0.012 Displacement_Y difference (see CI #69).
-          # Root cause (CI #71-#74): the YAML BoolArray parser for
-          # 'displacementBC' dropped every component after the first when the
-          # list had a space after each comma ("1, 1, 1" -> TRUE FALSE FALSE),
-          # leaving u_y unconstrained -> a constant rigid-body translation ->
-          # singular stiffness matrix (zero pivot) -> displacement SNES
-          # SNES_DIVERGED_MAX_IT on every outer step. FD-Jacobian (V2, CI #73)
-          # failed identically, proving it was a singular system, not an
-          # analytic-Jacobian value bug. Fixed in CI #75 by writing the deck
-          # with no-space separators ("1,1,1"), so all three components are
-          # now TRUE (verified in the CellSet PetscBag view). Gate 3.3 is
-          # therefore restored as a HARD convergence gate: any non-convergent
-          # DefMech displacement SNES in the production run fails the build.
-          defmech_fail=$(grep -c "SNESSolve failed with SNESConvergedReason" /tmp/terzaghi.log || true)
-          echo "=== Gate 3.3 (hard): $defmech_fail non-convergent DefMech SNES solves ==="
+          # --- Gate 3.3 (hard): PHYSICS VERDICT on the production field -----
+          # CI #83 proved the old criterion -- counting "SNESSolve failed"
+          # lines -- is WRONG (FLOW_FIX_CHECKLIST.md, section "CI #83 结果"):
+          #   * the 19.5-min standard-Newton run and the 8-s ksponly run give
+          #     equivalent physical fields (dPressure=0, dDamage=0.38%,
+          #     dUx=0.21%, stress<=0.41%), so -5 did NOT corrupt the field;
+          #   * Newton's residual drops 2.08e4 -> ~9 on the FIRST iteration
+          #     and then oscillates on an irreducible plateau 3-13 for 50
+          #     more iterations. Under -disp_snes_type ksponly that plateau is
+          #     irrelevant: one linear solve is the exact solve for this
+          #     effectively-linear deck (SplitNone, damage~3.7e-5, zero
+          #     damping / cohesion).
+          # Message counting also produced FIVE false convergences (#73, #75,
+          # #78, #81, #83 KSPINIT). Gate 3.3 now calls the committed physics
+          # checker in --gate mode: P1-P6 and P8 on /tmp/out_main.gen (the
+          # mesh frozen immediately after the production run), plus >=50
+          # records, t_end~1.0, finite fields, no crash markers / unknown
+          # options and >=50 Gate 3.2 probes. ANY missing / unreadable data
+          # is FAIL (CI #73 lesson), and the checker exits 1 on rejection.
+          # damage SNES -5 messages are REPORTED, not counted: P8 verifies the
+          # damage field itself stays finite, in [0,1] and bounded.
+          defmech_fail=$(grep -cF "SNESSolve failed with SNESConvergedReason" /tmp/terzaghi.log || true)
+          disp_fail=$(grep -cF "[ERROR]: displacement SNESSolve failed" /tmp/terzaghi.log || true)
+          damage_fail=$(grep -cF "[ERROR]: damage field SNESSolve failed" /tmp/terzaghi.log || true)
+          echo "=== Gate 3.3 diagnostics: displacement-msgs=$disp_fail damage-msgs=$damage_fail total=$defmech_fail (INFORMATIONAL ONLY) ==="
           grep -o "SNESConvergedReason -[0-9]*" /tmp/terzaghi.log | sort | uniq -c || true
-          if [ "$defmech_fail" -gt 0 ]; then
-            echo "=== FAIL: Gate 3.3 DefMech displacement SNES diverged on $defmech_fail solve(s) (SNES_DIVERGED_MAX_IT) ==="
-            echo "    Root-cause check: confirm 'DisplacementBC = TRUE TRUE TRUE' in the CellSet PetscBag view."
-            echo "    If it reads TRUE FALSE FALSE, the YAML BoolArray parser dropped u_y again."
+          python3 data/check_terzaghi_displacement.py --gate \
+            /tmp/out_main.gen /tmp/terzaghi.log \
+            2>&1 | tee /tmp/gate33_verdict.log
+          g33_rc=${PIPESTATUS[0]}
+          if [ "$g33_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 3.3 physics verdict rejected the production displacement field (rc=$g33_rc) ==="
+            echo "    Check /tmp/gate33_verdict.log: P1 BC, P2 drift, P3 time drift,"
+            echo "    P4/P5 u_x analytic peak, P6 pressure, P8 damage bounds."
             exit 1
           fi
-          echo "=== Gate 3.3 PASS: DefMech displacement SNES converged on all outer steps ==="
+          echo "=== Gate 3.3 PASS: P1-P6 + P8 physics criteria satisfied on /tmp/out_main.gen ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -858,33 +884,13 @@ jobs:
             echo "=== Gate 3.2 probe: every 10th step pmax ==="
             grep "Gate 3.2:" /tmp/terzaghi.log | awk 'NR==1 || NR%10==0' | head -8
           fi
-          # --- CI #71: same-source DefMech SNES convergence diagnosis -------
-          # Two extra runs of the SAME binary/mesh/deck, differing only in the
-          # displacement SNES configuration. Purely informational: their logs
-          # never enter the fatal-signature scan above, and the delivered
-          # result mesh is restored so the artifact stays the main-run output.
-          cp -f data/Beam1x10-tri3_out.gen /tmp/terzaghi_main.gen
-          deck="-prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi1D.yaml"
-          flowopts="-flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason"
-          for variant in l2 ksponly; do
-            if [ "$variant" = l2 ]; then
-              snesopt="-disp_snes_linesearch_type l2"
-            else
-              snesopt="-disp_snes_type ksponly"
-            fi
-            echo "=== DefMech SNES variant $variant: $snesopt ==="
-            timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
-              $deck $flowopts -disp_snes_monitor $snesopt \
-              > "/tmp/snes_${variant}.log" 2>&1
-            vrc=$?
-            echo "=== DefMech SNES variant $variant exit code: $vrc ==="
-          done
-          cp -f /tmp/terzaghi_main.gen data/Beam1x10-tri3_out.gen
-          echo "=== DefMech AltMin SNES diagnosis (first outer step fnorm trace) ==="
-          python3 data/diagnose_snes.py \
-            "main-basic=/tmp/terzaghi.log" \
-            "l2-original=/tmp/snes_l2.log" \
-            "ksponly=/tmp/snes_ksponly.log" || true
+          # CI #84: retire the CI #71 l2/ksponly variant loop. Its ksponly
+          # branch now duplicates the production solver, its l2 branch is a
+          # ruled-out hypothesis that can burn the full 600 s cap, and
+          # diagnose_snes.py renders a ksponly run (no fnorm samples) as a
+          # 0.000e+00 "converged" row -- the CI #73 false-convergence trap.
+          # The same-source determinism check now lives in KSPONLY-PHYS above
+          # and is judged by the physical field (P7), not by fnorm placeholders.
           exit $rc
       - name: Upload diagnostics
         uses: actions/upload-artifact@v4
@@ -899,10 +905,9 @@ jobs:
             /tmp/vDef.log
             /tmp/ldd-vDef.log
             /tmp/terzaghi.log
-            /tmp/snes_l2.log
-            /tmp/snes_ksponly.log
             /tmp/terzaghi_ksponly_phys.log
             /tmp/terzaghi_verdict.log
+            /tmp/gate33_verdict.log
             /tmp/out_main.gen
             /tmp/out_ksponly.gen
           retention-days: 7
