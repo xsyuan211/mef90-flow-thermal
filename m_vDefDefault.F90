@@ -175,7 +175,8 @@ module m_vDefDefault
                                                          MEF90Scaling_CST,    & ! pressureScaling
                                                          1e-8_Kr,        & ! pressureATol
                                                          1e-4_Kr,        & ! pressureRTol
-                                                         100)             & ! pressureMaxIt
+                                                         100,             & ! pressureMaxIt
+                                                         PETSC_FALSE)     & ! biotEffectiveStress (Gate 4.1b: default superposition)
    Type(MEF90FlowCellSetOptions_Type),Parameter   :: vDefFlowDefaultCellSetOptions = MEF90FlowCellSetOptions_Type( &
                                                          -1,              & ! elemTypeShortID (overridden)
                                                          0.0_Kr,          & ! source (volumetric injection/sink)

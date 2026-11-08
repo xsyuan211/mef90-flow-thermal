@@ -774,6 +774,38 @@ jobs:
               echo "=== WARN: $g42tag produced no result mesh; Gate 4.2 D4-D8 must FAIL ==="
             fi
           done
+          # --------------------------------------------------------------------
+          # Gate 4.1b (effective-stress / total-stress Biot form).
+          # terzaghi1D_stress.yaml is byte-identical to terzaghi1D.yaml except
+          # flow.biot_effective_stress: true. With full Dirichlet BC on BOTH
+          # ends (cs0010 & cs0020 displacementBC 1,1,1) the effective-stress
+          # volume term -int(alpha*p*div v) is algebraically identical to the
+          # body-force -int(alpha*grad p).v, so the displacement field must
+          # match the production (superposition) run to KSP tolerance. The
+          # Fortran returns early in this branch and writes "Gate 4.1b:
+          # form=stress" instead of the body-force "Gate 4.1:" row, which is
+          # exactly the mutual-exclusion signal the verdict checks (E4).
+          # DIAGNOSTIC ONLY: the production mesh is already frozen in
+          # /tmp/out_main.gen and is restored below, so the delivered artifact
+          # and Gates 3.1/3.2/3.3 stay the main run.
+          # --------------------------------------------------------------------
+          echo "=== Gate 4.1b effective-stress diagnostic run (biot_effective_stress=true, ksponly) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi1D_stress.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_stress.log
+          s41b_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.1b effective-stress mpirun exit code: $s41b_rc ==="
+          echo "=== Gate 4.1b: effective-stress diagnostic rows: $(grep -ac 'Gate 4.1b: form=stress' /tmp/terzaghi_stress.log || true); body-force rows (want 0): $(grep -ac 'Gate 4.1:' /tmp/terzaghi_stress.log || true) ==="
+          if [ -s data/Beam1x10-tri3_out.gen ]; then
+            cp -f data/Beam1x10-tri3_out.gen /tmp/out_stress.gen
+            echo "=== saved effective-stress result mesh -> /tmp/out_stress.gen ==="
+          else
+            echo "=== WARN: effective-stress produced no result mesh; Gate 4.1b E2 must FAIL ==="
+          fi
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
           # artifact stay the main-run output (diagnostic variants overwrite it).
           if [ -s /tmp/out_main.gen ]; then
@@ -909,6 +941,20 @@ jobs:
             /tmp data /tmp/out_main.gen \
             2>&1 | tee /tmp/gate43_verdict.log
           g43_rc=${PIPESTATUS[0]}
+          # --- Gate 4.1b (hard): effective-stress Biot form equivalence ------
+          # Checklist 4.1b: "含孔压时应力场体现有效应力修正" implemented as a mode
+          # MUTUALLY EXCLUSIVE with the 4.1a body-force superposition. The stress
+          # deck must emit "Gate 4.1b: form=stress" (E1); its displacement field
+          # must match the superposition production run to relative L2 <= 1e-3 (E2);
+          # the default production run must NOT emit the stress diagnostic (E3);
+          # and the two forms must be mutually exclusive (E4). Verdict printed
+          # here; exit 1 DEFERRED until after the other gates (CI #82 lesson), so
+          # a 4.1b failure never hides the 4.1/4.2/4.3 physics tables.
+          python3 data/check_gate41b.py --gate \
+            /tmp/terzaghi_stress.log /tmp/terzaghi.log \
+            /tmp/out_stress.gen /tmp/out_main.gen \
+            2>&1 | tee /tmp/gate41b_verdict.log
+          g41b_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -940,6 +986,16 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.3 PASS: Flow bags visible, every deck option parsed, constant BC holds over 51 steps ==="
+          # Gate 4.1b deferred verdict (see the deferred-exit note above).
+          if [ "$g41b_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.1b rejected the effective-stress Biot form (rc=$g41b_rc) ==="
+            echo "    Check /tmp/gate41b_verdict.log: E1 effective form active,"
+            echo "    E2 displacement equivalence to superposition (relL2<=1e-3),"
+            echo "    E3 production unchanged (no stress diagnostic),"
+            echo "    E4 forms mutually exclusive."
+            exit 1
+          fi
+          echo "=== Gate 4.1b PASS: effective-stress form active, displacement matches superposition, mutually exclusive with body force ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1081,6 +1137,9 @@ jobs:
             /tmp/gate41_verdict.log
             /tmp/gate42_verdict.log
             /tmp/gate43_verdict.log
+            /tmp/gate41b_verdict.log
+            /tmp/terzaghi_stress.log
+            /tmp/out_stress.gen
             /tmp/out_main.gen
             /tmp/out_ksponly.gen
             /tmp/out_nobiot.gen

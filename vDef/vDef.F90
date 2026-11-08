@@ -268,6 +268,19 @@ Program vDef
    !!! legacy constant cellSetOptions%advectionVector path (no-op).
    MEF90HeatXferCtx%flowVelocitySec => MEF90FlowCtx%cellDarcyVelocitySec
    MEF90HeatXferCtx%enableFlowAdvection = MEF90FlowGlobalOptions%enableFlowAdvection
+   !!! Gate 4.1b: wire the cell-centered pore-pressure section into the DefMech
+   !!! context for the effective-stress (total-stress) Biot form. This is a
+   !!! one-shot pointer association (NOT a TARGET component), mirroring the 4.2
+   !!! flowVelocitySec wire above. cellPorePressureSec was created by
+   !!! MEF90FlowCtxSetSections (line 159) before this point.
+   MEF90DefMechCtx%porePressureSec => MEF90FlowCtx%cellPorePressureSec
+   !!! A mutual-exclusion switch: the effective-stress form and the body-force
+   !!! superposition form must never both act on the same solve. applyEffectiveStress
+   !!! is TRUE only when biot_effective_stress is requested; biotCoefficient (α)
+   !!! is read from the same Flow options the body-force form uses, so the two
+   !!! forms stay numerically equivalent when only one is active.
+   MEF90DefMechCtx%applyEffectiveStress = MEF90FlowGlobalOptions%biotEffectiveStress
+   MEF90DefMechCtx%biotCoefficient      = MEF90FlowGlobalOptions%biotCoefficient
    !!! The first HeatXfer solve runs BEFORE the first
    !!! MEF90FlowComputeDarcyVelocity call (one-step lag by design), so seed
    !!! the freshly duplicated SectionReal with the already-zeroed global Vec

@@ -1064,6 +1064,95 @@ Contains
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowComputePressureGradient"
 
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!  COMPUTE CELL PRESSURE — volume-weighted mean p per cell, written into
+!!!  FlowCtx%cellPorePressureSec (wired into DefMech as porePressureSec for the
+!!!  effective-stress Biot form, Gate 4.1b). Mirrors MEF90FlowComputePressureGradient
+!!!  but outputs the scalar p (not its gradient).
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#undef __FUNCT__
+#define __FUNCT__ "MEF90FlowComputeCellPressure"
+
+   Subroutine MEF90FlowComputeCellPressure(FlowCtx,ierr)
+      Type(MEF90FlowCtx_Type),Intent(INOUT)            :: FlowCtx
+      PetscErrorCode,Intent(OUT)                        :: ierr
+
+      Type(SectionReal)                                  :: pSec
+      Type(IS)                                           :: CellSetGlobalIS, setIS
+      PetscInt,dimension(:),Pointer                      :: setID, cellID
+      PetscInt                                           :: set, cell, QuadratureOrder
+      PetscInt                                           :: iDoF, iGauss, numDof, numGauss
+      PetscInt                                           :: dim
+      Type(MEF90FlowCellSetOptions_Type),pointer         :: cellSetOptions
+      Type(MEF90_ELEMENT_SCAL),Dimension(:),Pointer      :: elem
+      Type(MEF90Element_Type)                            :: elemType
+      PetscReal,Dimension(:),Pointer                     :: pDofLoc
+      PetscReal,Dimension(:),Pointer                     :: secPtr
+      PetscReal                                          :: pCell, pGauss, totalVolume
+
+      dim = MEF90_DIM
+
+      Call SectionRealDuplicate(FlowCtx%DMScalSec,pSec,ierr);CHKERRQ(ierr)
+      Call SectionRealSet(FlowCtx%cellPorePressureSec,0.0_Kr,ierr);CHKERRQ(ierr)
+      Call SectionRealToVec(pSec,FlowCtx%DMScalScatter,SCATTER_REVERSE,FlowCtx%pressure,ierr);CHKERRQ(ierr)
+
+      Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
+      Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
+      Call ISGetIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
+
+      Do set = 1, size(setID)
+         Call PetscBagGetDataMEF90FlowCtxCellSetOptions(FlowCtx%CellSetOptionsBag(set),cellSetOptions,ierr);CHKERRQ(ierr)
+         Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
+         elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
+         QuadratureOrder = elemType%order * 2
+         Call MEF90Element_Create(FlowCtx%DM,setIS,elem,QuadratureOrder, &
+              cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
+
+         If (elemType%Codim == 0) Then
+            numDof  = elemType%numDof
+            Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
+            Allocate(pDofLoc(numDof))
+            Do cell = 1, size(cellID)
+               Call SectionRealRestrictClosure(pSec,FlowCtx%DM,cellID(cell),numDof,pDofLoc,ierr);CHKERRQ(ierr)
+               numGauss = size(elem(cell)%BF,2)
+
+               !!! volume-weighted average of p over Gauss points
+               pCell  = 0.0_Kr
+               totalVolume = 0.0_Kr
+               Do iGauss = 1, numGauss
+                  pGauss = 0.0_Kr
+                  Do iDoF = 1, numDof
+                     pGauss = pGauss + pDofLoc(iDoF) * elem(cell)%BF(iDoF,iGauss)
+                  End Do
+                  totalVolume = totalVolume + elem(cell)%Gauss_C(iGauss)
+                  pCell = pCell + pGauss * elem(cell)%Gauss_C(iGauss)
+               End Do
+               If (totalVolume > 0.0_Kr) Then
+                  pCell = pCell / totalVolume
+               End If
+
+               Call SectionRealRestrict(FlowCtx%cellPorePressureSec,cellID(cell),secPtr,ierr);CHKERRQ(ierr)
+               secPtr(1) = pCell
+               Call SectionRealRestore(FlowCtx%cellPorePressureSec,cellID(cell),secPtr,ierr);CHKERRQ(ierr)
+            End Do ! cell
+            DeAllocate(pDofLoc)
+            Call ISRestoreIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
+         End If
+
+         Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
+         Call ISDestroy(setIS,ierr)
+      End Do ! set
+
+      Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
+      Call ISDestroy(CellSetGlobalIS,ierr)
+
+      Call SectionRealComplete(FlowCtx%cellPorePressureSec,ierr);CHKERRQ(ierr)
+      Call SectionRealToVec(FlowCtx%cellPorePressureSec,FlowCtx%cellDMScalScatter,SCATTER_FORWARD,FlowCtx%cellPorePressure,ierr);CHKERRQ(ierr)
+
+      Call SectionRealDestroy(pSec,ierr);CHKERRQ(ierr)
+   End Subroutine MEF90FlowComputeCellPressure
+
+
    Subroutine MEF90FlowComputePressureGradient(pressure,cellPressureGradient,FlowCtx,ierr)
       Type(Vec),Intent(IN)                               :: pressure
       Type(Vec),Intent(INOUT)                            :: cellPressureGradient
@@ -1186,7 +1275,7 @@ Contains
       PetscReal                                          :: biotCoeff
       Type(Vec)                                          :: superposVec
       PetscReal                                          :: vmin,vmax
-      PetscReal                                          :: nBase,nGrad,nForce,superposErr
+      PetscReal                                          :: nBase,nGrad,nForce,superposErr,nP
       Character(len=512)                                 :: IOBuffer
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
@@ -1194,6 +1283,33 @@ Contains
 
       !!! α = 0 表示不启用 Biot 耦合，跳过（NOBIOT 对照 deck 走此分支）
       If (biotCoeff == 0.0_Kr) Return
+
+      !!! Gate 4.1b: mutually-exclusive effective-stress (total-stress) form.
+      !!! Pore-pressure coupling is represented as σ_total = σ' - α·p·I in the
+      !!! DefMech residual (see m_MEF90_DefMechAssembly.F90), NOT as a body
+      !!! force -α·∇p. So here we leave force = base (do NOT superpose -α∇p)
+      !!! and instead populate the cell-centered pore pressure field for DefMech.
+      If (gOpt%biotEffectiveStress) Then
+         Call MEF90FlowComputeCellPressure(FlowCtx,ierr);CHKERRQ(ierr)
+         !!! Gate 4.1b diagnostic (one line per outer step): confirm the body
+         !!! force was NOT given the -α∇p term and that the cell pressure is live.
+         nP    = 0.0_Kr
+         nBase = 0.0_Kr
+         If (Associated(FlowCtx%cellPorePressure)) Then
+            Call VecMin(FlowCtx%cellPorePressure,PETSC_NULL_INTEGER,vmin,ierr);CHKERRQ(ierr)
+            Call VecMax(FlowCtx%cellPorePressure,PETSC_NULL_INTEGER,vmax,ierr);CHKERRQ(ierr)
+            nP = max(abs(vmin),abs(vmax))
+         End If
+         If (Associated(DefMechCtx%force) .AND. Associated(FlowCtx%baseForce)) Then
+            Call VecMin(FlowCtx%baseForce,PETSC_NULL_INTEGER,vmin,ierr);CHKERRQ(ierr)
+            Call VecMax(FlowCtx%baseForce,PETSC_NULL_INTEGER,vmax,ierr);CHKERRQ(ierr)
+            nBase = max(abs(vmin),abs(vmax))
+         End If
+         Write(IOBuffer,*) 'Gate 4.1b: form=stress bodyforce_suppressed=T alpha=',biotCoeff, &
+              ' |base|inf=',nBase,' |p|inf=',nP,'\n'
+         Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
+         Return
+      End If
 
       !!! 计算 cell-centered ∇p
       Call MEF90FlowComputePressureGradient(FlowCtx%pressure, &

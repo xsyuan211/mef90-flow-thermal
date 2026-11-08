@@ -53,6 +53,8 @@ Contains
       PetscReal,Dimension(:),Pointer                     :: boundaryDisplacementDof,displacementDof,displacementPreviousStepDof,damageDof,temperatureDof,residualLoc
       PetscReal,Dimension(:),Pointer                     :: pressureForceLoc,CrackPressureLoc
       PetscReal                                          :: pressureForceCell,CrackPressureCell
+      PetscReal,Dimension(:),Pointer                     :: porePressureLoc
+      PetscReal                                          :: porePressureCell
       PetscReal,Dimension(:),Pointer                     :: forceLoc
       Type(MEF90_VECT)                                   :: forceCell
       PetscReal,Dimension(:),Pointer                     :: plasticStrainLoc
@@ -137,6 +139,13 @@ Contains
       Else
          pressureForceSec%v = 0
       End If
+
+      !!! Gate 4.1b: effective-stress Biot form uses the cell-centered pore
+      !!! pressure wired from Flow (porePressureSec). The section is associated
+      !!! only when biot_effective_stress is enabled; otherwise it stays Nullify'd
+      !!! and no term is added (default superposition mode is untouched).
+      Nullify(porePressureLoc)
+      porePressureCell = 0.0_Kr
 
       Nullify(CrackPressureLoc)
       If (Associated(MEF90DefMechCtx%CrackPressure)) Then
@@ -237,6 +246,15 @@ Contains
                   CrackPressureCell = 0.0_Kr
                End If
 
+               !!! Gate 4.1b: read cell-centered pore pressure for the effective-stress term.
+               !!! Only when the Field is wired from Flow AND the effective-stress flag is set.
+               If (MEF90DefMechCtx%applyEffectiveStress .AND. Associated(MEF90DefMechCtx%porePressureSec)) Then
+                  Call SectionRealRestrict(MEF90DefMechCtx%porePressureSec,cellID(cell),porePressureLoc,ierr);CHKERRQ(ierr)
+                  porePressureCell = porePressureLoc(1)
+               Else
+                  porePressureCell = 0.0_Kr
+               End If
+
                If (Associated(MEF90DefMechCtx%plasticStrain)) Then
                   Call SectionRealRestrict(plasticStrainSec,cellID(cell),plasticStrainLoc,ierr);CHKERRQ(ierr)
                   plasticStrainCell = plasticStrainLoc
@@ -289,6 +307,20 @@ Contains
                      stressGauss = stressGaussPlus + stressGaussMinus
                   Else
                      stressGauss = ATModel%a(damageGauss) * stressGaussPlus + stressGaussMinus
+                  End If
+                  !!! Gate 4.1b: effective-stress (total-stress) Biot form.
+                  !!! sigma_total = sigma' - alpha*p*I : subtract alpha*p from the
+                  !!! volumetric (identity) part of the stress. This produces the
+                  !!! term -int(alpha*p*div v) dOmega in the residual; the Jacobian
+                  !!! is unchanged because pore pressure p is decoupled from u.
+                  !!! MEF90_MATS exposes only a tensor-tensor "-" operator, so the
+                  !!! scalar must first be multiplied by the identity tensor. We use
+                  !!! matpropSet%LinearThermalExpansion, which is initialised to the
+                  !!! dimensional identity (MatS2D/3DIdentity) and is in scope here
+                  !!! (see the thermal-strain term above, line ~295). This avoids any
+                  !!! dependency on a module-level identity constant's visibility.
+                  If (MEF90DefMechCtx%applyEffectiveStress) Then
+                     stressGauss = stressGauss - (MEF90DefMechCtx%biotCoefficient * porePressureCell) * matpropSet%LinearThermalExpansion
                   End If
                   Do iDoF2 = 1,numDofDisplacement
                      residualLoc(iDoF2) = residualLoc(iDoF2) + elemDisplacement(cell)%Gauss_C(iGauss) * (stressGauss .DotP. elemDisplacement(cell)%GradS_BF(iDoF2,iGauss))
@@ -356,6 +388,10 @@ Contains
                End If
                If (Associated(MEF90DefMechCtx%plasticStrain)) Then
                   Call SectionRealRestore(plasticStrainSec,cellID(cell),plasticStrainLoc,ierr);CHKERRQ(ierr)
+               End If
+               !!! Gate 4.1b: release the cell-centered pore-pressure pointer.
+               If (Associated(MEF90DefMechCtx%porePressureSec)) Then
+                  Call SectionRealRestore(MEF90DefMechCtx%porePressureSec,cellID(cell),porePressureLoc,ierr);CHKERRQ(ierr)
                End If
             End Do ! cell
 

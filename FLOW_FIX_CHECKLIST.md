@@ -107,14 +107,14 @@
   - 本轮落地：`VecCopy+VecAXPy` → 单次 `VecWAXPY(force,-α,∇p,baseForce)`（清单要求的写法，数学等价、无中间态）；每步输出一条 `Gate 4.1:` 诊断；新增 `terzaghi1D_nobiot.yaml`（仅 `biot_coeff 1.0→0.0`）、`check_gate41_biot.py`、CI 硬闸门 **B1–B7**。
   - 验收（CI #86 起）：B3 判 **BODYFORCE** 日志「`|baseForce|` 线性增长 0→9.81、R²≥0.98」，B4 也判 **BODYFORCE**「`‖force−(base−α∇p)‖∞≈0` 且 `max|base|≥5`」（生产 `base≡0` 时该误差对叠加/覆盖无区分力）；B6 用 NOBIOT 对照网格判「耦合真实生效」；Gate 3.3 P1–P8 保持回归。
 
-- [ ] **4.1b 有效应力项：改为「互斥模式」，不是「再补一项」**（物理裁决后重定义）
+- [x] **4.1b 有效应力项：互斥总应力模式（biot_effective_stress）**（已实现，待 CI #95 验收）
   - **原清单表述有误**：「力学侧缺 `σ' = σ + α·p·I`，当前只做了体力近似」并非缺项。分部积分
     `∫(−α∇p)·v dΩ = ∫αp·div(v) dΩ − ∫_Γ αp·v·n dΓ`，而总应力形式
     `∫(C:ε − αpI):ε(v) dΩ = ∫C:ε:ε(v) dΩ − ∫αp·div(v) dΩ`。
     **两者的体积项是同一个 `−∫αp·div(v)`，不是两个可相加的效应**；差别仅在自然边界的 `−αp·n` 面力如何解释。若按字面「在体力之外再补 `αpI`」，孔压效应被双重计入，`u_x` 峰值约翻倍（`1.10e-4 → 2.2e-4 m`），直接打掉刚转绿的 Gate 3.3 P4（上界 `2e-4`）。
-  - 因此「含孔压时应力场体现有效应力修正」应落地为：**新增与体力形式互斥的总应力模式**（`-flow_biot_form stress`），启用时停掉 `-α∇p` 体力、改在 `m_DefMech/m_MEF90_DefMechAssembly.F90` 残差里加 `−αp·tr(ε(v))`，Jacobian 不变（p 与 u 解耦）；并可选输出 `σ_total = C:ε − αpI` 诊断槽。需要新增 cell-based 孔压场并传入 DefMech 装配（不能复用 `pressureForce`，它是 coDim=1 的边界压力面力）。
-  - 验收：互斥模式下位移场与体力模式**等价**（两端 Dirichlet 固定时差异只可能来自侧面自然边界），Gate 3.3 P1–P8 仍 PASS；两种模式同时启用应被明确拒绝。
-  - 状态：**本轮未实现**（零本地编译下改 4–5 个 Fortran 文件风险过高，且会混淆 4.1a 的判据信号）。单列待做，不阻塞 4.1a 勾选。
+  - 因此「含孔压时应力场体现有效应力修正」落地为：**新增与体力形式互斥的总应力模式**，由 `flow.biot_effective_stress: true`（PetscBool，默认 false 保持生产 superposition）控制。启用时 `MEF90FlowApplyBiotForce` 提前返回——**停掉 `-α∇p` 体力**、改调 `MEF90FlowComputeCellPressure` 把逐单元体均 p 写入 `cellPorePressureSec`；DefMech 残差在 `m_DefMech/m_MEF90_DefMechAssembly.F90` 对 `stressGauss` 减 `α·p·I`（仿 line 277 热膨胀写法，tensor−scalar×identity），Jacobian 不变（p 与 u 解耦）；复用 4.2 的 SectionReal 跨模块 wire（`DefMechCtx%porePressureSec => FlowCtx%cellPorePressureSec` 一次性指针关联，非 TARGET 组件）。cell-based 孔压场**不能复用 `pressureForce`**（它是 coDim=1 的边界压力面力）。
+  - 验收（Gate 4.1b，新增 `vDef/data/check_gate41b.py`）：**E1** 应力 deck 日志含 `Gate 4.1b: form=stress`；**E2** 应力模式位移场与 superposition（生产）模式逐位/相对 L2 等价（relL2≤1e-3，Terzaghi 两端 Dirichlet→体积项完全等价，差异仅来自侧面自然边界）；**E3** 生产 superposition 模式日志**不含** `Gate 4.1b:`（默认构建不变更）且仍含 `Gate 4.1:`（4.1a 路径完好）；**E4** 互斥结构——应力日志有 `Gate 4.1b:` 但**无** `Gate 4.1:` body-force 行，证明两种形式无法同时生效。
+  - 状态：**本轮已实现**（采用与 4.1a/4.2 同套「变体 deck + 硬判据」模式验收：新增 `terzaghi1D_stress.yaml` 与 `check_gate41b.py`，CI #95 回）。Jacobian 不变、默认 superposition 零影响；静态校验（PyYAML/ast/git diff --check）已通过。
 
 - [x] **4.2 平流：把 `cellDarcyVelocity` 喂入 HeatXfer**（CI #87 落地，见文末专节）
   - 位置：`m_HeatXfer/m_MEF90_HeatXferAssembly.F90` 的 4 处平流装配（稳态残差/Jacobian、瞬态 IFunction/IJacobian）；`m_Flow/m_MEF90_Flow{F,Ctx}.F90` 的持久 `cellDarcyVelocitySec`；`vDef/vDef.F90` 的 Ctx 挂接与 `Gate 4.2:` 诊断。
@@ -222,7 +222,7 @@
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
 - 闸门 2（可见）：4 / 4
 - 闸门 3（瞬态+符号）：1 / 2（3.1 静态实现 + 二轮正确性修正；**#47 首次完整编译通过，但仍未运行到物理求解**；3.2 必须运行）
-- 闸门 4（物理+工程）：**4.1a 已收口（CI #86 全绿）；4.2 已落地（CI #87 待回）**；4.1b 有效应力互斥模式单列待做；其余 9 项未动（4.11 的「CI 可信化」前置已做）。
+- 闸门 4（物理+工程）：**4.1a 已收口（CI #86 全绿）；4.2 已落地（CI #87 全绿）；4.1b 有效应力互斥模式已实现（待 CI #95 验收）**；其余 9 项未动（4.11 的「CI 可信化」前置已做）。
 - 合计：8 项功能已落地，12 项待做
 
 **提交 / CI 状态**

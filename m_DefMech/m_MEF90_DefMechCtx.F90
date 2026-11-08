@@ -21,6 +21,7 @@ Module m_MEF90_DefMechCtx_Type
       Type(Vec),Pointer                      :: plasticStrain
       Type(Vec),Pointer                      :: cumulatedDissipatedPlasticEnergy
       Type(Vec),Pointer                      :: stress
+      Type(SectionReal),pointer              :: porePressureSec      ! wired to FlowCtx%cellPorePressureSec (effective-stress Biot form, Gate 4.1b)
       
       PetscBag                               :: GlobalOptionsBag
       PetscBag,Dimension(:),Pointer          :: CellSetOptionsBag
@@ -50,6 +51,8 @@ Module m_MEF90_DefMechCtx_Type
       Type(SNES)                             :: SNESDisp,SNESDamage
       PetscBool                              :: hasDisplacementBounds
       PetscBool                              :: hasUnilateralContact
+      PetscBool                              :: applyEffectiveStress  ! Gate 4.1b: use σ_total = σ' - α·p·I effective-stress form
+      PetscReal                              :: biotCoefficient       ! Biot α (passed from Flow) for the effective-stress term
    End Type MEF90DefMechCtx_Type
    
    Type MEF90DefMechGlobalOptions_Type
@@ -521,6 +524,7 @@ Contains
       Nullify(DefMechCtx%temperature)
       Nullify(DefMechCtx%plasticStrain)
       Nullify(DefMechCtx%cumulatedDissipatedPlasticEnergy)
+      Nullify(DefMechCtx%porePressureSec)
    End Subroutine MEF90DefMechCtxCreate
    
 #undef __FUNCT__

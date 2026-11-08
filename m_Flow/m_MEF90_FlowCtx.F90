@@ -30,6 +30,8 @@ Module m_MEF90_FlowCtx_Type
       Type(Vec),pointer                :: baseForce           ! snapshot of DefMechCtx%force (gravity etc.) before Biot superposition
       Type(Vec),pointer                :: cellDarcyVelocity   ! v_darcy = -(k(x)/μ)·∇p + (k(x)/μ)·ρg  (cell-centered vector, for heat advection)
       Type(Vec),pointer                :: cellMuField         ! μ(T)  assembled viscosity per cell (for thermal→flow coupling)
+      Type(SectionReal)                :: cellPorePressureSec ! cell-centered pore pressure section (effective-stress Biot form)
+      Type(Vec),pointer                :: cellPorePressure    ! cell-centered p (cellDMScal), wired into DefMech as porePressureSec
 
       !!! PetscBag options
       PetscBag                         :: GlobalOptionsBag
@@ -118,6 +120,7 @@ Module m_MEF90_FlowCtx_Type
       PetscReal                        :: pressureATol
       PetscReal                        :: pressureRTol
       PetscInt                         :: pressureMaxIt
+      PetscBool                        :: biotEffectiveStress  ! .true. = effective-stress (total-stress) Biot form; mutually exclusive with body-force superposition
    End Type MEF90FlowGlobalOptions_Type
 
    !!!
@@ -357,6 +360,7 @@ Contains
       Nullify(FlowCtx%baseForce)
       Nullify(FlowCtx%cellDarcyVelocity)
       Nullify(FlowCtx%cellMuField)
+      Nullify(FlowCtx%cellPorePressure)
    End Subroutine MEF90FlowCtxCreate
 
 
@@ -388,6 +392,8 @@ Contains
       Call DMMeshCreateGlobalScatter(FlowCtx%cellDMVect,FlowCtx%cellDMVectSec,FlowCtx%cellDMVectScatter,ierr);CHKERRQ(ierr)
       !!! Gate 4.2: independent section that will hold v_darcy per cell.
       Call SectionRealDuplicate(FlowCtx%cellDMVectSec,FlowCtx%cellDarcyVelocitySec,ierr);CHKERRQ(ierr)
+      !!! Gate 4.1b: independent section that will hold cell-centered pore pressure.
+      Call SectionRealDuplicate(FlowCtx%cellDMScalSec,FlowCtx%cellPorePressureSec,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowCtxSetSections
 
 
@@ -459,6 +465,14 @@ Contains
       Call DMCreateGlobalVector(FlowCtx%cellDMScal,FlowCtx%cellMuField,ierr);CHKERRQ(ierr)
       Call PetscObjectSetName(FlowCtx%cellMuField,"ViscosityField",ierr);CHKERRQ(ierr)
       Call VecSet(FlowCtx%cellMuField,0.0_Kr,ierr);CHKERRQ(ierr)
+
+      !!! cellPorePressure — cell-centered pore pressure p (cellDMScal, scalar per cell)
+      !!! populated by MEF90FlowComputeCellPressure; wired into DefMech (porePressureSec)
+      !!! for the effective-stress Biot form (Gate 4.1b).
+      Allocate(FlowCtx%cellPorePressure,stat=ierr)
+      Call DMCreateGlobalVector(FlowCtx%cellDMScal,FlowCtx%cellPorePressure,ierr);CHKERRQ(ierr)
+      Call PetscObjectSetName(FlowCtx%cellPorePressure,"PorePressure",ierr);CHKERRQ(ierr)
+      Call VecSet(FlowCtx%cellPorePressure,0.0_Kr,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowCtxCreateVectors
 
 
@@ -512,6 +526,10 @@ Contains
          Call VecDestroy(FlowCtx%cellMuField,ierr);CHKERRQ(ierr)
          DeAllocate(FlowCtx%cellMuField); Nullify(FlowCtx%cellMuField)
       End If
+      If (Associated(FlowCtx%cellPorePressure)) Then
+         Call VecDestroy(FlowCtx%cellPorePressure,ierr);CHKERRQ(ierr)
+         DeAllocate(FlowCtx%cellPorePressure); Nullify(FlowCtx%cellPorePressure)
+      End If
    End Subroutine MEF90FlowCtxDestroyVectors
 
 
@@ -545,6 +563,7 @@ Contains
       Nullify(FlowCtx%permField)
       Nullify(FlowCtx%storativity)
       Nullify(FlowCtx%cellPressureGradient)
+      Nullify(FlowCtx%cellPorePressure)
 
       Call VecScatterDestroy(FlowCtx%DMScalScatter,ierr);CHKERRQ(ierr)
       Call VecScatterDestroy(FlowCtx%cellDMScalScatter,ierr);CHKERRQ(ierr)
@@ -553,6 +572,7 @@ Contains
       Call SectionRealDestroy(FlowCtx%cellDMScalSec,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(FlowCtx%cellDMVectSec,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(FlowCtx%cellDarcyVelocitySec,ierr);CHKERRQ(ierr)
+      Call SectionRealDestroy(FlowCtx%cellPorePressureSec,ierr);CHKERRQ(ierr)
       Call DMDestroy(FlowCtx%DMScal,ierr);CHKERRQ(ierr)
       Call DMDestroy(FlowCtx%cellDMScal,ierr);CHKERRQ(ierr)
       Call DMDestroy(FlowCtx%cellDMVect,ierr);CHKERRQ(ierr)
@@ -660,6 +680,14 @@ Contains
            'pressure_rtol','Pressure relative tolerance',ierr);CHKERRQ(ierr)
       Call PetscBagRegisterInt (bag,FlowGlobalOptions%pressureMaxIt,default%pressureMaxIt, &
            'pressure_maxit','Pressure solver max iterations',ierr);CHKERRQ(ierr)
+      !!! Gate 4.1b: mutually-exclusive effective-stress (total-stress) Biot form.
+      !!! .false. (default) = body-force superposition  f_p = -α·∇p
+      !!! .true.            = effective stress          σ_total = σ' - α·p·I in the residual
+      !!! Registered LAST to match the field's position at the end of
+      !!! MEF90FlowGlobalOptions_Type (PetscBag offset order must equal declaration order).
+      Call PetscBagRegisterBool(bag,FlowGlobalOptions%biotEffectiveStress, &
+           default%biotEffectiveStress,'biot_effective_stress', &
+           'Use effective-stress (total-stress) Biot form instead of body-force superposition',ierr);CHKERRQ(ierr)
    End Subroutine PetscBagRegisterMEF90FlowCtxGlobalOptions
 
 
