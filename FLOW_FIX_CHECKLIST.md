@@ -1316,3 +1316,52 @@ deck 仍为 `terzaghi1D_robustksp.yaml`（NODAMAGE + verbose 1）。
 
 - 收敛 ⇒ 确认是线性求解/预条件问题 → 改位移 KSP 配置即可（符合零编译约束）。
 - 仍失败 ⇒ 是装配/Jacobian 近零空间 bug → 需 Fortran，超出零本地编译约束，交用户。
+
+---
+
+## ⚠️ 覆盖性更正：CI #81「KSPINIT CONVERGED」是**第三次假收敛**
+
+**脚本判据的致命缺陷**：`vDef.F90:573` 仅在 `snesDispConvergedReason < 0` 时打印
+`SNESSolve failed with SNESConvergedReason`。因此 `rk_fail=0` 只说明 SNES 返回了
+**非负**原因，完全不等于残差收敛。此前所有以「没有 -5」为收敛标准的判定都不可靠。
+
+**CI #81 真实数据**（`ci81.log` KSPINIT 区）：
+- 位移 SNES 容差 `atol=1e-7, rtol=1e-5`（`m_MEF90_DefMech.F90:1466-1468`），
+  初始 fnorm 2.0818e4 ⇒ 收敛阈值 ≈ 0.208。
+- 每个外层步只有 **3 次** Newton 迭代：`2.08e4 → 9.345 → 9.345`（第三条与上一条
+  **一字不差**），中间那次线性求解是 `CONVERGED_ATOL iterations 0` ⇒ 增量为 0。
+- 全程 153 条 fnorm，最小 6.26、最后 7.45，**从未接近 0.208 或 1e-7**。
+- `SNES_CONVERGED_SNORM_RELATIVE`（步长 0）静默返回正原因 ⇒ 程序不报错、rc=0、
+  51 步跑完、压力场 pmax=9055.7 正常，但位移场求解是停滞的。
+- `alpha min/max 0/0` 来自 `vDef.F90:627-632` 的**损伤场** VecMin/VecMax
+  （AT2Elastic 惰性损伤恒 0），与位移 SNES 无关，勿再误读。
+
+**结论**：`-disp_ksp_initial_guess_nonzero 0` **没有修复** -5，只是把症状从
+`DIVERGED_MAX_IT` 换成静默假收敛。KSPINIT 假设未证实。
+三次误判依次为：① CI #75 watcher 区间误读（量到变体区而非生产区）；
+② CI #78 崩溃不打印失败消息 → 假 CONVERGED；③ CI #81 步长 0 → 假 CONVERGED。
+**判定必须改为基于 fnorm 是否降到容差，而非失败消息计数。**
+
+## 新根因（代码级，零 Fortran 可验证）：Split 造成 R/J 不一致
+
+`m_DefMech/m_MEF90_DefMechAssembly.F90`：
+- **残差 287–289**：无条件 `Call Split%DEED(...)`；`cellIsElastic` 时
+  `stressGauss = stressGaussPlus + stressGaussMinus`（HydrostaticDeviatoric 谱分裂，
+  分段非线性）。
+- **雅可比 649–650**：`If (cellIsElastic) AGauss = matpropSet%HookesLaw`
+  （**完整常数 Hooke 张量**），只有 `Else` 分支才调用 `Split%D2EED`。
+⇒ 当 `damage.type: AT2Elastic`（`cellIsElastic=TRUE`）时 **J ≠ dR/du**，Newton 方向
+不精确，线搜索把步长压到 0，残差降 3 个数量级后卡在 O(8) 不再下降。这能统一解释
+为什么换遍 KSP/PC（CG/GMRES、bjacobi/GAMG/ML、FD Jacobian）、关损伤、关 nonzero
+初值都无效。
+
+**且 Terzaghi 是纯孔弹性固结基准，`unilateralContact`（应变能分裂/单侧接触）
+本就不属于该物理**——deck 里的 `type: HydrostaticDeviatoric` 是多余配置。
+`MEF90DefMech_unilateralContactTypeList(1) = 'None'`，`MEF90DefMechGetSplit` 对
+None 返回 `MEF90_DEFMECHSPLITNONE()`，使 `DEED` 与 `D2EED` 同时退化为线性 Hooke，
+R/J 一致 ⇒ Newton 应 1 步收敛。
+
+**CI #82 计划**：主 deck `terzaghi1D.yaml` 的 `unilateralContact.type`
+`HydrostaticDeviatoric → None`（唯一出现处，第 106 行）；主运行追加
+`-disp_snes_converged_reason` 以打印真实原因；watcher 同时核 `defmech_fail`、
+fnorm 分布与 reason，**不再只看失败消息计数**，杜绝第四次假收敛。

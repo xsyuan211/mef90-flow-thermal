@@ -102,8 +102,16 @@ cs0001:
         type: AT2
     plasticity:
         type: NONE
+    # CI #82: Terzaghi is a PURE poroelastic consolidation benchmark; a strain
+    # energy split (unilateral contact) does not belong to this physics.
+    # Worse, with damage.type AT2/AT2Elastic (cellIsElastic=TRUE) the residual
+    # unconditionally calls Split%DEED (Assembly.F90:287) while the Jacobian
+    # uses the full constant HookesLaw (Assembly.F90:649-650) -> J != dR/du,
+    # Newton step is wrong, line search collapses alpha to 0 and the residual
+    # plateaus at O(8) -> -5 / false SNORM_RELATIVE convergence. 'None' makes
+    # DEED and D2EED both degenerate to linear Hooke so R/J are consistent.
     unilateralContact:
-        type: HydrostaticDeviatoric
+        type: None
     # Gravity body force → captured as baseForce (DefMechCtx%force)
     Force: 0, -9.81, 0
 

@@ -523,6 +523,7 @@ jobs:
             -flow_ts_view -flow_ts_monitor \
             -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
             -disp_snes_monitor -disp_snes_linesearch_type basic \
+            -disp_snes_converged_reason \
             2>&1 | tee /tmp/terzaghi.log
           rc=${PIPESTATUS[0]}
           echo "=== Terzaghi mpirun exit code: $rc ==="
