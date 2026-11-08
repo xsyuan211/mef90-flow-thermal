@@ -118,6 +118,22 @@ cs0001:
     fracturetoughness: 27000.0
     residualstiffness: 1.0e-03
     internalLength: 0.2
+    # CI #90: enabling HeatXfer associates DefMechCtx%temperature, so the 17
+    # Associated(temperature) branches in m_MEF90_DefMechAssembly.F90 run for
+    # the first time. MEF90Mathium2D defaults LinearThermalExpansion to the
+    # IDENTITY tensor (alpha = 1 /K); with T_bc = 100*t that gives a 100x
+    # thermal strain -> damage saturates to 1 -> |u| ~ 1e18 m. Gate 4.2 is a
+    # PURE HEAT-ADVECTION diagnostic, so decouple thermal strain here.
+    # Production deck is untouched (heatxfer=null, pointer never associated).
+    LinearThermalExpansion: 0,0,0
+    # CI #90: the steady state is K*laplacian(T) - rhoCp*v.grad(T) = 0, so the
+    # advection perturbation scales as v/K. With the default K=1 the
+    # temperature difference is only 0.0064 K at t=1 (v_darcy has decayed to
+    # 8.8e-5), i.e. 6.4e-5 relative to T_bc=100 K. Lowering K by 10x raises
+    # the signal to ~0.064 K (6.4e-4 relative) without changing the Dirichlet
+    # temperature field, T span, or the two-deck comparison. Cell Peclet stays
+    # <= 0.02, so the Galerkin solve remains diffusion-dominated and stable.
+    ThermalConductivity: 0.1,0.1,0
 
     # ------ DefMech options ------
     damage:
@@ -163,6 +179,10 @@ cs0010:
     boundaryDisplacement: 0,0,0
     damageBC: 0
     boundaryDamage: 0
+    # CI #90: same matprop as cs0001 (alpha=0 decouples thermal strain,
+    # K=0.1 raises the advection signal). Both decks stay identical here.
+    LinearThermalExpansion: 0,0,0
+    ThermalConductivity: 0.1,0.1,0
     # Gate 4.2: Dirichlet T=0 on the drained end
     tempBC: true
     boundaryTemp: 0
@@ -179,6 +199,10 @@ cs0020:
     boundaryDisplacement: 0,0,0
     damageBC: 0
     boundaryDamage: 0
+    # CI #90: same matprop as cs0001 (alpha=0 decouples thermal strain,
+    # K=0.1 raises the advection signal). Both decks stay identical here.
+    LinearThermalExpansion: 0,0,0
+    ThermalConductivity: 0.1,0.1,0
     # Gate 4.2: Dirichlet T=100 on the closed end -> dT/dx != 0
     tempBC: true
     boundaryTemp: 100

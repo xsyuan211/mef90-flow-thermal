@@ -38,6 +38,10 @@ ROW_RE = re.compile(
     r'Gate\s+4\.2:\s*enabled=\s*([A-Za-z.]+).*?\|v_darcy\|inf=\s*(' + NUM + ')',
     re.I)
 WIRE_RE = re.compile(r'Gate\s+4\.2:\s*coupling wired', re.I)
+# CI #90: the EXO nodal-variable name table is fixed by MEF90DefMechFormatEXO
+# (Pressure, Damage, Displacement_X, Displacement_Y) and CANNOT name the
+# temperature field. Lock the slot from the solver's own bag view instead.
+TEMP_OFFSET_RE = re.compile(r'(?<![\w])temp_Offset\s*=\s*(\d+)', re.I)
 FATAL_RE = re.compile(
     r'segmentation fault|signal 11|Caught signal|MPI_ABORT|PETSC ERROR|'
     r'attempt to deallocate|error while loading shared libraries|'
@@ -48,6 +52,9 @@ MIN_PROBES = 50
 REL_DIFF_MIN = 1.0e-4      # |T_on - T_off| / max|T_off| must exceed this
 SPATIAL_MIN = 0.05         # de-meaned part of the difference, fraction of max
 TEMP_LO, TEMP_HI = 1.0, 1.0e4
+MIN_ABS_DIFF = 1.0e-4      # K: reject round-off masquerading as advection
+MAX_DISP = 1.0e-3          # m: production |u| ~ 1e-5
+MAX_DAMAGE = 0.1           # production damage ~ 4e-5
 
 
 def finite(x):
@@ -108,6 +115,25 @@ def read_mesh(path):
 
 def series(c, name, step):
     return [float(v) for v in c.read_record(name, step)]
+
+
+def temp_slot_from_log(path):
+    """Lock the temperature EXO slot from the solver's temp_Offset bag value.
+
+    Both 4.2 diagnostic decks set temp_Offset: 1 and flow.pressure_offset: 0,
+    so HeatXferViewEXO owns nodal slot 1. Auto-discovering the slot by largest
+    |T_on - T_off| is UNSAFE (CI #90: the diverging Displacement_Y field had
+    a 3e18 difference and was mistaken for the temperature response).
+    """
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                m = TEMP_OFFSET_RE.search(line)
+                if m:
+                    return 'vals_nod_var%d' % int(m.group(1))
+    except Exception:
+        pass
+    return None
 
 
 def evaluate(adv_log, noadv_log, adv_gen, noadv_gen, main_gen):
@@ -197,7 +223,8 @@ def evaluate(adv_log, noadv_log, adv_gen, noadv_gen, main_gen):
     else:
         checks['D4'] = (False, 'mesh unavailable')
 
-    # D5/D6 -- automatically discover the slot that responds to advection
+    # D5/D6 -- LOCK the temperature slot (CI #90); the per-slot difference
+    # table below is kept for diagnostics only, never for the verdict.
     if A is not None and N is not None:
         shared = [k for k in anames if k in nnames]
         diff_by_slot, detail = {}, {}
@@ -225,35 +252,51 @@ def evaluate(adv_log, noadv_log, adv_gen, noadv_gen, main_gen):
             diff_by_slot[k] = mx
             detail[k] = (first_d, last_d, last_span, spatial, max(abs(x) for x in d) if d else 0.0)
         metrics['slot_diff'] = diff_by_slot
-        slot = max(diff_by_slot, key=lambda k: diff_by_slot[k]) if diff_by_slot else None
+        auto_slot = max(diff_by_slot, key=lambda k: diff_by_slot[k]) if diff_by_slot else None
+        metrics['auto_max_slot'] = auto_slot
+        # CI #90: auto-discovery selected vals_nod_var4 (Displacement_Y,
+        # |d| ~ 3e18) because enabling HeatXfer with the default
+        # LinearThermalExpansion=I made the mechanical field diverge. The EXO
+        # name table cannot identify temperature, so trust the deck's
+        # temp_Offset bag value echoed by the solver instead.
+        temp_slot = temp_slot_from_log(adv_log)
+        metrics['temp_slot'] = temp_slot
+        slot = temp_slot if temp_slot in shared else None
         metrics['response_slot'] = slot
         if slot:
             f_d, l_d, span, spatial, fmax = detail[slot]
-            # reference field magnitude in the NOADVECTION mesh (final step)
+            # reference field magnitude in the NOADVECTION mesh (last step)
             try:
                 ref = series(N, slot, N.numrecs - 1)
                 refmax = max(abs(x) for x in ref)
                 ref_finite = bool(ref) and all(finite(x) for x in ref)
+                first_ref = max(abs(x) for x in series(N, slot, 0))
             except Exception:
-                refmax, ref_finite = 0.0, False
+                refmax, ref_finite, first_ref = 0.0, False, 0.0
+            grows = ref_finite and finite(first_ref) and refmax > first_ref + 1.0
             metrics.update(diff_first=f_d, diff_last=l_d, temp_span=span,
-                           spatial=spatial, refmax=refmax)
+                           spatial=spatial, refmax=refmax, first_ref=first_ref)
             rel = l_d / refmax if refmax > 0 else 0.0
             spatial_frac = spatial / l_d if l_d > 0 else 0.0
-            checks['D5'] = (d1_ok and ref_finite and TEMP_LO <= refmax <= TEMP_HI and span > 1.0,
-                            'slot %s: max|T_off|=%.6g K, spatial span=%.6g K, finite=%s, runs_complete=%s'
-                            % (slot, refmax, span, ref_finite, d1_ok))
+            checks['D5'] = (d1_ok and ref_finite and grows
+                            and TEMP_LO <= refmax <= TEMP_HI and span > 1.0,
+                            'slot %s (temp_Offset): max|T_off|=%.6g K, first=%.6g K, '
+                            'span=%.6g K, grows=%s, finite=%s, runs_complete=%s'
+                            % (slot, refmax, first_ref, span, grows, ref_finite, d1_ok))
             checks['D6'] = (d1_ok
                             and all(finite(x) for x in (f_d, l_d, rel, spatial_frac))
+                            and l_d >= MIN_ABS_DIFF
                             and rel >= REL_DIFF_MIN
                             and spatial_frac >= SPATIAL_MIN
                             and l_d > f_d,
-                            'slot %s: |dT| first=%.6g last=%.6g K, rel=%.4g, '
-                            'spatial=%.3g of diff'
-                            % (slot, f_d, l_d, rel, spatial_frac))
+                            'slot %s: |dT| first=%.6g last=%.6g K (min %.3g), '
+                            'rel=%.4g (min %.3g), spatial=%.3g of diff'
+                            % (slot, f_d, l_d, MIN_ABS_DIFF, rel, REL_DIFF_MIN,
+                               spatial_frac))
         else:
-            checks['D5'] = (False, 'no comparable record slot')
-            checks['D6'] = (False, 'no comparable record slot')
+            checks['D5'] = (False, 'temperature slot %r missing from result mesh '
+                            '(%d shared slots)' % (temp_slot, len(shared)))
+            checks['D6'] = (False, 'temperature slot %r missing' % temp_slot)
     else:
         checks['D5'] = (False, 'mesh unavailable')
         checks['D6'] = (False, 'mesh unavailable')
@@ -271,6 +314,35 @@ def evaluate(adv_log, noadv_log, adv_gen, noadv_gen, main_gen):
                         'production slot1 |max|=%.6g Pa (heatxfer stays null)' % pmax)
     else:
         checks['D7'] = (False, 'production slot1 unavailable')
+
+    # D8 -- mechanical fields must stay at production magnitude.
+    # CI #90: with HeatXfer enabled and the default alpha=1/K, thermal strain
+    # saturated damage to 1 and |u| diverged to 1e18 m; D4 still saw only
+    # FINITE values and auto-discovery mistook that displacement for the
+    # temperature response. A valid heat-advection diagnostic must NOT blow
+    # up the poroelastic solve.
+    if A is not None and N is not None:
+        worst_disp, worst_dmg = 0.0, 0.0
+        for c in (A, N):
+            for k in ('vals_nod_var3', 'vals_nod_var4'):
+                try:
+                    v = max(abs(x) for x in series(c, k, c.numrecs - 1))
+                except Exception:
+                    v = float('inf')
+                worst_disp = max(worst_disp, v)
+            try:
+                v = max(abs(x) for x in series(c, 'vals_nod_var2', c.numrecs - 1))
+            except Exception:
+                v = float('inf')
+            worst_dmg = max(worst_dmg, v)
+        metrics['defmech_health'] = (worst_disp, worst_dmg)
+        checks['D8'] = (d1_ok and finite(worst_disp) and finite(worst_dmg)
+                        and worst_disp <= MAX_DISP and worst_dmg <= MAX_DAMAGE,
+                        'max|u|=%.3g m (<=%.3g), max damage=%.3g (<=%.3g), '
+                        'runs_complete=%s'
+                        % (worst_disp, MAX_DISP, worst_dmg, MAX_DAMAGE, d1_ok))
+    else:
+        checks['D8'] = (False, 'mesh unavailable')
 
     return checks, metrics, data_error
 
@@ -290,14 +362,19 @@ def main(argv):
     print('=== Gate 4.2 -- cell-wise Darcy velocity -> HeatXfer verdict ===')
     if data_error:
         print('  DATA ERROR: %s' % data_error)
-    for key in ('D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7'):
+    for key in ('D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'D8'):
         ok, msg = checks.get(key, (False, 'not evaluated'))
         print('  %s  %s  %s' % (key, 'PASS' if ok else 'FAIL', msg))
     slot = metrics.get('response_slot')
+    auto_slot = metrics.get('auto_max_slot')
     if metrics.get('slot_diff'):
-        print('  --- advection response by record slot (max |T_on - T_off|) ---')
+        print('  --- per-slot max |field_on - field_off| (diagnostic only) ---')
         for k, v in sorted(metrics['slot_diff'].items(), key=lambda kv: -kv[1]):
-            mark = ' <== response' if k == slot else ''
+            mark = ''
+            if k == slot:
+                mark = ' <== temperature slot (verdict)'
+            elif k == auto_slot:
+                mark = ' <== largest raw diff (NOT used)'
             print('    %-20s %12.6g%s' % (k, v, mark))
     failed = [k for k, v in checks.items() if not v[0]]
     if data_error:
@@ -305,8 +382,9 @@ def main(argv):
     verdict = 'PASS' if not failed else 'FAIL (%s)' % ','.join(failed)
     if gate:
         print('GATE42_RESULT: %s' % verdict)
-        print('GATE42_DETAIL: %d checks, %d failed, response slot=%s'
-              % (len(checks), len(failed), slot))
+        print('GATE42_DETAIL: %d checks, %d failed, temp slot=%s (from temp_Offset), '
+              'largest raw diff slot=%s'
+              % (len(checks), len(failed), slot, auto_slot))
         return 0 if not failed else 1
     print('  VERDICT: %s' % verdict)
     return 0

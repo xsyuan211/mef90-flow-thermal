@@ -764,14 +764,14 @@ jobs:
             g42rc=${PIPESTATUS[0]}
             echo "=== Gate 4.2 $g42tag mpirun exit code: $g42rc ==="
             echo "=== Gate 4.2 $g42tag: thermal/advection bag values as parsed ==="
-            grep -aiE "enable_advection|heatxfer_timeStepping_type|TempBC|boundaryTemp =" \
-              "/tmp/terzaghi_${g42tag}.log" | sort -u | head -8 || true
+            grep -aiE "enable_advection|heatxfer_timeStepping_type|TempBC|boundaryTemp =|LinearThermalExpansion|ThermalConductivity" \
+              "/tmp/terzaghi_${g42tag}.log" | sort -u | head -16 || true
             echo "=== Gate 4.2 $g42tag Gate 4.2 rows: $(grep -ac 'Gate 4.2: enabled=' "/tmp/terzaghi_${g42tag}.log" || true) ==="
             if [ -s data/Beam1x10-tri3_out.gen ]; then
               cp -f data/Beam1x10-tri3_out.gen "/tmp/out_${g42tag}.gen"
               echo "=== saved $g42tag result mesh -> /tmp/out_${g42tag}.gen ==="
             else
-              echo "=== WARN: $g42tag produced no result mesh; Gate 4.2 D4-D6 must FAIL ==="
+              echo "=== WARN: $g42tag produced no result mesh; Gate 4.2 D4-D8 must FAIL ==="
             fi
           done
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
@@ -836,9 +836,12 @@ jobs:
           # --- Gate 4.2 (hard): does cell-wise v_darcy reach the heat field? -
           # Checklist 4.2: "开启 enable_advection 后热场受 v_darcy 平流影响".
           # Two identical decks (only flow.enable_advection differs) produce
-          # two meshes; check_gate42_advection.py auto-discovers the record
-          # slot that responds and requires a NON-UNIFORM, growing, relative
-          # temperature difference. Solver messages / fnorm / reason codes
+          # two meshes; check_gate42_advection.py LOCKS the temperature slot
+          # from the solver's temp_Offset bag value (CI #90: auto-discovery
+          # picked a diverging Displacement_Y field) and requires a
+          # NON-UNIFORM, growing, relative temperature difference plus D8
+          # (mechanical fields stay at production magnitude). Solver
+          # messages / fnorm / reason codes
           # are never trusted. Verdict printed here, exit 1 DEFERRED until
           # after Gate 3.3 (CI #82 lesson).
           python3 data/check_gate42_advection.py --gate \
@@ -898,8 +901,9 @@ jobs:
             echo "=== FAIL: Gate 4.2 rejected the Darcy-driven thermal advection (rc=$g42_rc) ==="
             echo "    Check /tmp/gate42_verdict.log: D1 both runs complete,"
             echo "    D2 enable flag differs, D3 velocity alive/decaying/same,"
-            echo "    D4 mesh integrity, D5 live thermal field, D6 non-uniform"
-            echo "    growing temperature response, D7 production isolation."
+            echo "    D4 mesh integrity, D5 live thermal field on temp_Offset slot,"
+            echo "    D6 non-uniform growing response, D7 production isolation,"
+            echo "    D8 mechanical fields at production magnitude (no blow-up)."
             exit 1
           fi
           echo "=== Gate 4.2 PASS: cell-wise v_darcy measurably changes the thermal field ==="

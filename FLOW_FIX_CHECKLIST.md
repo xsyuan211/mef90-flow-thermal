@@ -2322,5 +2322,65 @@ ERROR，0 个 `Gate 3.2: step` / `Gate 4.2: enabled=`）：
 规范，暂不隔离。若 CI #90 崩在该路径，再考虑给 4.2 诊断 deck 增加
 DefMech 热耦合隔离开关。
 
-**CI #90 待回：两个变体是否跑满 51 步、D1-D7 是否全 PASS。**
+### CI #90 结果：编译全绿、两变体跑满 51 步，Gate 4.2 FAIL (D5)
+
+Gate 3.3（P1-P6/P8）与 Gate 4.1（B1-B7）继续全 PASS。Gate 4.2：
+D1/D2/D3/D4/D6/D7 PASS，**D5 FAIL**（`1.75257e+18 K`），而该轮 D6 的
+PASS 是假阳性。关键事实：
+
+- 两个变体各 5670 行、51 步、0 SEGV、51 次 `Thermal energies`
+  （0 → 500，对应 `T_bc=100*t`）—— 热场本身完全正常，平流 helper 跑通。
+- EXO 变量名表由 `MEF90DefMechFormatEXO` 固定为 4 个 nodal var
+  （Pressure / Damage / Displacement_X / Displacement_Y），**无法命名温度**。
+  `temp_Offset=1` + `flow.pressure_offset: 0` 让温度占 slot 1；离线读网格
+ 证实 slot1 是 `0 → 100 K`，平流差异末步 `0.0063958 K`、首步 0、
+ 峰值 `0.0125 K @ step19`、`spatial_frac=0.638`。
+- 判据"自动发现最大差异槽"选中 `vals_nod_var4`（Displacement_Y，
+ `|d|=3.29e18`），把 `1.75e18` 当温度 → D5 FAIL；D6 在该槽的 PASS
+ 同样是爆炸位移造成的假阳性。
+- 位移爆炸根因：`MEF90Mathium2D` 默认
+  `LinearThermalExpansion = MEF90MatS2DIdentity`（α = 1 /K）。启用热场后
+  `DefMechCtx%temperature` 被关联，`m_MEF90_DefMechAssembly.F90` 的 17 处
+  `Associated(temperature)` 热膨胀分支首次执行；`T_bc=100*t` 产生 100 倍
+  热应变 → damage 饱和为 1 → `|u| ~ 1e18 m`。生产 deck `heatxfer=null`，
+  该路径从未触发。
+
+### CI #91 前的修复
+
+1. 两个 4.2 **诊断 deck**（三个 cell set 均加）：
+   `LinearThermalExpansion: 0,0,0` 解耦热应变；
+   `ThermalConductivity: 0.1,0.1,0`。稳态方程为
+   `K*laplacian(T) - rhoCp*v.grad(T) = 0`，故 `delta_T ~ v/K`；默认 K=1 时
+   末步 `v_darcy` 已衰减到 `8.8e-5`，差异仅 `6.4e-5` 相对量，低于
+   `REL_DIFF_MIN=1e-4`。K 降 10 倍把信号抬到 `~0.064 K`
+   （`rel ~ 6.4e-4`），Dirichlet 温度场、T span、两 deck 对照均不变，
+   单元 Peclet 仍 ≤ 0.02（扩散主导、稳定）。生产 deck 与核心 Fortran 不动；
+   两 deck 依旧**仅差 `enable_advection`**。
+2. `check_gate42_advection.py`：从变体日志 bag view 的 `temp_Offset = N`
+   锁定 `vals_nod_varN` 为温度槽，**不再用最大差异槽裁决**；差异表降级为
+   诊断输出（标注 `largest raw diff (NOT used)`）。
+3. D5 增加"温度随时间增长"（首步 → 末步）、D6 增加绝对下限
+   `MIN_ABS_DIFF=1e-4 K`；`REL_DIFF_MIN=1e-4` **不放宽**。
+4. 新增 **D8**：两变体末步 `max|u| <= 1e-3 m`、`max damage <= 0.1`
+   （生产量级 `1.1e-5 m` / `3.7e-5`），以 D1 为前置；判据扩为 D1-D8。
+5. workflow：变体 bag 摘要加打 `LinearThermalExpansion` /
+   `ThermalConductivity`，运行时可直接确认新键生效；失败提示改 D1-D8。
+
+### 离线验证（零本地编译 / 零求解器运行）
+
+- **CI #90 真实数据回放**：D5 锁槽后 PASS（`100 K`，`grows=True`），
+  D6 FAIL（`rel=6.4e-5`）、D8 FAIL（`1.75e18 m` / `damage=1`）
+  → 加固后无假阳性。
+- **模拟修复后数据**（机械场换回主网格、温度差异 ×10）：
+  **D1-D8 全 PASS**；且 `auto_max_slot` 落在 elem 应力槽，进一步证明
+  自动发现不可用。
+- 静态校验：18 yaml / 5 py `ast.parse` / 10 个 run 块 `bash -n` /
+  `git diff --check` / 新增内容全角字符 0。
+- YAML 键名实证：`fracturetoughness`（全小写）把 bag 的
+  `FractureToughness` 从默认 1 改成 27000、`internalLength` 把 1 改成
+  0.2，说明 PETSc YAML 键大小写不敏感，新加的两个 MatProp 键可命中
+  `cs0001_` 前缀 bag。
+
+**CI #91 待回：bag 摘要是否为 `alpha=0 0 0` / `K=0.1 0.1 0`，D1-D8 是否全 PASS。**
+若 K 未生效 D6 会 FAIL、若 α 未生效 D8 会 FAIL，日志可立即区分。
 4.1b、残差平台 `3~13` 根因、damage 7 条 `-5` 仍在册。
