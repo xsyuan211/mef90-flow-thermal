@@ -1365,3 +1365,119 @@ R/J 一致 ⇒ Newton 应 1 步收敛。
 `HydrostaticDeviatoric → None`（唯一出现处，第 106 行）；主运行追加
 `-disp_snes_converged_reason` 以打印真实原因；watcher 同时核 `defmech_fail`、
 fnorm 分布与 reason，**不再只看失败消息计数**，杜绝第四次假收敛。
+
+---
+
+## 【覆盖性更正】CI #82 = FAIL：split / R-J 不一致假设被彻底证伪
+
+**上面的 "J ≠ dR/du 是根因" 推论不成立，勿再据此推 CI。** 独立复核 ci82.log：
+
+| 检查项 | 实测 |
+|---|---|
+| deck 改动生效 | bag 视图多处 `unilateralContact_type = None`（合法枚举，`SplitNone` 已实现，未 STOP） |
+| 主运行 | **57 次 `-5`**；fnorm 2607 条，min **1.56**、last 4.66、**0 条 < 0.208**（rtol·F₀ 阈值） |
+| **V2（`-disp_snes_fd` FD Jacobian）** | **首次完整跑完 `rc=0`，仍 59 次 `-5`**；首步 fnorm 6.17→3.59→3.45→3.40→4.16→4.83（降后反弹），与解析 J 同模式 |
+| 压力场 / 崩溃 | `pmax=9055.7` 正确，crash=0，走完 51 步 |
+| Gate 3.3 | 57 次 → **FAIL**（硬闸门，预期） |
+
+**决定性推论**：FD Jacobian 由残差数值微分得到、数学上必与 R 一致；**连 FD 也发散 ⇒ 所有「J 与 R 不一致」类假设（应变能分裂、阻尼系数、BC 施加方式）全部证伪**，问题不在雅可比装配。
+
+**本轮额外排除**（零成本代码复核）：
+- `dampingCoefficientDisplacement = 0`、`cohesiveStiffness = 0`（bag 实测）⇒ 残差 `damping/dt` vs 雅可比 `damping*dt` 的系数不对称根本不生效。
+- 日志里每步的 `type: ksponly` 属 **`flow_` SNES**（压力线性求解），不是位移 SNES。
+- 残差向量管理正确：`SectionRealSet(residualSec,0)` + `VecSet(residual,0)` + `SectionRealUpdateClosure(ADD_VALUES)` + `SectionRealToVec(SCATTER_FORWARD)` + BC `INSERT_VALUES` ⇒ 排除「未清零累加 / 状态污染」。
+- `50 × CONVERGED_RTOL` 是 flow KSP 线性求解（`Linear solve converged ... iterations 42`），与位移 SNES 无关；`-disp_snes_converged_reason` 未产生 `diverged due to` 输出。
+
+**结论**：**配置层（deck + CI 命令行）可零 Fortran 验证的假设已穷尽**。残差在 Newton 迭代中降到 O(1) 后振荡、内层线性求解全部收敛、解析/FD Jacobian 同败 ⇒ 问题落在 **Fortran 源码层的 SNES 状态管理 / 残差回调的隐藏状态依赖**。改 Fortran 由 CI 编译是合规的（零本地编译约束不禁止），但周期与风险高于 deck 调整。
+
+**另注**：Gate 3.3 硬闸门目前使每一次提交必红；是否临时退回 report-only 是与根因排查独立的工程决策。
+
+---
+
+## CI #73 artifact 复核：ksponly「CONVERGED」是第四次假收敛（无数据占位）
+
+CI #82 的 diagnostics artifact 只有 7 个文件，缺 `snes_l2.log` / `snes_ksponly.log`——
+因为 `for variant in l2 ksponly` 与 `diagnose_snes.py` 在 build.yml 第 811/826 行，
+属 **Gate 3.3 之后的独立步骤**；Gate 3.3 `exit 1` 使 CI #82 该步骤被跳过。
+CI #73（当时 3.3 为 report-only、整体 success）的 artifact 则完整保存了两个变体日志，
+其 job log 16006–16011 行给出汇总表：
+
+```
+main-basic   51(-5:51) 51 51 50  1.049e+01  3.461e+00  7.304e+00  DIVERGED
+l2-original  51(-5:51) 51 51 50  1.049e+01  2.008e+00  5.956e+00  DIVERGED
+ksponly       0        51 51  0  0.000e+00  0.000e+00  0.000e+00  CONVERGED
+```
+
+**ksponly 那行不可采信**：`snes_ksponly.log` 里 **0 条 `SNES Function norm`**、
+`iters=0`、三列 `0.000e+00` 均为 diagnose_snes.py 在「无样本」时的占位值。
+`SNESKSPONLY` 只解一次线性系统，不算残差、不触发 monitor、不做收敛判据，
+也不打印 `SNESSolve failed` ⇒ `fails=0` 与 `fnorm=0` 都**不证明残差归零**。
+日志里 `maximum iterations=1` / SNESView `total number of linear solver
+iterations=0` 印证这一点。**这是继 #75 区间误读、#78 崩溃假收敛、#81 步长 0
+假收敛之后的第四次「假收敛」，成因是「无数据被当成零」。**
+
+**l2 变体**（`-disp_snes_linesearch_type l2`）：51 次 `-5`、2601 条 fnorm、
+min **1.845**、0 条 <1e-4 ⇒ 与 `basic` 同样发散，**线搜索类型也排除**。
+
+**结论**：ksponly 是否真能让残差达标，**现成证据无法回答**。要判定必须新跑一轮
+带真实判据的实验：主运行/诊断变体用 `-disp_snes_type ksponly`，判据不得使用
+`SNESSolve failed` 计数或缺失 fnorm，而要用「位移场 vs Terzaghi 解析解」
+（复用 Gate 3.2 的 FEM/BE 比较）或显式残差范数。
+
+---
+
+## 判据检索（2026-11-08）：位移场「真实判据」的可用证据与阈值
+
+目的：为 ksponly 新实验选判据，杜绝第五次「无数据被当成零」的假收敛。
+
+### 1. 现成实验结果（本地 CI artifact / 日志，可直接引用）
+
+| 来源 | 结果 | 用途 |
+|---|---|---|
+| Gate 3.2 / CI #70 `terzaghi_pressure_timeseries.csv` | pmax `1e5 → 9055.7 Pa`，ratio `0.0905571`；BE 解析 `0.09339`（L2 相对误差 **3.206%**）；连续解析 `0.08713` | 压力场正确性基线，已通过且与位移求解解耦 |
+| CI #69 GMRES vs CG 同源双跑（checklist 1065–1074） | 压力差 `2.54e-5 Pa`（`2.5e-10` 相对）、ux 差 `2.22e-6 m`、**uy 差 `0.01204 m`** | 位移场「不具备定量可比性」的直接证据；P7 阈值来源 |
+| CI #70 `_out.gen`（`a70`，51×356，Gate 3.2 同一网格） | ux ∈ `[-9.31e-4, 0]` 单调衰减；uy 从 `±1.8e-5` 单调累积到**整场均匀** `-0.05564 m` | 错误解指纹 = 均匀刚体漂移；BC 修复前 ux@BC = `9.3e-4` |
+| CI #73 metadata check | `slot 4 Displacement_Y t1 [-1.06137, -1.06133]`（整场均匀） | 漂移量随配置变化（-0.056 / -1.06），非物理解 |
+| CI #82 artifact | 仅 7 个日志，**无 `_out.gen`**，无 l2/ksponly 日志 | 新实验必须显式保存结果网格 |
+
+### 2. 外部解析解（判据的物理依据）
+
+- Wang (2004) / E3S 2023 附录 A：Terzaghi 压力级数 (A.1) + 垂直位移闭式 (A.2)，`c_M = 1/α1`。
+- Itasca FLAC3D《One-Dimensional Consolidation》（Detournay & Cheng 1993）：由 `∂σ_zz/∂z=0` 与 `σ=α1 ε - α p` 积分得位移级数 (5)，`α1 = K+4G/3`。
+- Andrade et al., JMPS 2022 式 (18)(19)：位移/沉降无量纲级数，并**用解析解验证实验数据**。
+- Springer 2025（THM verification）式 (16)：一维约束模量 `E(1-ν)/[(1-2ν)(1+ν)]`。
+
+本项目：`E=1e9, ν=0.25` → `λ=4e8, G=4e8, M=K+4G/3=1.2e9 Pa`；`α=1, p0=1e5, H=10` → `p0 H/M = 8.33e-4 m`。用 Gate 3.2 同一 BE 级数 `d_m=(1+λ_m dt)^(-n)` 积分：
+- **一端自由**（CI #70 当时配置）：`u(-5,0)` 解析 `-8.3305e-4 m` vs FEM `-9.2974e-4 m`（差 11.6%，源于 t=0 排水面 Dirichlet + 二维/重力效应）→ 常数、符号校验通过。
+- **两端全固定**（当前 deck）：`u_x^an` 峰值 **`9.90e-5 m` 在 t=0.08 s（step 5）**；`t=0: 2.8e-7`、`t=1: 1.04e-5`，**非单调（先增后减）**，两端严格 0（`-1.6e-24`）。
+
+### 3. 判据表（ksponly / 主运行均适用，按可靠性排序）
+
+| # | 判据 | PASS 阈值 | 依据 |
+|---|---|---|---|
+| P1 | BC 节点 `x=±5` 的 `\|u_x\|,\|u_y\|` | `< 1e-10 m` | 解析解两端严格 0；CI #70 修复前 `9.3e-4 m` |
+| P2 | 均匀刚体漂移 `\|mean(u_y)\|` | `< 1e-6 m` | 重力静载只产生弯曲 `±1.8e-5`；错误解整场均匀 `-0.0556/-1.06` |
+| P3 | `\|u_y(t=1)\| / \|u_y(t=0)\|` | `< 2`（静载应稳态） | 实测 `3045×`（#70）、`~6e4×`（#73） |
+| P4 | `max\|u_x\|` 全程峰值 | `5e-5 ~ 2e-4 m`，且峰值在 `t<0.2 s` | 两端固定解析 `9.90e-5 @ 0.08 s`；一端自由上限 `8.33e-4` |
+| P5 | `u_x` 时间形态 | 非单调，不能从 `9e-4` 单调衰减 | 解析解；单调衰减属一端自由配置 |
+| P6 | 压力场（复用 Gate 3.2） | ratio `0.0906`、L2(BE) `≤ 3.3%` | BE 解析，与位移求解解耦 |
+| P7 | 同源一致性（ksponly vs 主运行） | **压力**全场差 `< 1e-2 Pa`；位移差仅报告、不作判据（两者本就应不同） | CI #69 反例：p 差 `2.54e-5 Pa` → uy 差 `0.01204 m` |
+
+**明确不可用作判据**：`SNESSolve failed` 计数（`vDef.F90:573` 仅在 `reason<0` 打印）、`diagnose_snes.py` 无样本时的 `0.000e+00` 占位、`SNES_CONVERGED_SNORM_RELATIVE`（步长 0 假收敛）、未传 `-disp_ksp_converged_reason` 时的「无输出」。
+
+### 4. 落地要点（CI #83 已实施）
+
+- Gate 3.3 的 `exit 1` 会跳过其后 l2/ksponly 步骤（CI #82 已证）→ 诊断插在 **Gate 3.3 之前**（ROBUSTKSP 之后），并显式保存 `/tmp/out_main.gen` 与 `/tmp/out_ksponly.gen`，否则又会出现「无数据」。
+- 可复用现成脚本：`vDef/data/check_exodus_metadata.py`（slot 范围）、`vDef/data/compare_ksp_runs.py`（同源日志对比）、`/d/tmp/compare_fields.py`（四 slot 全字段对比，仅本地有，未入库）。
+- 判定树：ksponly 过 P1–P5 而主运行 51×`-5` 不过 ⇒ 「SNES 迭代污染解」成立，ksponly 即修复方向；两者都不过 ⇒ 问题在装配/状态管理；两者都过 ⇒ 51×`-5` 只是收敛判据问题，物理场正确。
+
+**CI #83 实现**：新增 `vDef/data/check_terzaghi_displacement.py`（纯标准库 +
+`parse_cdf2.py`；P1–P7 自动判定；恒返回 0、只打印 VERDICT，不新增闸门）。
+`build.yml` 主运行结束后立即 `cp _out.gen /tmp/out_main.gen`（后续 NODAMAGE /
+ROBUSTKSP / KSPONLY-PHYS 都会覆盖同一路径），在 ROBUSTKSP 之后插入
+`-disp_snes_type ksponly` 的 51 步运行（600 s cap），保存 `/tmp/out_ksponly.gen`
+并把主网格恢复给 Gate 3.1/3.2 与交付 artifact；新日志与两份网格加入
+`build-diagnostics` artifact；step timeout `60 → 75`。
+静态校验：PyYAML、10 个 run 块 `bash -n`、脚本 `ast.parse`、`git diff --check` 全过；
+判据脚本用 CI #70 既有网格自测（P6 ratio `0.0905571`、L2 `0.0320613` 与 Gate 3.2
+逐位一致，P1–P5 正确判 FAIL）。**零本地编译、零本地求解器运行**。

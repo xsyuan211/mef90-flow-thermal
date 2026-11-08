@@ -406,8 +406,9 @@ jobs:
         # Bumped 20->45 for CI #76, then 45->60 for CI #77: the AT2-damage
         # divergence plus the NODAMAGE (AT2Elastic) + ROBUSTKSP (strong-KSP)
         # diagnostic variants each can eat their full timeout when the
-        # displacement SNES diverges.
-        timeout-minutes: 60
+        # displacement SNES diverges. 60->75 for CI #83: one extra full
+        # 51-step run (-disp_snes_type ksponly) supplies the physics verdict.
+        timeout-minutes: 75
         run: |
           set +e
           export PETSC_DIR=$HOME/petsc-3.3-mef90
@@ -527,6 +528,17 @@ jobs:
             2>&1 | tee /tmp/terzaghi.log
           rc=${PIPESTATUS[0]}
           echo "=== Terzaghi mpirun exit code: $rc ==="
+          # CI #83: freeze the PRODUCTION result mesh NOW. Every diagnostic
+          # variant below (NODAMAGE / ROBUSTKSP / ksponly-physics) rewrites the
+          # same data/Beam1x10-tri3_out.gen path; without this copy the physics
+          # verdict would silently compare two diagnostic meshes instead of
+          # the production run against ksponly.
+          if [ -s data/Beam1x10-tri3_out.gen ]; then
+            cp -f data/Beam1x10-tri3_out.gen /tmp/out_main.gen
+            echo "=== saved production result mesh -> /tmp/out_main.gen ==="
+          else
+            echo "=== WARN: production result mesh missing; MAIN verdict INCONCLUSIVE ==="
+          fi
           if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
             echo "=== FAIL: Terzaghi TIMED OUT / HUNG (MPI deadlock or stalled TS solve) ==="
             echo "=== last Gate 3.1 trace reached (both ranks print via PETSC_COMM_SELF) ==="
@@ -632,6 +644,52 @@ jobs:
           else
             echo "=== KSPINIT CONVERGED: KSPSetInitialGuessNonzero(TRUE) was the -5 culprit; fix = -disp_ksp_initial_guess_nonzero 0 (zero Fortran) ==="
           fi
+          # --------------------------------------------------------------------
+          # CI #83: PHYSICS VERDICT for -disp_snes_type ksponly.
+          # Deck/CLI-level hypotheses are exhausted (CI #80 weak-KSP ruled out,
+          # CI #82 FD Jacobian ruled out). The remaining question is whether
+          # the DISPLACEMENT FIELD is right when the displacement SNES is
+          # reduced to one linear solve. Four earlier "convergences" were false
+          # (#73 ksponly fnorm placeholders, #75 log-range misread, #78 SEGV,
+          # #81 zero step), so the verdict is the physical field in the Exodus
+          # mesh, NOT any solver message / fnorm / reason code / failure count.
+          # Criteria P1-P7 with analytic thresholds live in
+          # data/check_terzaghi_displacement.py and FLOW_FIX_CHECKLIST.md.
+          # This MUST run BEFORE Gate 3.3: its `exit 1` skips everything after
+          # it (CI #82 lost snes_l2.log / snes_ksponly.log that way).
+          # --------------------------------------------------------------------
+          echo "=== KSPONLY-PHYS diagnostic run (-disp_snes_type ksponly) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi1D.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_ksponly_phys.log
+          ko_rc=${PIPESTATUS[0]}
+          echo "=== KSPONLY-PHYS mpirun exit code: $ko_rc ==="
+          ko_crash=$(grep -ciE "Caught signal|SEGV|MPI_ABORT|PETSC ERROR" /tmp/terzaghi_ksponly_phys.log || true)
+          ko_msg=$(grep -c "SNESSolve failed with SNESConvergedReason" /tmp/terzaghi_ksponly_phys.log || true)
+          ko_steps=$(grep -c "Gate 3.1: step" /tmp/terzaghi_ksponly_phys.log || true)
+          echo "=== KSPONLY-PHYS: rc=$ko_rc crash=$ko_crash failure-msgs=$ko_msg step-lines=$ko_steps ==="
+          echo "=== KSPONLY-PHYS: final Gate 3.2 pressure envelope ==="
+          grep "Gate 3.2:" /tmp/terzaghi_ksponly_phys.log | tail -2 || true
+          if [ -s data/Beam1x10-tri3_out.gen ]; then
+            cp -f data/Beam1x10-tri3_out.gen /tmp/out_ksponly.gen
+            echo "=== saved ksponly result mesh -> /tmp/out_ksponly.gen ==="
+          else
+            echo "=== WARN: ksponly produced no result mesh; verdict INCONCLUSIVE ==="
+          fi
+          # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
+          # artifact stay the main-run output (diagnostic variants overwrite it).
+          if [ -s /tmp/out_main.gen ]; then
+            cp -f /tmp/out_main.gen data/Beam1x10-tri3_out.gen
+            echo "=== restored production result mesh for Gates 3.1/3.2 ==="
+          fi
+          echo "=== PHYSICS VERDICT P1-P7 (physical fields only) ==="
+          python3 data/check_terzaghi_displacement.py \
+            /tmp/out_main.gen /tmp/out_ksponly.gen /tmp/terzaghi_ksponly_phys.log \
+            2>&1 | tee /tmp/terzaghi_verdict.log || true
           echo "=== result files (3.2 analytical-comparison data source) ==="
           echo "    -prefix data/Beam1x10-tri3 -> geometry data/Beam1x10-tri3.gen, result data/Beam1x10-tri3_out.gen"
           ls -la data/Beam1x10-tri3_out.gen 2>/dev/null || echo "(no _out.gen result file)"
@@ -843,6 +901,10 @@ jobs:
             /tmp/terzaghi.log
             /tmp/snes_l2.log
             /tmp/snes_ksponly.log
+            /tmp/terzaghi_ksponly_phys.log
+            /tmp/terzaghi_verdict.log
+            /tmp/out_main.gen
+            /tmp/out_ksponly.gen
           retention-days: 7
       - name: Upload Terzaghi result mesh
         uses: actions/upload-artifact@v4
