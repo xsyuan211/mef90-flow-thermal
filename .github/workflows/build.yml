@@ -695,6 +695,37 @@ jobs:
           else
             echo "=== WARN: ksponly produced no result mesh; verdict INCONCLUSIVE ==="
           fi
+          # --------------------------------------------------------------------
+          # Gate 4.1 NOBIOT control (CI #85).
+          # Same binary / mesh / options as the production run, but the deck
+          # is terzaghi1D_nobiot.yaml: byte-identical to terzaghi1D.yaml
+          # except biot_coeff 1.0 -> 0.0. With alpha=0 the Biot body force
+          # disappears and u_x collapses to the gravity-only level, giving an
+          # INDEPENDENT physical check that the -alpha*grad(p) term is live
+          # (criterion B6 of data/check_gate41_biot.py). A command-line
+          # -flow_biot_coeff override is deliberately NOT used: PETSc 3.3 bag
+          # options can be rejected as "Unknown option", which would silently
+          # produce no control mesh. Deck variants are the proven pattern here
+          # (terzaghi1D_nodamage.yaml / terzaghi1D_robustksp.yaml).
+          # Must run BEFORE the production mesh is restored: every variant
+          # writes the same data/Beam1x10-tri3_out.gen path.
+          # --------------------------------------------------------------------
+          echo "=== Gate 4.1 NOBIOT control run (biot_coeff=0, ksponly) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi1D_nobiot.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_nobiot.log
+          nb_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.1 NOBIOT mpirun exit code: $nb_rc ==="
+          if [ -s data/Beam1x10-tri3_out.gen ]; then
+            cp -f data/Beam1x10-tri3_out.gen /tmp/out_nobiot.gen
+            echo "=== saved NOBIOT result mesh -> /tmp/out_nobiot.gen ==="
+          else
+            echo "=== WARN: NOBIOT produced no result mesh; Gate 4.1 B6 must FAIL ==="
+          fi
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
           # artifact stay the main-run output (diagnostic variants overwrite it).
           if [ -s /tmp/out_main.gen ]; then
@@ -737,6 +768,21 @@ jobs:
             grep -n "error while loading shared libraries" /tmp/terzaghi.log | head -10
             exit 1
           fi
+          # --- Gate 4.1 (hard): Biot body-force superposition -----------------
+          # Checklist 4.1a: "开启体力缩放后结果不回滚". MEF90DefMechSetTransients
+          # re-applies ForceScaling (default Linear) on EVERY outer step, so
+          # |baseForce| must grow 0 -> 9.81 over 51 steps; the production
+          # force must be exactly baseForce - alpha*grad(p). The Fortran side
+          # emits one "Gate 4.1:" diagnostic row per step with the norms and
+          # the superposition error, and the NOBIOT control mesh gives an
+          # independent check that the coupling changes the displacement.
+          # Emit the verdict here but DEFER its exit 1 until after Gate 3.3,
+          # so a Gate 4.1 failure never hides the Gate 3.3 physics table
+          # (CI #82 lesson: an early exit 1 skips later diagnostics).
+          python3 data/check_gate41_biot.py --gate \
+            /tmp/terzaghi.log /tmp/out_main.gen /tmp/out_nobiot.gen \
+            2>&1 | tee /tmp/gate41_verdict.log
+          g41_rc=${PIPESTATUS[0]}
           # --- Gate 3.3 (hard): PHYSICS VERDICT on the production field -----
           # CI #83 proved the old criterion -- counting "SNESSolve failed"
           # lines -- is WRONG (FLOW_FIX_CHECKLIST.md, section "CI #83 结果"):
@@ -774,6 +820,15 @@ jobs:
             exit 1
           fi
           echo "=== Gate 3.3 PASS: P1-P6 + P8 physics criteria satisfied on /tmp/out_main.gen ==="
+          # Gate 4.1 deferred verdict (see the deferred-exit note above).
+          if [ "$g41_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
+            echo "    Check /tmp/gate41_verdict.log: B1 rows, B2 alpha, B3 Linear"
+            echo "    force scaling, B4 superposition error, B5 gradp,"
+            echo "    B6 NOBIOT control, B7 run completeness."
+            exit 1
+          fi
+          echo "=== Gate 4.1 PASS: Linear force scaling preserved, force = baseForce - alpha*grad(p) ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -906,10 +961,13 @@ jobs:
             /tmp/ldd-vDef.log
             /tmp/terzaghi.log
             /tmp/terzaghi_ksponly_phys.log
+            /tmp/terzaghi_nobiot.log
             /tmp/terzaghi_verdict.log
             /tmp/gate33_verdict.log
+            /tmp/gate41_verdict.log
             /tmp/out_main.gen
             /tmp/out_ksponly.gen
+            /tmp/out_nobiot.gen
           retention-days: 7
       - name: Upload Terzaghi result mesh
         uses: actions/upload-artifact@v4

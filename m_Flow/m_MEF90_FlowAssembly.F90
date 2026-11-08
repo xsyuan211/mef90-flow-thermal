@@ -1162,7 +1162,17 @@ Contains
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 !!!  APPLY BIOT BODY FORCE  f_p = -α · ∇p  →  DefMechCtx%force
-!!!  Uses VecAXPy so that any preset body forces (gravity, etc.) are preserved.
+!!!  Gate 4.1 (2026-11-08): force is SUPERPOSED on the time-scaled preset
+!!!  body force in ONE VecWAXPY. The preset force is rescaled every outer
+!!!  step by MEF90DefMechSetTransients (default ForceScaling=Linear, so
+!!!  |baseForce| = 9.81*t), and vDef.F90 snapshots it once per TIME STEP,
+!!!  not once per AltMin iteration. Therefore rebuilding from baseForce on
+!!!  every AltMin call is idempotent: no accumulation, no rollback.
+!!!  NOTE: do NOT add a separate (-alpha*p*I) stress term on top of this.
+!!!  Integration by parts gives  int(-alpha*grad p).v = int(alpha*p*div v)
+!!!  - int_boundary(alpha*p*v.n), so the body-force form and the effective
+!!!  -stress form are the SAME volume term; adding both double-counts the
+!!!  pore pressure (see FLOW_FIX_CHECKLIST.md, Gate 4.1b).
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowApplyBiotForce"
@@ -1174,29 +1184,75 @@ Contains
 
       Type(MEF90FlowGlobalOptions_Type),pointer          :: gOpt
       PetscReal                                          :: biotCoeff
+      Type(Vec)                                          :: superposVec
+      PetscReal                                          :: vmin,vmax
+      PetscReal                                          :: nBase,nGrad,nForce,superposErr
+      Character(len=512)                                 :: IOBuffer
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
       biotCoeff = gOpt%biotCoefficient
 
-      !!! α = 0 表示不启用 Biot 耦合，跳过
+      !!! α = 0 表示不启用 Biot 耦合，跳过（NOBIOT 对照 deck 走此分支）
       If (biotCoeff == 0.0_Kr) Return
 
       !!! 计算 cell-centered ∇p
       Call MEF90FlowComputePressureGradient(FlowCtx%pressure, &
            FlowCtx%cellPressureGradient,FlowCtx,ierr);CHKERRQ(ierr)
 
-      !!! 从预设 baseForce 重建，再叠加 Biot 体积力
-      !!! f_p = -α · ∇p  →  force = baseForce + (-biotCoeff) * cellPressureGradient
+      !!! Gate 4.1: single-shot superposition  force = baseForce - alpha*grad(p)
+      !!! (was VecCopy(baseForce,force) + VecAXPY; mathematically identical,
+      !!! but VecWAXPY makes the "superposition, not overwrite" contract
+      !!! explicit and removes the intermediate half-updated state).
       If (Associated(DefMechCtx%force)) Then
-         !!! 先用 baseForce 重建 DefMechCtx%force（保留预设重力等）
          If (Associated(FlowCtx%baseForce)) Then
-            Call VecCopy(FlowCtx%baseForce,DefMechCtx%force,ierr);CHKERRQ(ierr)
+            Call VecWAXPY(DefMechCtx%force,-biotCoeff,FlowCtx%cellPressureGradient, &
+                 FlowCtx%baseForce,ierr);CHKERRQ(ierr)
          Else
             Call VecSet(DefMechCtx%force,0.0_Kr,ierr);CHKERRQ(ierr)
+            Call VecAXPy(DefMechCtx%force,-biotCoeff,FlowCtx%cellPressureGradient,ierr);CHKERRQ(ierr)
          End If
-         !!! 叠加 Biot 项：y = a*x + y
-         Call VecAXPy(DefMechCtx%force,-biotCoeff,FlowCtx%cellPressureGradient,ierr);CHKERRQ(ierr)
       End If
+
+      !!! ------------------------------------------------------------------
+      !!! Gate 4.1 diagnostics (one line per outer step, 51 lines total).
+      !!! VecMin/VecMax are used for the infinity norm: they already have a
+      !!! compiled precedent in vDef.F90 (Gate 3.2 pressure envelope), while
+      !!! VecNorm has none in this repository. All ranks take this branch.
+      !!!
+      !!!   |base|inf      : snapshot of the Linear-scaled preset force;
+      !!!                    must grow 0 -> 9.81 (a rollback would pin it).
+      !!!   |gradp|inf     : Biot driving term; must be nonzero and evolve.
+      !!!   |force|inf     : final superposed body force.
+      !!!   superpos_err   : ||force - (base - alpha*gradp)||_inf, computed
+      !!!                    from the UNMODIFIED baseForce snapshot. Zero iff
+      !!!                    the force was superposed; |base| if it was
+      !!!                    overwritten; |alpha*gradp| if Biot was dropped.
+      !!! ------------------------------------------------------------------
+      If (.NOT. (Associated(DefMechCtx%force) .AND. Associated(FlowCtx%baseForce) .AND. &
+                 Associated(FlowCtx%cellPressureGradient))) Return
+      Call VecMin(FlowCtx%baseForce,PETSC_NULL_INTEGER,vmin,ierr);CHKERRQ(ierr)
+      Call VecMax(FlowCtx%baseForce,PETSC_NULL_INTEGER,vmax,ierr);CHKERRQ(ierr)
+      nBase = max(abs(vmin),abs(vmax))
+      Call VecMin(FlowCtx%cellPressureGradient,PETSC_NULL_INTEGER,vmin,ierr);CHKERRQ(ierr)
+      Call VecMax(FlowCtx%cellPressureGradient,PETSC_NULL_INTEGER,vmax,ierr);CHKERRQ(ierr)
+      nGrad = max(abs(vmin),abs(vmax))
+      Call VecMin(DefMechCtx%force,PETSC_NULL_INTEGER,vmin,ierr);CHKERRQ(ierr)
+      Call VecMax(DefMechCtx%force,PETSC_NULL_INTEGER,vmax,ierr);CHKERRQ(ierr)
+      nForce = max(abs(vmin),abs(vmax))
+
+      Call VecDuplicate(DefMechCtx%force,superposVec,ierr);CHKERRQ(ierr)
+      Call VecWAXPY(superposVec,-biotCoeff,FlowCtx%cellPressureGradient, &
+           FlowCtx%baseForce,ierr);CHKERRQ(ierr)
+      Call VecAXPy(superposVec,-1.0_Kr,DefMechCtx%force,ierr);CHKERRQ(ierr)
+      Call VecMin(superposVec,PETSC_NULL_INTEGER,vmin,ierr);CHKERRQ(ierr)
+      Call VecMax(superposVec,PETSC_NULL_INTEGER,vmax,ierr);CHKERRQ(ierr)
+      superposErr = max(abs(vmin),abs(vmax))
+      Call VecDestroy(superposVec,ierr);CHKERRQ(ierr)
+
+      Write(IOBuffer,*) 'Gate 4.1: alpha=',biotCoeff,' |base|inf=',nBase, &
+           ' |gradp|inf=',nGrad,' |force|inf=',nForce, &
+           ' superpos_err=',superposErr,'\n'
+      Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowApplyBiotForce
 
 

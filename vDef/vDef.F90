@@ -517,8 +517,16 @@ Program vDef
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
          End If
 
-         !!! NEW — Phase 2b: snapshot preset forces (gravity etc.) into baseForce
-         !!! Biot body force will be superimposed on top each AltMin iteration
+         !!! Gate 4.1: snapshot the TIME-SCALED preset force (gravity etc.)
+         !!! into baseForce, ONCE PER TIME STEP (not once per AltMin iter).
+         !!! MEF90DefMechSetTransients above re-applies ForceScaling on every
+         !!! outer step; the default is MEF90Scaling_Linear, so
+         !!! |DefMechCtx%force| = 9.81*time(step). Snapshotting only once at
+         !!! startup (as the original checklist 4.1 suggested) would roll the
+         !!! Linear scaling back to its t=0 value and silently lose gravity.
+         !!! MEF90FlowApplyBiotForce rebuilds force = baseForce - alpha*grad(p)
+         !!! from this snapshot on every AltMin call, so the operation is
+         !!! idempotent (no accumulation) and the scaling is preserved.
          If (Associated(MEF90FlowCtx%baseForce) .AND. Associated(MEF90DefMechCtx%force)) Then
             Call VecCopy(MEF90DefMechCtx%force,MEF90FlowCtx%baseForce,ierr);CHKERRQ(ierr)
          End If

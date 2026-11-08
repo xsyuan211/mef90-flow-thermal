@@ -99,11 +99,21 @@
 
 ## 闸门 4 — 物理增强与工程闭环
 
-- [ ] **4.1 Biot 体力：叠加而非覆盖 + 补有效应力项**
-  - 位置：`m_Flow/m_MEF90_FlowAssembly.F90:948-953`（`VecCopy(baseForce,force)` 再叠加 `-α∇p`）；`vDef/vDef.F90:382-384`（每个 AltMin 迭代开始拍 `baseForce` 快照）
-  - 问题：`baseForce` 是步初快照，`VecCopy` 重置体力 → DefMech 步内按 CST/Linear 缩放的体力被回滚成步初值。且力学侧缺 `σ' = σ + α·p·I` 的有效应力耦合（当前只做了体力近似）。
-  - 改法：改为 `VecCopy(DefMechCtx%force, baseForce)` 仅作首次快照，AltMin 内用 `VecWAXPY(force, -biotCoeff, cellPressureGradient, baseForce)` 之类实现**叠加**而非覆盖；在 DefMech 应力装配处补 `α·p·I` 项。
-  - 验收：开启体力缩放后结果不回滚；含孔压时应力场体现有效应力修正。
+- [x] **4.1a Biot 体力：叠加而非覆盖 + 体力缩放不回滚**（CI #85 落地，见文末专节）
+  - 实际位置（原清单行号已过时）：`m_Flow/m_MEF90_FlowAssembly.F90:1180-1256`；`vDef/vDef.F90:520-533`（**时间步层**，不是每个 AltMin 迭代）。
+  - **覆盖性复核**：原清单写的「`VecCopy` 重置体力 → 步内 CST/Linear 缩放被回滚」在当前代码里**不成立**。Phase 2b 的实现是 `VecCopy(baseForce,force)` + `VecAXPy(force,-α,∇p)`，快照在时间步层、`MEF90DefMechSetTransients` 之后、AltMin 之外，每次 AltMin 调用都从快照重建 → 幂等、不累积、不回滚。
+  - **原清单「仅作首次快照」的建议是错的**：`m_vDefDefault.F90:43/79` 默认 `ForceScaling = MEF90Scaling_Linear`，`SetTransients` 每步把 `force` 缩放到 `9.81×t`；若只在启动时快照一次，`baseForce` 会恒为 t=0 的值（0），重力被静默丢弃。**正确语义是每时间步快照一次**，已写入 `vDef.F90` 注释。
+  - 本轮落地：`VecCopy+VecAXPy` → 单次 `VecWAXPY(force,-α,∇p,baseForce)`（清单要求的写法，数学等价、无中间态）；每步输出一条 `Gate 4.1:` 诊断；新增 `terzaghi1D_nobiot.yaml`（仅 `biot_coeff 1.0→0.0`）、`check_gate41_biot.py`、CI 硬闸门 **B1–B7**。
+  - 验收：B3 用「`|baseForce|` 线性增长 0→9.81、R²≥0.98」直接判「Linear 缩放不回滚」；B4 用 `‖force−(base−α∇p)‖∞≈0` 判「叠加而非覆盖/累积」；B6 用 NOBIOT 对照网格判「耦合真实生效」；Gate 3.3 P1–P8 保持回归。
+
+- [ ] **4.1b 有效应力项：改为「互斥模式」，不是「再补一项」**（物理裁决后重定义）
+  - **原清单表述有误**：「力学侧缺 `σ' = σ + α·p·I`，当前只做了体力近似」并非缺项。分部积分
+    `∫(−α∇p)·v dΩ = ∫αp·div(v) dΩ − ∫_Γ αp·v·n dΓ`，而总应力形式
+    `∫(C:ε − αpI):ε(v) dΩ = ∫C:ε:ε(v) dΩ − ∫αp·div(v) dΩ`。
+    **两者的体积项是同一个 `−∫αp·div(v)`，不是两个可相加的效应**；差别仅在自然边界的 `−αp·n` 面力如何解释。若按字面「在体力之外再补 `αpI`」，孔压效应被双重计入，`u_x` 峰值约翻倍（`1.10e-4 → 2.2e-4 m`），直接打掉刚转绿的 Gate 3.3 P4（上界 `2e-4`）。
+  - 因此「含孔压时应力场体现有效应力修正」应落地为：**新增与体力形式互斥的总应力模式**（`-flow_biot_form stress`），启用时停掉 `-α∇p` 体力、改在 `m_DefMech/m_MEF90_DefMechAssembly.F90` 残差里加 `−αp·tr(ε(v))`，Jacobian 不变（p 与 u 解耦）；并可选输出 `σ_total = C:ε − αpI` 诊断槽。需要新增 cell-based 孔压场并传入 DefMech 装配（不能复用 `pressureForce`，它是 coDim=1 的边界压力面力）。
+  - 验收：互斥模式下位移场与体力模式**等价**（两端 Dirichlet 固定时差异只可能来自侧面自然边界），Gate 3.3 P1–P8 仍 PASS；两种模式同时启用应被明确拒绝。
+  - 状态：**本轮未实现**（零本地编译下改 4–5 个 Fortran 文件风险过高，且会混淆 4.1a 的判据信号）。单列待做，不阻塞 4.1a 勾选。
 
 - [ ] **4.2 平流：把 `cellDarcyVelocity` 喂入 HeatXfer**
   - 位置：`m_HeatXfer/m_MEF90_HeatXferAssembly.F90:95-97 / 239-241 / 447-449 / 597-599`（已用常数 `advectionVector` 调 `MEF90DiffusionOperatorAdvectionSet`）；`m_Flow/...cellDarcyVelocity` 全库无消费者（grep 确认）
@@ -172,7 +182,7 @@
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
 - 闸门 2（可见）：4 / 4
 - 闸门 3（瞬态+符号）：1 / 2（3.1 静态实现 + 二轮正确性修正；**#47 首次完整编译通过，但仍未运行到物理求解**；3.2 必须运行）
-- 闸门 4（物理+工程）：0 / 11（4.11 的「CI 可信化」前置已做，主体未动）
+- 闸门 4（物理+工程）：**4.1a 已收口（CI #85 待回）**；4.1b 有效应力互斥模式单列待做；其余 10 项未动（4.11 的「CI 可信化」前置已做）。
 - 合计：8 项功能已落地，12 项待做
 
 **提交 / CI 状态**
@@ -1660,3 +1670,131 @@ ratio `∈[0.05,0.15]`，加上 `≥50` 记录、`t_end≈1`、有限值、无�
 3. Gate 3.3 之后的 Gate 3.1/3.2 硬断言在新日志下是否仍全过（已离线
    用同配置日志核对，但真实运行仍需确认）。
 4. `damage field ... -5` 仍会出现在日志中，属**已知残留**，不再是闸门项。
+
+---
+
+## CI #84 结果（run `42462830545`，commit `c8f84f6`，**conclusion = success**）
+
+**闸门 3 转绿**：`Gate 3.3 PASS` / `Gate 3.1 PASS` / `Gate 3.2 PASS`（两条）
+/ 全文无 `=== FAIL` 行 / `GATE33_RESULT: PASS`。这是自该硬闸门恢复以来
+第一次由**物理场判据**判出的绿色，而不是失败消息计数或 fnorm 占位。
+
+### 1. Gate 3.3 判据表（`/tmp/gate33_verdict.log`，51 记录 / 356 节点 / 12 BC）
+
+| 判据 | 实测 | 阈值 | 结果 |
+|---|---|---|---|
+| P1 BC 端位移 | `0` | `<1e-10 m` | PASS |
+| P2 `max\|mean(u_y)\|` | `8.1719e-7 m` | `≤1e-5 m` | PASS |
+| P2 相对峰值 | `0.0074` | `≤0.05` | PASS |
+| P3 `u_y` 时间漂移 | `0.07749` | `<2` | PASS |
+| P4 `peak\|u_x\|` / 峰值时刻 | `1.1036e-4 m` / `0.08 s` | `5e-5~2e-4 m` / `≤0.2 s` | PASS |
+| P5 非单调 | `peak@step5` | 内部峰 + 衰减 | PASS |
+| P6 ratio / pmin / L2(BE) | `0.0905571` / `0` / `0.0320613` | `0.05~0.15` / `≤1e-8` / `≤0.05` | PASS |
+| P8 末步最大损伤 | `3.7458e-5` | `≤0.1` | PASS |
+
+`Gate 3.3 diagnostics: displacement-msgs=0 damage-msgs=7 total=7
+(INFORMATIONAL ONLY)`；生产日志 264202 字节、51 条 Gate 3.2 探针。
+
+### 2. 决定性核实：求解器真的换了，且解是确定性的
+
+- 主运行 `mpirun rc=0`，耗时 **6.3 s**（08:41:01 V2 结束 → 08:41:07
+  主运行退出），对比 CI #83 标准 Newton 的 **19.5 min**。
+- `out_main.gen` 与 `out_ksponly.gen` sha256 **不同**、字节差仅 **2**
+  （两次独立运行，元数据差异）；P7 `dPressure=0`、`dUx=0`、`dUy=0`
+  → 逐位确定性，不是「网格没被重写」。两份 solver log 哈希也不同。
+- **跨 CI 交叉验证**：CI #84 主网格 vs CI #83 的独立 ksponly 网格，
+  `vals_nod_var1..4` 逐步最大差 **全为 0**（仅 12 字节元数据差）；
+  vs CI #83 的旧 Newton 主网格字节差 **776131**（即浮点末位差
+  `2.3e-7 / 1.6e-6 m`）。→ 主运行确实切到 ksponly，物理场未变。
+- 生产日志仅 7 条 `damage field ... -5`，**位移 SNES 失败 0 条**。
+
+### 3. 各段失败消息归属（口径同 CI #83 第 4b 节）
+
+| 运行 | 失败消息 |
+|---|---|
+| V2（FD Jacobian + GMRES，主运行前） | 51× displacement `-2` + 8× damage `-5` = 59 |
+| 主运行（ksponly） | 7× damage `-5`，位移 0 |
+| NODAMAGE | 51× displacement `-5` |
+| ROBUSTKSP/KSPINIT | 0（已由新 echo 明确标注为假收敛） |
+| KSPONLY-PHYS | 7× damage `-5` |
+
+### 4. 新发现的 CI 时长瓶颈（下一步高杠杆动作）
+
+V2 变体从 `08:26:52` 跑到 `08:41:01`，**约 14 分钟**占整个 job
+（08:24:53–08:41:42，约 17 分钟）的 8 成。它是 CI #73 的历史
+Jacobian 诊断，CI #82/#83 已证伪「解析 Jacobian 写错」这一假设，
+现在既不影响闸门、也不产出新结论。主运行 / NODAMAGE / ROBUSTKSP /
+KSPONLY-PHYS 合计仅 ~30 s。**退役 V2 可把 CI 从 ~17 min 降到 ~3 min**，
+性质与 CI #84 删除 l2/ksponly 变体循环相同，属零风险清理（待确认）。
+
+### 5. 残留问题（不影响闸门，但需在册）
+
+- damage SNES 仍 `-5`（主运行 7 条）：P8 只保证损伤场有界，未解释原因。
+- 残差不可约平台 `3~13` 的 Fortran 装配根因未解决（B 方向）。
+- NODAMAGE 变体仍报 51×`-5`、ROBUSTKSP 仍是假收敛：两者的 echo
+  已改为如实标注，不再误导；后续可一并退役。
+- 工具坑（本轮踩到）：本机 `python3` 是 Windows 原生解释器，读
+  `/d/tmp/xxx` 会 `FileNotFoundError`，必须用 `D:/tmp/xxx`；
+  watcher 的 `[E]` 段即因此没打印 artifact 清单（artifact 本身齐全，
+  12 个文件，已用 `D:/tmp/` 路径补下载核对）。
+
+**本轮动作**：只读核对 CI #84 job log + `build-diagnostics` artifact
+（网格哈希 / 跨 CI 物理场对比 / Gate 判据日志 / 分段失败统计），
+更新本文档与工作日志；**未改任何代码、未推 CI**。
+
+---
+
+## CI #85：闸门 4.1a 落地（Biot 体力叠加 + 硬判据）
+
+### 1. 为什么先做物理裁决
+
+清单 4.1 写「补 `σ' = σ + α·p·I` 有效应力耦合」，但当前 `-α∇p` 体力形式与之**不是两个可相加的效应**：
+
+```
+∫(−α∇p)·v dΩ  =  ∫αp·div(v) dΩ − ∫_Γ αp·v·n dΓ          （分部积分）
+∫(C:ε − αpI):ε(v) dΩ = ∫C:ε:ε(v) dΩ − ∫αp·div(v) dΩ       （总应力形式）
+```
+
+体积项同为 `−∫αp·div(v)`，只有自然边界的 `−αp·n` 面力解释不同。字面「再补一项」会双重计入孔压，把 `u_x` 峰值从 `1.1036e-4` 推到约 `2.2e-4 m`，越过 Gate 3.3 P4 上界 `2e-4`，直接打掉 CI #84 刚转绿的闸门。故本轮把 4.1 拆成 **4.1a（可验证收口）** 与 **4.1b（互斥总应力模式，单列待做）**。
+
+### 2. 覆盖性更正：原清单的「仅作首次快照」会引入 bug
+
+`m_vDefDefault.F90:43/79` 默认 `ForceScaling = MEF90Scaling_Linear`，`MEF90DefMechSetTransients`（`vDef.F90:447`）每步重设 `force = (0,−9.81,0)×t`。当前快照在**时间步层**（`vDef.F90:520`，AltMin 之外），所以 `|baseForce|` 应线性增长 `0 → 9.81`。若按原建议只在启动时快照一次，Linear 缩放会被回滚成 0，重力静默丢失。**当前代码本来就是对的**，原清单描述的是更早版本（行号 948-953 / 382-384 均已失效）。
+
+### 3. 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `m_Flow/m_MEF90_FlowAssembly.F90` | `MEF90FlowApplyBiotForce`：`VecCopy+VecAXPy` → 单次 `VecWAXPY(force,−α,∇p,baseForce)`；每步输出一条 `Gate 4.1:` 诊断（α、`|base|∞`、`|gradp|∞`、`|force|∞`、`superpos_err`）。∞ 范数用 `VecMin/VecMax`（仓库已有编译先例，避开无先例的 `VecNorm`） |
+| `vDef/vDef.F90` | 快照处补注释，固化「每时间步快照 = Linear 缩放下唯一正确语义」（逻辑未改） |
+| `vDef/data/terzaghi1D_nobiot.yaml`（新增） | 主 deck 逐字副本，仅 `flow.biot_coeff 1.0 → 0.0` + 5 行说明；不用 `-flow_biot_coeff` 命令行覆盖，避免 PETSc 3.3 `Unknown option` 静默无数据 |
+| `vDef/data/check_gate41_biot.py`（新增） | 纯标准库，`--gate` 模式输出机读 `GATE41_RESULT: PASS\|FAIL` 并退出 0/1；report 模式恒 0。缺日志/缺网格/记录不足/非有限/崩溃一律 FAIL |
+| `.github/workflows/build.yml` | KSPONLY-PHYS 之后、恢复主网格之前插入 NOBIOT ksponly 变体（保存 `/tmp/out_nobiot.gen`）；Gate 3.3 之前算 Gate 4.1、**在 Gate 3.3 PASS 之后才裁决 exit 1**（避免 CI #82 式早退隐藏判据表）；artifact 增 3 个文件 |
+
+### 4. 判据 B1–B7（阈值与物理依据）
+
+| # | 判据 | PASS 阈值 | 能抓什么 |
+|---|---|---|---|
+| B1 | `Gate 4.1` 行数 / 解析完整性 | `≥50` 行、与 `Gate 3.2: step` 探针数差 `≤2`、无不可解析行 | 诊断没打出来 / 重复打印 |
+| B2 | α | `max|α−1| ≤ 1e-6` | deck 被改成无耦合 |
+| B3 | `|baseForce|` 时间形态 | 末值 `≥5`、`min ≤1`、线性回归 `R²≥0.98`、斜率 `≥5`、残差 `≤0.5` | **Linear 体力缩放被回滚**（核心验收） |
+| B4 | `superpos_err/|force|` | `≤1e-8` | **覆盖**（≈`|base|`）、**丢 Biot**（≈`|α∇p|`）、**逐次累积**（≈`n|α∇p|`） |
+| B5 | `|gradp|` 与 `|force|` | `>0`、max/min `≥1.5`、`max(|force|−|base|) ≥1` | Biot 项是死代码 / 不随时间演化 |
+| B6 | NOBIOT 对照 | `peak|u_x|(main) ≥ 3×peak|u_x|(nobiot)` 且主峰值 ∈ `[5e-5,2e-4] m` | 耦合没有真正驱动位移 |
+| B7 | 运行完整性 | `≥50` 探针、无崩溃签名、无 `Unknown option` | 假绿 |
+
+`superpos_err = ‖force − (baseForce − α∇p)‖∞`，从**未被修改的快照**重算，因此一个数字就能区分「叠加 / 覆盖 / 丢弃 / 累积」四种实现。
+
+### 5. 与 Gate 3.3 的关系（回归安全）
+
+`VecWAXPY` 与 `VecCopy+VecAXPy` 数学等价，主运行物理场不应变化；Gate 3.3 的 P1–P8 继续作为回归判据。Gate 4.1 只新增诊断与对照运行，**不改力平衡、不加 `αpI`**。
+
+### 6. 静态校验与离线自测（零本地编译 / 零求解器运行）
+
+- `PyYAML` 解析通过；10 个 `run` 块 `bash -n` 全过；两个 Python 脚本 `ast.parse` 通过；NOBIOT deck 与主 deck 的 YAML 差异**只有 `flow.biot_coeff`**；`git diff --check` 干净。
+- 新子程序块配对 `If/EndIf = 2/2`、`Do/EndDo = 0/0`，续行无悬空；`VecWAXPY`/`VecDuplicate`/`VecDestroy`/`VecMin/VecMax` 均有仓库内编译先例。
+- 判据脚本离线自测：正确分支 PASS；回滚(B3)、覆盖(B4)、α=0(B2)、gradp 恒定(B5)、行数不足(B1)、对照网格同值/缺失(B6)、崩溃(B7) 全部按预期 FAIL；Fortran `D` 指数与无空格标签两种格式均可解析；`--gate` 的PASS/FAIL/参数错误/缺日志四种退出码正确；用 CI #84 真实网格验证 `peak|u_x| = 1.1036e-4 m / 51 records`。
+
+### 7. 状态
+
+代码已提交推送、CI #85 结果待回。**4.1b（互斥总应力模式）未实现**，理由见清单 4.1b 条目；残差平台 `3~13` 的 Fortran 装配根因、damage SNES 的 7 条 `-5` 仍在册，不属本闸门。
