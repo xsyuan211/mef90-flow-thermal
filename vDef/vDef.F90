@@ -36,7 +36,11 @@ Program vDef
    PetscReal,Dimension(:),Pointer                     :: elasticEnergy,surfaceEnergy,forceWork,cohesiveEnergy,totalMechanicalEnergy
 
    !!!! NEW: Flow (Darcy pressure) context for Phase 1 coupled HM simulation
-   Type(MEF90FlowCtx_Type)                           :: MEF90FlowCtx
+   !!! Gate 4.2: TARGET is required because HeatXferCtx%flowVelocitySec is
+   !!! pointer-associated with MEF90FlowCtx%cellDarcyVelocitySec below.
+   !!! TARGET must be on the VARIABLE (gfortran rejects it on a TYPE
+   !!! component, CI #88); every non-pointer subobject then inherits it.
+   Type(MEF90FlowCtx_Type),Target                    :: MEF90FlowCtx
    Type(MEF90FlowGlobalOptions_Type),Pointer          :: MEF90FlowGlobalOptions
    Type(SNES)                                         :: snesPressure
    Type(Vec)                                          :: residualPressure
@@ -153,16 +157,10 @@ Program vDef
    Call PetscBagGetDataMEF90FlowCtxGlobalOptions(MEF90FlowCtx%GlobalOptionsBag,MEF90FlowGlobalOptions,ierr);CHKERRQ(ierr)
    Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 04 FlowSetSections\n",ierr);CHKERRQ(ierr)
    Call MEF90FlowCtxSetSections(MEF90FlowCtx,ierr);CHKERRQ(ierr)
-   !!! Gate 4.2: wire the persistent cell-wise v_darcy section into the
-   !!! HeatXfer context. MUST come after FlowCtxSetSections (which creates
-   !!! cellDarcyVelocitySec) and after the Flow global bag is read. When
-   !!! enable_advection is false HeatXferAssembly keeps using the legacy
-   !!! constant cellSetOptions%advectionVector path, so this is a no-op.
-   MEF90HeatXferCtx%flowVelocitySec => MEF90FlowCtx%cellDarcyVelocitySec
-   MEF90HeatXferCtx%enableFlowAdvection = MEF90FlowGlobalOptions%enableFlowAdvection
-   Write(IOBuffer,*) 'Gate 4.2: coupling wired, enable_advection=', &
-                     MEF90HeatXferCtx%enableFlowAdvection,'\n'
-   Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+   !!! Gate 4.2 coupling is wired AFTER the HeatXfer init block below:
+   !!! MEF90HeatXferCtxSetSections/CreateVectors declare their Ctx dummy
+   !!! Intent(OUT), which would undefine both the flowVelocitySec pointer
+   !!! association and enableFlowAdvection if we wired it here.
    Call PetscPrintf(MEF90Ctx%Comm,"Gate 3.1: init 05 FlowCreateVectors\n",ierr);CHKERRQ(ierr)
    Call MEF90FlowCtxCreateVectors(MEF90FlowCtx,ierr);CHKERRQ(ierr)
    Call VecDuplicate(MEF90FlowCtx%pressure,residualPressure,ierr);CHKERRQ(ierr)
@@ -260,6 +258,28 @@ Program vDef
       !!! Link the temperature field in the DefMechContext with that of the HeatXfer
       MEF90DefMechCtx%temperature => MEF90HeatXferCtx%temperature
    End If   
+   !!! Gate 4.2: wire the persistent cell-wise v_darcy section into the
+   !!! HeatXfer context. MUST be AFTER MEF90HeatXferCtxSetSections and
+   !!! MEF90HeatXferCtxCreateVectors -- both declare their Ctx dummy
+   !!! Intent(OUT), which would undefine the pointer association and
+   !!! enableFlowAdvection if we wired earlier (CI #88 static finding).
+   !!! FlowCtxSetSections already created cellDarcyVelocitySec above.
+   !!! When enable_advection is false HeatXferAssembly keeps using the
+   !!! legacy constant cellSetOptions%advectionVector path (no-op).
+   MEF90HeatXferCtx%flowVelocitySec => MEF90FlowCtx%cellDarcyVelocitySec
+   MEF90HeatXferCtx%enableFlowAdvection = MEF90FlowGlobalOptions%enableFlowAdvection
+   !!! The first HeatXfer solve runs BEFORE the first
+   !!! MEF90FlowComputeDarcyVelocity call (one-step lag by design), so seed
+   !!! the freshly duplicated SectionReal with the already-zeroed global Vec
+   !!! instead of letting the assembly read an uninitialised array.
+   Call SectionRealToVec(MEF90FlowCtx%cellDarcyVelocitySec, &
+        MEF90FlowCtx%cellDMVectScatter,SCATTER_REVERSE, &
+        MEF90FlowCtx%cellDarcyVelocity,ierr);CHKERRQ(ierr)
+   Write(IOBuffer,*) 'Gate 4.2: coupling wired, enable_advection=', &
+                     MEF90HeatXferCtx%enableFlowAdvection, &
+                     ' velocity_sec_associated=', &
+                     Associated(MEF90HeatXferCtx%flowVelocitySec),'\n'
+   Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
    !!! 
    !!! Allocate array of works and energies
    !!!

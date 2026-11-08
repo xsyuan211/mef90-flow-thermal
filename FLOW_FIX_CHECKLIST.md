@@ -2227,5 +2227,50 @@ CI #86 成功时同样存在。
 `git diff --check`、Fortran `If/Do` 配对（两 helper 终态 0/0，
 7 `Subroutine` / 7 `End Subroutine`）全过。
 
-**CI #88 待回：编译是否全绿、Gate 4.2 D1-D7 是否 PASS。**
+### CI #88 结果：`failure`（编译层，无任何 Gate 判据被判负）
+
+`m_HeatXfer` 本轮编译通过（`MEF90_ELEMENT_SCAL` 修复已由编译器验证，
+Makefile 用 `@` 隐藏命令，日志只有源文件列表与错误，CI #87 同样格式）。
+唯一阻断：`m_MEF90_FlowCtx.F90:63` 的
+`Type(SectionReal),Target :: cellDarcyVelocitySec` →
+`Error: Attribute at (1) is not allowed in a TYPE definition`。
+该 gfortran 不允许在派生类型**组件**上写 TARGET；连带
+`m_mef90_flowctx_type.mod` 缺失、`m_MEF90_FlowCtx.o` 失败，
+`vDef` 二进制未生成，`gate33/gate41/gate42` 全空。
+两条 `Only one '-J' option` 仍是既有 PETSc TS 探针噪声。
+
+CI #87 的 `flow.log` 复核：`m_MEF90_Flow.F90:399` 只是
+`PetscObjectSetName` 的 **Warning**（`-fallow-argument-mismatch`），
+`m_Flow PIPESTATUS: 0 0`，即含 4.2 持久 section 的
+`MEF90FlowComputeDarcyVelocity` 早已编译成功，本轮无需再改。
+
+### CI #89 前的修复（`777b41b` 之后）
+
+1. **TARGET 移到变量**：撤销 FlowCtx 组件上的 `,Target`，改为
+   `Type(MEF90FlowCtx_Type),Target :: MEF90FlowCtx`（vDef）。
+   Fortran 95 规则：带 TARGET 的对象的非指针子对象同样是合法指针目标，
+   故 `flowVelocitySec => MEF90FlowCtx%cellDarcyVelocitySec` 仍成立，
+   4 处 `Associated(...)` 保护与指针设计全部保留。
+2. **wire 挪出 `Intent(OUT)` 作用域**（静态发现，会让 D2/D6 静默假失败）：
+   `MEF90HeatXferCtxSetSections` / `MEF90HeatXferCtxCreateVectors` 的 Ctx
+   dummy 都是 `Intent(OUT)`，在 vDef 第 251/252 行执行；原 wire 在 161 行，
+   会被置为未定义。现 wire 放在整个热场初始化 `End If` 之后，
+   之后只剩 `Intent(IN/INOUT)` 调用。SNES 通过
+   `SNESSetFunction(...,MEF90HeatXferCtx,...)` 存 Ctx 地址，回调可见新值。
+3. **首步 section 清零**：热场 SNES（~366 行）早于首次
+   `MEF90FlowComputeDarcyVelocity`（~595 行），存在一步滞后（D6 只要求
+   `l_d > f_d`，可接受）；但首步会读到刚 Duplicate 的未初始化数组。
+   现 wire 后用已 `VecSet(0)` 的 `cellDarcyVelocity` 做一次
+   `SectionRealToVec(... SCATTER_REVERSE ...)` 灌零，避免 NaN/发散。
+4. wire 日志新增 `velocity_sec_associated=`，给出运行期关联证据；
+   `ROW_RE` 要求 `enabled=` 与 `|v_darcy|inf=` 同现，wire 行不会污染 D2。
+
+### 校验（提交前）
+
+`PyYAML`(18 yaml)、10 个 `run` 块 `bash -n`、5 个 Python `ast.parse`、
+`git diff --check`、vDef 全文 `If/Do` 配对 0/0、wire 行号 > 热场
+`End If` 行号、`MEF90_ELEMENTTYPE` 残留 0、7 `Subroutine` 对 7
+`End Subroutine`，全过。
+
+**CI #89 待回：编译是否全绿、Gate 4.2 D1-D7 是否 PASS。**
 4.1b、残差平台 `3~13` 根因、damage 7 条 `-5` 仍在册。

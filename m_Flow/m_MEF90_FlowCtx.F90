@@ -56,11 +56,15 @@ Module m_MEF90_FlowCtx_Type
       !!! read it (via MEF90HeatXferCtx%flowVelocitySec) during SNES/TS
       !!! residual + Jacobian assembly. SectionRealDuplicate of
       !!! cellDMVectSec creates an independent section with the same layout.
-      !!! TARGET is required: vDef does
+      !!! TARGET lives on the *variable* in vDef
+      !!!   Type(MEF90FlowCtx_Type),Target :: MEF90FlowCtx
+      !!! not on this component: gfortran rejects TARGET inside a TYPE
+      !!! definition ("Attribute ... is not allowed in a TYPE definition",
+      !!! CI #88). Fortran 95 rules make every non-pointer subobject of a
+      !!! TARGET variable a valid pointer-assignment target, so
       !!!   MEF90HeatXferCtx%flowVelocitySec => MEF90FlowCtx%cellDarcyVelocitySec
-      !!! and a pointer-assignment target must carry the TARGET attribute
-      !!! (MEF90FlowCtx itself is an ordinary local variable, not a pointer).
-      Type(SectionReal),Target         :: cellDarcyVelocitySec
+      !!! remains valid and Associated(...) guards still work.
+      Type(SectionReal)                :: cellDarcyVelocitySec
 
       !!! Solvers
       Type(SNES)                       :: SNESPressure
