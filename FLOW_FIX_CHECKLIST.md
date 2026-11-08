@@ -1186,5 +1186,108 @@ CI #69（`42366003387 / success`，commit `4c198b3`）在**同一个 job、同�
 
 **CI #79 修正**：ROBUSTKSP 改用 **ML**（`-disp_pc_type ml`，独立于 GAMG 的成熟 AMG，near-null-space 处理不同，PETSc 3.3 中更稳），并修复诊断脚本——增加崩溃检测（`grep Caught signal|SEGV|MPI_ABORT|PETSC ERROR` → 判为 CRASHED，不再误判 CONVERGED）。若 ML 收敛则坐实弱 KSP 假设；若 ML 仍崩/发散，下一轮改用非 AMG 强 PC（如 `-disp_pc_type bjacobi -disp_sub_pc_type ilu -disp_sub_pc_factor_levels 2`）作对照。
 
+---
+
+## ⚠️ CI #79 结果 + 两处重大更正（覆盖上文"弱 KSP 是元凶"推论）
+
+**CI #79（run 42436094037，0a1a763）= failure**。ROBUSTKSP(ML) 同样 **SEGV 崩溃**（脚本这次正确判定 `CRASHED`，`rk_fail=999`）：`type: ml` 打印后立刻 `Caught signal number 11 SEGV`，`total number of linear solver iterations=0` → 崩在**第一次 KSP/PC setup，尚未做任何线性求解**。NODAMAGE 仍 51/51 `-5`；生产运行 Gate 3.1 到 step 51、pmax=9055.7 正常；Gate 3.3 硬闸门报 60 次非收敛 → FAIL（预期内）。
+
+### 更正 1：AMG 类 PC 在这套环境下不可用，共同元凶 = `disp_addNullSpace`
+GAMG（#78）与 ML（#79）都在 PC setup SEGV，而默认 `CG + bjacobi/ILU(0)` 从不崩。差别在于 AMG 必须查询矩阵的 near-null-space 做粗化。代码 `m_MEF90_DefMech.F90:1438-1446`：
+```
+MatNullSpaceCreateRigidBody(coordVec,nspDisp)
+MatSetNearNullSpace(matDisp,nspDisp)
+MatNullSpaceDestroy(nspDisp)          ! ← 立刻销毁
+```
+PETSc 3.3 下极可能是 **use-after-free / 悬空 near-null-space 指针**；CG/ILU 不读它故不崩，AMG 读它即越界 → SEGV。
+更重要：**BC 修复（9c1edf2）后 cs0010/cs0020 已是 `TRUE TRUE TRUE`（完全约束），刚体模态根本不再是零空间**，此时仍附加 rigid-body near-null-space 属于**错误配置**，极可能正是 -5 振荡的来源。时间线吻合：BC 修复消除了纯 -5 奇异，却暴露出新的 -2/-5 混合振荡。deck 来源：`defmech.disp.addNullSpace: true`（terzaghi1D.yaml:45）；注册名 `disp_addNullSpace`（Ctx:866）。
+
+### 更正 2："位移 KSP 无 'Linear solve converged' ⇒ KSP stall"是误判
+baseline 与 NODAMAGE 运行**从未传 `-disp_ksp_converged_reason`**（只有 ROBUSTKSP 传了），PETSc 默认不打印该行；flow 有 50 条只因传了 `-flow_ksp_converged_reason`。所以"位移 KSP 贡献为 0"是**预期行为，不是失败信号** → "弱 KSP 是元凶"的立论基础不成立，ROBUSTKSP 实验方向本身即建立在误读之上。
+
+### 下一步最高杠杆实验（零 Fortran，deck 一行）
+把 `defmech.disp.addNullSpace: true → false`（或命令行 `-disp_addNullSpace 0`），其余不变：
+- AMG 不崩 **且** 位移 SNES 收敛 ⇒ 坐实 near-null-space 是 -5 振荡与 AMG 崩溃的**共同元凶**，修复 = deck 一行（零 Fortran，完美符合约束）。
+- AMG 不崩但位移仍 -5 ⇒ near-null-space 只是崩溃元凶，位移振荡另有原因。
+- 仍崩 ⇒ 与 near-null-space 无关，需另查（可能要 Fortran / 交用户）。
+
+---
+
+## ⛔ 上段"悬空指针 / 关 null space"推论已被代码复核**推翻**（以此段为准）
+
+**复核证据（全部来自本机源码 + ci78/ci79 日志，未跑新 CI）：**
+
+1. **崩溃点精确一致**：GAMG(#78) 与 ML(#79) 都是在 `SNES Object:(Disp_)` → `KSP Object` →
+   `PC Object: (Disp_)` → `type: gamg` / `type: ml` **打印完这一行后立即 SEGV**；
+   `total number of linear solver iterations=0` 说明**根本没进入 KSP/PC setup 或求解**。
+   → 崩在 `SNESView`/`PCView` 的打印路径，不是 PC setup，更不是线性求解。
+
+2. **代码作者 2014 年就把这个 bug 写在源码里**（`m_MEF90_DefMech.F90:1498-1500`， damage SNES 同款注释在 1591-1593）：
+   ```
+   !!! SNESView seems to segfault when PC ml is used, so we setup an additional
+   !!! debug level so we can bypass SNESView
+   If (MEF90GlobalOptions%verbose > 1) Then
+      Call SNESView(snesDisp,PETSC_VIEWER_STDOUT_WORLD,ierr)
+   End If
+   ```
+   即：**`SNESView` + PC ml/gamg 会 segfault 是已知缺陷，作者专门加了 verbose 级别用来绕过它**。
+   而 deck `terzaghi1D.yaml:22` 恰好是 `verbose: 2`（>1）→ 强制调用 SNESView → 踩中该缺陷。
+
+3. **`MatSetNearNullSpace` + `MatNullSpaceDestroy` 不是新引入的 bug**：
+   同一写法共出现 3 处（`m_DefMech/m_MEF90_DefMech.F90:1444-1446`、
+   旧副本 `m_MEF90_DefMech.F90:1432-1434`、**专门的空空间测试程序 `Tests/TestNSP.F90:86-89`**）。
+   TestNSP 就是为验证该用法而写，且它还调用了 `MatNullSpaceView`。PETSc 的
+   `MatSet(Near)NullSpace` 惯例会持有对象引用，调用方随后 Destroy 是标准用法。
+   → "悬空指针"缺乏支撑；本机无 PETSc 源码树，无法 100% 证伪引用计数语义，但**崩溃证据链与 null space 无关**。
+
+4. **之前所有主运行/NODAMAGE/V2 用的是 `bjacobi/ILU` PC，SNESView 不崩**，所以它们的
+   `51/51 -5` 是真实发散、与 SNESView 无关。只有两个 AMG 变体在求解前就被 SNESView 拦下。
+
+**因此**：GAMG/ML 两轮实验**从未真正测到强 PC 的求解能力**；"弱 KSP 是元凶"至今
+既未证实也未证伪。上一轮提出的"关 null space"方向若不先绕开 SNESView，即使改了也会同样崩。
+
+### 修正后的决定性实验（零 Fortran，且能同时证伪/证实两个假设）
+把 `verbose: 2 → 1`（或诊断变体命令行 `-verbose 1`，需确认 PetscBag 命令行优先于
+options_file；最稳妥是直接改**诊断专用 deck** 的 verbose）。已核实：
+- Gate 3.1/3.2/3.3 的打印都是无条件 `PetscPrintf`，**不依赖 verbose、不依赖 SNESView 输出**；
+- `build.yml` 的 Gate 判据用的是 `SNESSolve failed` / `Gate 3.1` / `pmin|pmax`，与 SNESView 无关；
+- `verbose` 注册于 `MEF90/m_MEF90_Ctx.F90:173`（全局 bag，int，名 `'verbose'`）。
+
+判定：
+- `-verbose 1` 后 **ML 能 setup 并正常求解、位移 SNES 收敛** ⇒ SNESView 是唯一崩溃原因，
+  且强 PC 修复了 -5 ⇒ 最终修复 = deck `verbose: 1` + 位移 KSP/PC 配置（零 Fortran）。
+- `-verbose 1` 后 **ML 在真正 PC setup 时仍崩** ⇒ near-null-space 悬空假设重新成立，
+  再测 `-disp_addNullSpace 0`（这才是有意义的对照）。
+- `-verbose 1` 后 **ML 不崩但位移仍 -5** ⇒ 弱 KSP 假设证伪，转查装配/其他（可能需 Fortran）。
+
+**状态：按用户选择"暂停、先复核代码"，本轮未改任何 deck / build.yml / Fortran，未推 CI。**
+
+### CI #80：按 verbose 1 方向推进（用户选择，已实施）
+
+**新增** `vDef/data/terzaghi1D_robustksp.yaml` = `terzaghi1D_nodamage.yaml`，
+除顶部说明注释外**仅改一行 `verbose: 2 → 1`**（diff 已逐行核对）。
+依据：`m_MEF90_DefMech.F90:1499` 的 `If (verbose > 1) Call SNESView(...)`，
+源码 1498 行作者注释明确写着 "SNESView seems to segfault when PC ml is used"。
+CI #78(GAMG)/#79(ML) 都是在 SNESView 打印 `PC Object: (Disp_) type: ...` 后
+立刻 SEGV 且 `linear solver iterations=0`，即**从未进入 PC setup/求解**——
+两轮强 PC 实验从未真正测到强 PC。verbose 1 绕过 SNESView。
+
+**build.yml**：ROBUSTKSP 变体改用新 deck（ML 强 PC 及所有其它参数不变）；
+主运行 / NODAMAGE / V2 的 deck 与参数**全部不动**。已核实 Gate 3.1/3.2/3.3
+打印是无条件 `PetscPrintf`，不依赖 verbose，也不依赖 SNESView 输出。
+
+**加固判定脚本**（避免第三次误判）：`CONVERGED` 现在必须同时满足
+`rc=0` + 无 `SEGV/MPI_ABORT/PETSC ERROR` + `rk_fail=0` + 至少 1 次 `Linear solve`；
+另输出 `last-step` 与 `pmin/pmax` 便于人工核对。这同时堵住 CI #78 的
+"崩溃不打印 SNESSolve failed ⇒ 假收敛" 与 timeout(`rc=124`) 的假收敛两类漏洞。
+
+**静态校验**：PyYAML OK；提取 413 行内联 bash 通过 `bash -n`；`git diff --check` 干净。
+
+判定树（CI #80 出结果后）：
+- ML 正常 setup 且位移 SNES 收敛 ⇒ SNESView 是崩溃唯一原因 + 强 PC 修复 -5；
+  最终修复 = 主 deck `verbose: 1` + 位移 KSP/PC 配置（**零 Fortran**，可收口 Gate 3.3）。
+- ML 在真正 PC setup 时仍崩 ⇒ near-null-space 悬空假设重新成立，再测 `-disp_addNullSpace 0`。
+- ML 不崩但位移仍 -5 ⇒ 弱 KSP 假设证伪，转查装配层（可能需 Fortran）。
+
 - 收敛 ⇒ 确认是线性求解/预条件问题 → 改位移 KSP 配置即可（符合零编译约束）。
 - 仍失败 ⇒ 是装配/Jacobian 近零空间 bug → 需 Fortran，超出零本地编译约束，交用户。

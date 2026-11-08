@@ -565,25 +565,29 @@ jobs:
             echo "=== NODAMAGE CONVERGED: poroelastic core sound; AT2 damage evolution is the culprit ==="
           fi
           # --------------------------------------------------------------------
-          # CI #78/#79 ROBUSTKSP diagnostic: test whether the displacement SNES -5
-          # (MAX_IT) divergence is an UNDER-RESOLVED LINEAR SOLVER / weak
-          # preconditioner rather than a residual/Jacobian assembly bug.
-          # Variable isolation: use the NODAMAGE (AT2Elastic, inert damage ->
-          # pure linear elasticity, R/J consistent) deck so the ONLY change vs
-          # the NODAMAGE run above is the displacement KSP: GMRES + a STRONG PC
-          # instead of the default CG + bjacobi/ILU(0).
-          #   CI #78 tried GAMG and it SEGV'd (PETSc 3.3.0-p7 + disp_addNullSpace
-          #   near-null-space -> GAMG setup crash). ML (Trilinos, compiled in via
-          #   --download-ml) is a separate, robust AMG and is used here instead.
+          # CI #80 ROBUSTKSP diagnostic: bypass the SNESView SEGV via verbose 1.
+          #
+          # What CI #78/#79 ACTUALLY showed: with deck verbose: 2,
+          # m_MEF90_DefMech.F90:1499 calls SNESView, and the source itself notes
+          # "SNESView seems to segfault when PC ml is used". Both GAMG and ML
+          # SEGV'd while SNESView printed "PC Object: (Disp_) type: ...", with
+          # 0 linear iterations -- BEFORE any PC setup or solve. So the strong
+          # preconditioner was NEVER actually tested in either run.
+          #
+          # This round uses terzaghi1D_robustksp.yaml = NODAMAGE deck with the
+          # single change verbose 2 -> 1, which disables SNESView. The only
+          # remaining variable vs the NODAMAGE run is the displacement KSP:
+          # GMRES + ML (strong AMG PC) vs default CG + bjacobi/ILU(0).
           #   - CONVERGES -> weak KSP/PC was the culprit; fix = KSP/PC config
-          #     (no Fortran edit; within the zero-local-compile constraint).
-          #   - STILL DIVERGES / CRASHES -> weak-KSP hypothesis NOT confirmed;
-          #     points to assembly / null-space bug (Fortran changes needed).
+          #     on the production deck (zero Fortran, within the constraint).
+          #   - Still -5 -> weak-KSP hypothesis ruled out; check assembly.
+          #   - Crashes during REAL PC setup -> near-null-space suspect.
+          # Gate prints are unconditional PetscPrintf, unaffected by verbose.
           # --------------------------------------------------------------------
-          echo "=== ROBUSTKSP (AT2Elastic + Disp KSP=GMRES/ML) diagnostic run ==="
+          echo "=== ROBUSTKSP (verbose 1 + AT2Elastic + Disp KSP=GMRES/ML) diagnostic run ==="
           timeout -k 10s 900 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
-            -options_file_yaml data/terzaghi1D_nodamage.yaml \
+            -options_file_yaml data/terzaghi1D_robustksp.yaml \
             -flow_ts_view -flow_ts_monitor \
             -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
             -disp_snes_monitor -disp_snes_linesearch_type basic \
@@ -591,22 +595,35 @@ jobs:
             2>&1 | tee /tmp/terzaghi_robustksp.log
           rk_rc=${PIPESTATUS[0]}
           echo "=== ROBUSTKSP mpirun exit code: $rk_rc ==="
-          # A crash (SEGV/MPI_ABORT) must NOT be mistaken for convergence.
-          if grep -qiE "Caught signal|SEGV|MPI_ABORT|PETSC ERROR" /tmp/terzaghi_robustksp.log; then
-            echo "=== ROBUSTKSP CRASHED (SEGV/MPI_ABORT) — PC setup failure, NO convergence verdict ==="
-            rk_fail=999
-          else
-            rk_fail=$(grep -c "SNESSolve failed with SNESConvergedReason" /tmp/terzaghi_robustksp.log || true)
-          fi
+          # A verdict of CONVERGED requires ALL of: clean exit (rc=0), no crash
+          # marker, zero non-convergent SNES reports, and >=1 real linear solve.
+          # CI #78 proved a crash emits NO "SNESSolve failed" line and was
+          # therefore mis-reported as convergence; CI #79 added crash detection;
+          # CI #80 also guards against timeout (rc=124) and "no solve at all".
+          rk_crash=$(grep -ciE "Caught signal|SEGV|MPI_ABORT|PETSC ERROR" /tmp/terzaghi_robustksp.log || true)
+          rk_fail=$(grep -c "SNESSolve failed with SNESConvergedReason" /tmp/terzaghi_robustksp.log || true)
+          rk_solves=$(grep -c "Linear solve" /tmp/terzaghi_robustksp.log || true)
+          rk_laststep=$(grep -oE "Gate 3.1: step +[0-9]+" /tmp/terzaghi_robustksp.log | tail -1 | grep -oE "[0-9]+$" || echo 0)
+          echo "=== ROBUSTKSP: rc=$rk_rc crash=$rk_crash nonconvergent=$rk_fail linear-solves=$rk_solves last-step=$rk_laststep ==="
           echo "=== ROBUSTKSP: displacement/damage SNES convergence reasons ==="
           grep -o "SNESConvergedReason -[0-9]*" /tmp/terzaghi_robustksp.log | sort | uniq -c || true
           echo "=== ROBUSTKSP non-convergent DefMech SNES solves: $rk_fail ==="
+          echo "=== ROBUSTKSP: KSP linear-solve outcomes (verbose 1 => no SNESView attribution) ==="
+          grep -oE "Linear solve [a-zA-Z ]+" /tmp/terzaghi_robustksp.log | sort | uniq -c | head || true
+          echo "=== ROBUSTKSP: last Gate 3.1 pressure stats ==="
+          grep -E "pmin|pmax" /tmp/terzaghi_robustksp.log | tail -3 || true
           echo "=== ROBUSTKSP: displacement KSP linear-solve outcomes (attributed to Disp_) ==="
           awk '/SNES Object: \(Disp_\)/{s=1} /SNES Object: \((flow_|damage_)\)/{s=0} s&&/Linear solve/{c[$0]++} END{for(k in c) print c[k], k}' /tmp/terzaghi_robustksp.log | sort -rn || true
-          if [ "$rk_fail" -gt 0 ]; then
-            echo "=== ROBUSTKSP STILL DIVERGENT / CRASHED: weak-KSP hypothesis NOT confirmed; need different PC or Fortran ==="
+          if [ "$rk_crash" -gt 0 ]; then
+            echo "=== ROBUSTKSP CRASHED (SEGV/MPI_ABORT): no convergence verdict ==="
+          elif [ "$rk_rc" -ne 0 ]; then
+            echo "=== ROBUSTKSP INCOMPLETE (mpirun rc=$rk_rc: timeout/abort): no convergence verdict ==="
+          elif [ "$rk_solves" -eq 0 ]; then
+            echo "=== ROBUSTKSP INCONCLUSIVE: no linear solve was recorded ==="
+          elif [ "$rk_fail" -gt 0 ]; then
+            echo "=== ROBUSTKSP STILL DIVERGENT: weak-KSP hypothesis NOT confirmed; check assembly ==="
           else
-            echo "=== ROBUSTKSP CONVERGED: weak displacement KSP/PC was the culprit; fix = KSP/PC config ==="
+            echo "=== ROBUSTKSP CONVERGED: strong displacement KSP/PC fixes -5; fix = KSP/PC config (zero Fortran) ==="
           fi
           echo "=== result files (3.2 analytical-comparison data source) ==="
           echo "    -prefix data/Beam1x10-tri3 -> geometry data/Beam1x10-tri3.gen, result data/Beam1x10-tri3_out.gen"
