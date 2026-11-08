@@ -1115,3 +1115,62 @@ CI #69（`42366003387 / success`，commit `4c198b3`）在**同一个 job、同�
 **CI #73 设计（已提交）**：V2 改 `timeout 1500s` 跑完完整 51 步 FD Jacobian + GMRES，作为**决定性判据**：
 - FD `-5` 数骤降/为 0 ⇒ 解析 `BilinearFormDisplacement` 有值 bug（FD-coloring 可恢复）→ 后续定位/修复该 bug。
 - FD 仍 ~51× -5 ⇒ 残差 `OperatorDisplacement` 本身不一致或系统奇异 → bug 在残差侧。
+
+---
+
+## ⚠️ CI #75–#77 修正结论（覆盖上文"J≠dR/du / 残差不一致"推论）
+
+> 以下为最终核实后的判断，上文基于 watcher 区域误读得到的"解析 Jacobian 不一致"等结论**已被推翻**。
+
+### 已确证事实（来自 ci75.log / ci76.log / ci77.log 干净比对）
+1. **BC 空格 bug 真实存在且已修**：`displacementBC: 1, 1, 1`（逗号后空格）→ PETSc Bag BoolArray 只取首分量 → `TRUE FALSE FALSE` → u_y 未约束 → 刚体平移 → 刚度矩阵奇异（-5 全 51 步）。改 `1,1,1`（无空格，commit 9c1edf2）后 bag 视图为 `TRUE TRUE TRUE`，刚体奇异消除。
+2. **但收敛并未达成**：ci75/ci76 生产运行均含 ~38–50× 位移 `-2`（FUNCTION_DOMAIN）+ 8× `-5`；ci77 更干净。
+3. **损伤不是元凶（CI #77 NODAMAGE 隔离实验推翻）**：`terzaghi1D_nodamage.yaml` = 仅 `damage.type: AT2→AT2Elastic`（isElastic，不演化、Stiffness=1 不退化）。NODAMAGE 同样 **51/51 位移 `-5`** → 孔弹性核心本身不收敛，与损伤演化无关。
+4. **求解器调参也不是元凶**：生产（解析J+CG+basic）、V2（FD-J+GMRES+l2）均失败；V2 实际是 `rc=124` 超时（FD 太慢），非收敛。cg/gmres、basic/l2、解析/FD 雅可比全部失败。
+5. **压力/Terzaghi 物理完全正确**：NODAMAGE 中 `pmin≡0`（排水面 p=0 参考生效）、`pmax` 从 1e5 平滑衰减到 9055（step 51）→ 与 CI #75 的 pmax=9055.7 吻合。flow KSP 的 `zero pivot / diagonal shift` 仅是 PETSc ILU 在良性 SPD 矩阵上的常规预防性警告，**非错误**。
+6. **位移矩阵本身非奇异**：位移 SNES 的 KSP 无 zero-pivot；所有 zero-pivot 标记都挂在 `flow_` KSP 上（且 benign）。
+
+### 位移 SNES 的真实行为
+- 位移残差：首步从 2.08e4 降到 ~7–9，之后在 **3–10 间振荡/plateau**，永不逼近 atol=1e-7 → 报 `-5 (MAX_IT)`。
+- 位移 BC 正确（TRUE TRUE TRUE）、压力场正确、位移矩阵非奇异。四个求解配置全失败。
+
+### 当前最可能根因（待 CI 实验坐实）
+**位移线性求解（KSP）精度不足 / 预条件太弱**：位移 KSP = CG + bjacobi(ILU(0))。对于受 Biot 耦合项 + 强 Dirichlet 罚项放大的刚度矩阵，block-Jacobi-ILU 可能 stall，使 Newton 步不精确、非线性残差卡在线性求解误差地板（O(1)）无法继续下降 → 振荡 → MAX_IT。
+- 备择假设：位移 Jacobian 存在近零空间（CG 不处理），或残差/雅可比 Dirichlet 施加尺度不一致。
+
+### 下一步决定性实验（仅改 deck/CI，零 Fortran）
+- **ROBUSTKSP 变体**：主 deck 叠加 `-disp_ksp_type gmres -disp_pc_type gamg`（或 `preonly+lu` 若 MUMPS 可用），看位移 SNES 是否收敛。
+  - 收敛 ⇒ 确认是线性求解/预条件问题 → 改位移 KSP 配置即可（deck 层，符合零编译约束）。
+  - 仍失败 ⇒ 是装配/Jacobian 近零空间 bug → 需 Fortran 改动，超出零本地编译约束，交用户处理。
+- Gate 3.3 当前为硬闸门（commit c8f133a），CI 全红属预期；在根因未定位前保持硬闸门以减少噪声。
+
+### 代码精读结论（m_MEF90_DefMechAssembly.F90，用户要求）
+**位移 R/J 装配一致性已逐项核对，无 bug：**
+- 残差 BC：`R = u − g`（INSERT，行 394/425）；雅可比 BC：`MatZeroRowsColumnsIS(A,setISdof,1.0,NULL,NULL)`（行 701/722）。`Has_DisplacementBC` vs `Has_displacementBC` 仅是大小写差异，Fortran 不敏感 → 同一标识 → BC 对 R/J **一致施加**。
+- 弹性项：残差 293-295 (`stressGauss·GradS_BF`) 与雅可比 655-660 (`AGauss·GradS_BF·GradS_BF`) 一致。NODAMAGE（AT2Elastic=`cellIsElastic`）时 `stressGauss=HookesLaw:∇u`、`AGauss=HookesLaw` → **纯线弹性，J 精确=常数**。
+- 阻尼/cohesive 项：残差 297-333 与雅可比 600-668 的 `cellDampingCoefficient=dampingCoeff·dt+cohesiveStiffness` 一致。
+
+**决定性推论**：一个 R/J 一致的纯线弹性 Newton 问题本应 1 步收敛；但 NODAMAGE 仍 -5 振荡。且位移矩阵非奇异（Disp KSP 无 zero-pivot），而 NODAMAGE 日志 7785 行中**仅有 50 条 "Linear solve converged"（全是 flow KSP），位移 KSP 贡献为 0、亦无 DIVERGED**。
+→ **根因 = 位移内层 KSP（CG + bjacobi/ILU(0)）对刚度矩阵求解失败/stall**，Newton 每步拿不到准确步长 → 残差卡在 O(1) 振荡 → MAX_IT。与压力耦合无关（压力场完美）、与损伤无关、与 J 一致性无关。
+
+**下一步（仅改 deck/CI，零 Fortran）**：加 ROBUSTKSP 诊断变体，主 deck 叠加 `-disp_ksp_type gmres -disp_pc_type gamg`（或 `preonly+lu` 若 MUMPS 可用）+ `-disp_ksp_converged_reason`，看位移 SNES 是否收敛、位移 KSP 是否真正收敛。
+
+---
+
+## CI #78 ROBUSTKSP 诊断（已发起，commit 待填）
+
+**变体配置**（已写入 `.github/workflows/build.yml`，Run Terzaghi 步骤）：
+- 基于 **NODAMAGE deck（`terzaghi1D_nodamage.yaml`，AT2Elastic 纯线弹性，R/J 一致）**，叠加
+  `-disp_ksp_type gmres -disp_pc_type gamg -disp_ksp_converged_reason`，tee → `/tmp/terzaghi_robustksp.log`。
+- 选 NODAMAGE 而非主 deck：损伤已被证无关，纯线弹性下唯一变量 = 位移 KSP 配置
+  （弱 `CG + bjacobi/ILU(0)` vs 强 `GMRES + GAMG`）。
+- 步骤 timeout 45→60 min 容纳新增变体（主 600s + V2 1500s + NODAMAGE 600s + ROBUSTKSP 900s 最坏 ~55min）。
+
+**判定**：
+- 位移 SNES 收敛（`rk_fail=0`）⇒ 坐实弱 KSP/PC 是元凶；**修复 = 主 deck 改 `-Disp_ksp_type gmres -Disp_pc_type gamg`（零 Fortran，符合约束）**。
+- 仍 `-5` ⇒ 排除弱 KSP，转向装配/近零空间 bug（需 Fortran，超出零编译约束，交用户）。
+
+**关键旁证（已确认）**：V2 之前已用 `-disp_ksp_type gmres`（小写前缀，日志证实生效为 `Disp_ KSP type: gmres`），但 PC 仍是默认弱 `bjacobi/ILU(0)`，仍 -5 → 光换 `ksp_type` 不够，**必须换强 PC（GAMG/LU）**，这正是 ROBUSTKSP 的测试点。
+
+- 收敛 ⇒ 确认是线性求解/预条件问题 → 改位移 KSP 配置即可（符合零编译约束）。
+- 仍失败 ⇒ 是装配/Jacobian 近零空间 bug → 需 Fortran，超出零本地编译约束，交用户。

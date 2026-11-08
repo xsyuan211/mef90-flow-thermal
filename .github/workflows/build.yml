@@ -403,9 +403,11 @@ jobs:
         if: always()
         # CI #57 hung for 1h in mpirun (MPI deadlock) with no step timeout.
         # Cap the step and the solver so a hang always produces diagnostics.
-        # Bumped 20->45 for CI #76: the AT2-damage divergence plus the extra
-        # NODAMAGE (AT2Elastic) diagnostic variant need >20 min to complete.
-        timeout-minutes: 45
+        # Bumped 20->45 for CI #76, then 45->60 for CI #77: the AT2-damage
+        # divergence plus the NODAMAGE (AT2Elastic) + ROBUSTKSP (strong-KSP)
+        # diagnostic variants each can eat their full timeout when the
+        # displacement SNES diverges.
+        timeout-minutes: 60
         run: |
           set +e
           export PETSC_DIR=$HOME/petsc-3.3-mef90
@@ -561,6 +563,42 @@ jobs:
             echo "=== NODAMAGE STILL DIVERGENT: poroelastic core itself is broken (deeper issue) ==="
           else
             echo "=== NODAMAGE CONVERGED: poroelastic core sound; AT2 damage evolution is the culprit ==="
+          fi
+          # --------------------------------------------------------------------
+          # CI #77 ROBUSTKSP diagnostic: test whether the displacement SNES -5
+          # (MAX_IT) divergence is an UNDER-RESOLVED LINEAR SOLVER / weak
+          # preconditioner rather than a residual/Jacobian assembly bug.
+          # Variable isolation: use the NODAMAGE (AT2Elastic, inert damage ->
+          # pure linear elasticity, R/J consistent) deck so the ONLY change vs
+          # the NODAMAGE run above is the displacement KSP: GMRES + GAMG (a
+          # strong AMG preconditioner) instead of the default CG + bjacobi/ILU(0).
+          #   - If the displacement SNES now CONVERGES -> the fix is a KSP/PC
+          #     config change on the production deck (no Fortran edit; within
+          #     the zero-local-compile constraint).
+          #   - If it STILL DIVERGES -> the cause is an assembly / null-space
+          #     bug requiring Fortran changes (outside the constraint).
+          # --------------------------------------------------------------------
+          echo "=== ROBUSTKSP (AT2Elastic + Disp KSP=GMRES/GAMG) diagnostic run ==="
+          timeout -k 10s 900 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi1D_nodamage.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_monitor -disp_snes_linesearch_type basic \
+            -disp_ksp_type gmres -disp_pc_type gamg -disp_ksp_converged_reason \
+            2>&1 | tee /tmp/terzaghi_robustksp.log
+          rk_rc=${PIPESTATUS[0]}
+          echo "=== ROBUSTKSP mpirun exit code: $rk_rc ==="
+          echo "=== ROBUSTKSP: displacement/damage SNES convergence reasons ==="
+          grep -o "SNESConvergedReason -[0-9]*" /tmp/terzaghi_robustksp.log | sort | uniq -c || true
+          rk_fail=$(grep -c "SNESSolve failed with SNESConvergedReason" /tmp/terzaghi_robustksp.log || true)
+          echo "=== ROBUSTKSP non-convergent DefMech SNES solves: $rk_fail ==="
+          echo "=== ROBUSTKSP: displacement KSP linear-solve outcomes (attributed to Disp_) ==="
+          awk '/SNES Object: \(Disp_\)/{s=1} /SNES Object: \((flow_|damage_)\)/{s=0} s&&/Linear solve/{c[$0]++} END{for(k in c) print c[k], k}' /tmp/terzaghi_robustksp.log | sort -rn || true
+          if [ "$rk_fail" -gt 0 ]; then
+            echo "=== ROBUSTKSP STILL DIVERGENT: weak KSP ruled out; assembly/null-space bug ==="
+          else
+            echo "=== ROBUSTKSP CONVERGED: weak displacement KSP was the culprit; fix = KSP/PC config ==="
           fi
           echo "=== result files (3.2 analytical-comparison data source) ==="
           echo "    -prefix data/Beam1x10-tri3 -> geometry data/Beam1x10-tri3.gen, result data/Beam1x10-tri3_out.gen"
