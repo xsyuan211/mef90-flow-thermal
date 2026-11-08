@@ -136,6 +136,11 @@ def evaluate(adv_log, noadv_log, adv_gen, noadv_gen, main_gen):
     checks['D1'] = (ok, 'adv %d rows/%d probes, noadv %d rows/%d probes, wired %d/%d, fatal=%r'
                     % (len(arows), aprobe, len(nrows), nprobe, awire, nwire,
                        afatal or nfatal or None))
+    # CI #89: when either variant crashed early its result mesh is whatever
+    # the PREVIOUS variant left behind (the workflow reuses one EXO file).
+    # D4/D5/D6 then "PASS" on stale pressure fields while D6 sees a zero
+    # difference. Do not let mesh-based checks outrank a failed D1.
+    d1_ok = ok
 
     # D2 -- the enable flag really differs between the two decks
     if arows and nrows:
@@ -186,9 +191,9 @@ def evaluate(adv_log, noadv_log, adv_gen, noadv_gen, main_gen):
         metrics['records'] = (A.numrecs, N.numrecs, M.numrecs)
         metrics['nodes'] = nd
         metrics['record_vars'] = len(shared)
-        checks['D4'] = (recs_ok and node_ok and finite_ok and bool(shared),
-                        'records %s, nodes=%d, shared slots=%d, all finite=%s'
-                        % (str(metrics['records']), nd, len(shared), finite_ok))
+        checks['D4'] = (d1_ok and recs_ok and node_ok and finite_ok and bool(shared),
+                        'records %s, nodes=%d, shared slots=%d, all finite=%s, runs_complete=%s'
+                        % (str(metrics['records']), nd, len(shared), finite_ok, d1_ok))
     else:
         checks['D4'] = (False, 'mesh unavailable')
 
@@ -235,10 +240,11 @@ def evaluate(adv_log, noadv_log, adv_gen, noadv_gen, main_gen):
                            spatial=spatial, refmax=refmax)
             rel = l_d / refmax if refmax > 0 else 0.0
             spatial_frac = spatial / l_d if l_d > 0 else 0.0
-            checks['D5'] = (ref_finite and TEMP_LO <= refmax <= TEMP_HI and span > 1.0,
-                            'slot %s: max|T_off|=%.6g K, spatial span=%.6g K, finite=%s'
-                            % (slot, refmax, span, ref_finite))
-            checks['D6'] = (all(finite(x) for x in (f_d, l_d, rel, spatial_frac))
+            checks['D5'] = (d1_ok and ref_finite and TEMP_LO <= refmax <= TEMP_HI and span > 1.0,
+                            'slot %s: max|T_off|=%.6g K, spatial span=%.6g K, finite=%s, runs_complete=%s'
+                            % (slot, refmax, span, ref_finite, d1_ok))
+            checks['D6'] = (d1_ok
+                            and all(finite(x) for x in (f_d, l_d, rel, spatial_frac))
                             and rel >= REL_DIFF_MIN
                             and spatial_frac >= SPATIAL_MIN
                             and l_d > f_d,

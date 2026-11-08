@@ -2272,5 +2272,55 @@ CI #87 的 `flow.log` 复核：`m_MEF90_Flow.F90:399` 只是
 `End If` 行号、`MEF90_ELEMENTTYPE` 残留 0、7 `Subroutine` 对 7
 `End Subroutine`，全过。
 
-**CI #89 待回：编译是否全绿、Gate 4.2 D1-D7 是否 PASS。**
+### CI #89 结果：编译全绿，Gate 3.3 / 4.1 回归 PASS，Gate 4.2 FAIL
+
+`vDef` 二进制生成成功，`MEF90_ELEMENTTYPE` / TARGET / wire 三处修复全部生效。
+主运行日志：`Gate 4.2: coupling wired, enable_advection= F
+velocity_sec_associated= T`，51 条 `|v_darcy|inf` 从 `3.80e-2` 衰减到
+`8.76e-5`。`GATE33_RESULT: PASS`（P1-P6/P8）、`GATE41_RESULT: PASS`
+（B1-B7），生产物理场逐位未受 4.2 改动影响。
+
+两个 4.2 变体在 **step 1 之前** SEGV（日志仅 520 行 = bag view + PETSC
+ERROR，0 个 `Gate 3.2: step` / `Gate 4.2: enabled=`）：
+- 热场确实启用：`heatxfer_timeStepping_type = SteadyState`、
+  `boundaryTemp_scaling=linear`、cs0010/cs0020 `TempBC=TRUE`、
+  cs0020 `boundaryTemp=100`；ADVECTION 变体 `enable_advection= T`。
+- 热场 step 1 已成功求解（`Thermal energies` 全 0），说明新增的
+  `MEF90HeatXferFlowAdvectionOperatorSet/BilinearFormSet` 已实际执行且
+  未崩；helper 的 `SectionRealDestroy(defaultSection)` 与原版
+  `MEF90DiffusionBilinearFormAdvectionSet:155` 一致。
+- 崩溃点由 checkpoint 序列锁定：`Gate 3.1: step 1 enter transient block`
+  之后**没有** `post-UpdateMu` → 首条调用
+  `MEF90FlowUpdateMuFromTemperature`。
+
+**根因（旧代码，与 4.2 新增无关）**：该函数开头只在
+`DefMechCtx%temperature` 未关联时 Return；生产 deck 热场为 null 所以永远
+提前返回。两个变体启用热场后指针被接上（vDef:259），函数体首次执行：
+`muPtr(1) = ...` 写在 `SectionRealRestrict(...,muPtr,...)` **之前**，
+而 `muPtr` 是未关联的局部指针 → 立即 SEGV。此外 bag 里明明有
+`temp_dep_viscosity` 开关（默认 `PETSC_FALSE`，所有 deck 均未开启），
+函数却完全没检查它。
+
+### CI #90 前的修复
+
+1. `m_Flow/m_MEF90_Flow.F90`：在 `PetscBagGetData...` 之后加
+   `If (.NOT. gOpt%temperatureDependViscosity) Return`。默认配置下
+   μ(T) 耦合本就应 no-op，生产 deck 行为逐位不变。
+2. 同一函数：`SectionRealRestrict(cellDMScalSec, ..., muPtr)` 移到
+   两处 `muPtr(1) = ...` 之前、`SectionRealRestore` 保留在最后，
+   消除将来开启该选项时的同类 SEGV。
+3. `check_gate42_advection.py`：**D4/D5/D6 以 D1 为前置**（`d1_ok`）。
+   CI #89 中变体崩溃后 workflow 复用同一 EXO 文件，残留的是上一步
+   BODYFORCE 的压力场（末步 ~9055 Pa），D4/D5 竟据此 PASS、D6 因两
+   份网格逐位相同而 diff=0。回放 CI #89 真实数据确认加固后
+   D4/D5/D6 全部改为 FAIL（`runs_complete=False`），整体仍 FAIL。
+
+### 已知残余风险（CI #90 观察）
+
+`m_DefMech` 有 17 处 `Associated(temperature)` 热膨胀分支，启用热场后
+将首次执行；静态复核其 Duplicate→ToVec→Allocate→RestrictClosure 写法
+规范，暂不隔离。若 CI #90 崩在该路径，再考虑给 4.2 诊断 deck 增加
+DefMech 热耦合隔离开关。
+
+**CI #90 待回：两个变体是否跑满 51 步、D1-D7 是否全 PASS。**
 4.1b、残差平台 `3~13` 根因、damage 7 条 `-5` 仍在册。

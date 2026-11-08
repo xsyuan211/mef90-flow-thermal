@@ -556,6 +556,15 @@ Contains
       If (.NOT. Associated(DefMechCtx%temperature)) Return
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
+      !!! CI #89: temperature-dependent viscosity is OPT-IN. Every committed
+      !!! deck leaves temp_dep_viscosity = FALSE (vDefFlowDefaultGlobalOptions),
+      !!! so this routine MUST be a no-op even when HeatXfer is active and
+      !!! DefMechCtx%temperature is associated. Without this guard the body
+      !!! ran for the first time in the Gate 4.2 variants and SEGVed right
+      !!! after "enter transient block" on step 1 (muPtr was written before
+      !!! SectionRealRestrict associated it). Production never noticed
+      !!! because its temperature pointer is unassociated -> early Return.
+      If (.NOT. gOpt%temperatureDependViscosity) Return
 
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -599,8 +608,11 @@ Contains
             If (TCell < TMin) TCell = TMin
             If (TCell > TMax) TCell = TMax
 
-            !!! Compute μ(T)
+            !!! Compute μ(T). CI #89: restrict the cellMuField slot FIRST --
+            !!! muPtr is an unassociated local pointer, so writing muPtr(1)
+            !!! before SectionRealRestrict is an immediate SEGV.
             T_dimless = TCell / TRef
+            Call SectionRealRestrict(FlowCtx%cellDMScalSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
             If (gOpt%useArrheniusViscosity) Then
                !!! Arrhenius-like (gas): μ ∝ T^0.5 * exp(Ea/(R*T))
                muPtr(1) = mu_ref * sqrt(T_dimless) * exp(Ea_over_R * (1.0_Kr/TCell - 1.0_Kr/TRef))
@@ -608,9 +620,6 @@ Contains
                !!! Sutherland (liquid): μ ∝ T^1.5 * (T_ref+C)/(T+C)
                muPtr(1) = mu_ref * T_dimless * sqrt(T_dimless) * (TRef + C) / (TCell + C)
             End If
-
-            !!! Write to cellMuField Section
-            Call SectionRealRestrict(FlowCtx%cellDMScalSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
             Call SectionRealRestore(FlowCtx%cellDMScalSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
          End Do
          DeAllocate(TPtr)
