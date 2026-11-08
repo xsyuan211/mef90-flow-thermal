@@ -2381,6 +2381,38 @@ PASS 是假阳性。关键事实：
   0.2，说明 PETSc YAML 键大小写不敏感，新加的两个 MatProp 键可命中
   `cs0001_` 前缀 bag。
 
-**CI #91 待回：bag 摘要是否为 `alpha=0 0 0` / `K=0.1 0.1 0`，D1-D8 是否全 PASS。**
-若 K 未生效 D6 会 FAIL、若 α 未生效 D8 会 FAIL，日志可立即区分。
-4.1b、残差平台 `3~13` 根因、damage 7 条 `-5` 仍在册。
+### CI #91：Gate 4.2 收口（conclusion=success，8 checks / 0 failed）
+
+| 判据 | 结果 |
+|---|---|
+| D1 运行完整 | PASS，两变体各 51 rows / 51 probes，wired 1/1，fatal=None |
+| D2 开关对照 | PASS，ADV 51/51 `T`、NOADV 0/51 `T` |
+| D3 Darcy 速度 | PASS，`0.0380437 -> 7.08746e-05`（peak 0.0380437），两日志一致 |
+| D4 网格完整 | PASS，records (51,51,51)、nodes=600、shared slots=31、全有限 |
+| D5 温度场 | PASS，锁 `vals_nod_var1`（由 `temp_Offset=1`），`max\|T_off\|=100 K`、first=0 K、span=100 K、grows=True |
+| D6 平流响应 | PASS，`\|dT\|` first=0 → last=`0.0639432 K`、`rel=6.394e-4`（min 1e-4）、spatial=0.638 |
+| D7 生产隔离 | PASS，主网格 slot1 `\|max\|=1e5 Pa`（heatxfer 仍为 null） |
+| D8 机械场健康 | PASS，`max\|u\|=1.13e-05 m <= 1e-3`、`max damage=3.75e-05 <= 0.1` |
+
+Gate 3.3（P1-P6/P8）、Gate 4.1（B1-B7）回归同轮全 PASS。
+
+**离线实证（零本地编译 / 零求解器运行）**
+
+- 变体 bag：三个 cell set 均 `LinearThermalExpansion = 0 0 0`、
+  `ThermalConductivity = 0.1 0.1 0`、`heatxfer_timeStepping_type = SteadyState`、
+  `temp_Offset = 1`；wire 一 `T` 一 `F` 且 `velocity_sec_associated= T`。
+  生产 bag 保持默认 `alpha = 1 1 0` / `K = 1 1 0` / `null`，确认 deck 未污染主运行。
+- 生产主网格 `out_main.gen` 跨 CI #90/#91：md5 仅 11 字节不同，全部位于
+  EXO 属性区的 git SHA（`e7d001a-dirty`→`c04f4a7-dirty`）与时间戳
+  （`14:43:39`→`15:15:31`）；**31 个记录变量 × 51 步逐值比对 max abs diff = 0**，
+  物理场逐位一致。
+- 两变体日志等长（299857 B），归一化 T/F 后唯一实质差异是热能量：
+  step1 `2.00002E-02` vs `2.00000E-02`、step2 `8.00102E-02` vs `8.00000E-02`，
+  即平流对温度场的影响有独立能量证据；各 51 次 `Thermal energies`。
+- 结果网格里**只有 `vals_nod_var1` 有非零差异**（0.124868），其余 3 个
+  nodal 槽与 27 个 elem 槽全为 0 → 平流只改温度，机械/损伤/压力场不受影响。
+
+**结论：4.2（逐单元 Darcy 速度 -> HeatXfer 平流）已收口。**
+生产 deck、Gate 3.x / 4.1 核心 Fortran 全程未改动，开关默认关闭。
+仍在册：4.1b（互斥总应力模式）、标准 Newton 残差平台 `3~13` 根因、
+damage SNES 7 条 `-5`（本轮生产日志仍为 7 条，信息性，不影响物理判据）。
