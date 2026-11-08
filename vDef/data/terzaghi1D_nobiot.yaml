@@ -89,7 +89,7 @@ flow:
 
 # ----------- cs0001: Domain (TRI3, x in [-5,5], y in [-0.5,0.5]) -----------
 # Poroelastic material: E=1GPa, ν=0.25, plane-strain
-# Gravity body force (0, -9.81, 0) m/s² → baseForce snapshot
+# Body-force free: Terzaghi consolidation has no gravity (CI #85).
 # No Flow BC here (domain interior)
 cs0001:
     # ------ Material properties (DefMech) ------
@@ -117,8 +117,11 @@ cs0001:
     # DEED and D2EED both degenerate to linear Hooke so R/J are consistent.
     unilateralContact:
         type: None
-    # Gravity body force → captured as baseForce (DefMechCtx%force)
-    Force: 0, -9.81, 0
+    # CI #85: PETSc 3.3 RealArray keeps only the FIRST element when a
+    # comma is followed by a space, so the old "0, -9.81, 0" silently
+    # evaluated to 0 0 0. Write the zero explicitly. A NON-ZERO body
+    # force is exercised only in terzaghi1D_bodyforce.yaml (B3/B4).
+    Force: 0,0,0
 
     # ------ Flow options ------
     source: 0.0                     # no well injection (gate-2 TEMP source reverted; gate-3 decay starts from p0=1.0e5)

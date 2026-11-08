@@ -489,35 +489,15 @@ jobs:
           # linear (alpha ~ 4e-5), so the L2 secant line search is replaced by
           # a full Newton step (basic); -disp_snes_monitor records the fnorm
           # trace for the diagnosis table at the end of this step.
+          # CI #86: the CI #73 "V2" variant (FD Jacobian + GMRES, 1500 s cap,
+          # ~14 min of every ~17 min job) is RETIRED. Its hypothesis was
+          # settled by CI #82/#83: FD Jacobian still reports -5, the 51x -5
+          # come from an irreducible residual plateau (2.08e4 -> ~9 on the
+          # first Newton step, then 3-13 forever), and ksponly produces a
+          # PHYSICALLY EQUIVALENT field in 6 s. Keeping V2 burned ~80% of
+          # the job time without producing any verdict. The production run
+          # below now starts immediately and owns data/*_out.gen.
           #
-          # CI #73 Jacobian diagnosis (runs BEFORE the production run so the
-          # production run still owns data/Beam1x10-tri3_out.gen for Gates 3.1/3.2):
-          # Baseline (production run below): analytic Jacobian + CG  -> -5 on all 51 steps.
-          # V1 (CI #72): analytic Jacobian + GMRES -> 51x -5, so CG/MAT_SPD symmetry is
-          #     ruled out (GMRES handles non-symmetric/indefinite matrices).
-          # V2: FD Jacobian + GMRES (1500s, full 51 steps) -> DECISIVE:
-          #     if -5 count drops sharply (or 0) the analytic Jacobian
-          #     (BilinearFormDisplacement) carries a value bug that FD-coloring recovers.
-          #     If V2 still reports ~51x -5, the residual itself is inconsistent /
-          #     the system is singular and the bug is in OperatorDisplacement.
-          run_variant () {
-            local tag="$1"; shift
-            echo ""
-            echo "##### DefMech diagnosis $tag: $* #####"
-            timeout -k 10s 1500 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
-              -prefix data/Beam1x10-tri3 \
-              -options_file_yaml data/terzaghi1D.yaml \
-              -flow_ts_view -flow_ts_monitor \
-              -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
-              -disp_snes_monitor "$@" \
-              2>&1 | tee "/tmp/diag_${tag}.log"
-            local vrc=${PIPESTATUS[0]}
-            local vfail=$(grep -c "SNESSolve failed with SNESConvergedReason" "/tmp/diag_${tag}.log" || true)
-            echo "##### $tag mpirun rc=$vrc  displacement SNES -5 count=$vfail"
-            echo "##### $tag first AltMin step fnorm tail (last 4 iters of step 1):"
-            awk '/Alt\. Min\. step     1 /{f=1} f&&/SNES Function norm/{c++} f&&c>=47{print} /Alt\. Min\. step     2 /{f=0}' "/tmp/diag_${tag}.log" | head -6
-          }
-          run_variant V2 -disp_snes_fd -disp_ksp_type gmres -disp_ksp_gmres_restart 100
           # CI #84 (option A): CI #83 proved the standard Newton run and the
           # ksponly run produce PHYSICALLY EQUIVALENT fields (dPressure=0,
           # dDamage=0.38%, dUx=0.21%, stress<=0.41%) while Newton burned 51
@@ -699,10 +679,12 @@ jobs:
           # Gate 4.1 NOBIOT control (CI #85).
           # Same binary / mesh / options as the production run, but the deck
           # is terzaghi1D_nobiot.yaml: byte-identical to terzaghi1D.yaml
-          # except biot_coeff 1.0 -> 0.0. With alpha=0 the Biot body force
-          # disappears and u_x collapses to the gravity-only level, giving an
-          # INDEPENDENT physical check that the -alpha*grad(p) term is live
-          # (criterion B6 of data/check_gate41_biot.py). A command-line
+          # except biot_coeff 1.0 -> 0.0. With alpha=0 AND no preset body
+          # force (CI #85) the displacement field is EXACTLY zero over all
+          # 51 records, giving an INDEPENDENT physical check that the
+          # -alpha*grad(p) term is live (criterion B6 of check_gate41_biot.py,
+          # which handles the zero control field explicitly instead of
+          # computing a pm/0 -> inf ratio). A command-line
           # -flow_biot_coeff override is deliberately NOT used: PETSc 3.3 bag
           # options can be rejected as "Unknown option", which would silently
           # produce no control mesh. Deck variants are the proven pattern here
@@ -725,6 +707,39 @@ jobs:
             echo "=== saved NOBIOT result mesh -> /tmp/out_nobiot.gen ==="
           else
             echo "=== WARN: NOBIOT produced no result mesh; Gate 4.1 B6 must FAIL ==="
+          fi
+          # --------------------------------------------------------------------
+          # Gate 4.1 BODYFORCE diagnostic (CI #86, option B).
+          # CI #85 proved the production deck has NO non-zero preset body
+          # force: "Force: 0, -9.81, 0" has spaces after commas, so PETSc
+          # 3.3's RealArray reader keeps only the first element and the bag
+          # view reads "Force = 0 0 0". With force_scaling=linear that gives
+          # |baseForce| == 0 forever: B3 (Linear scaling not rolled back)
+          # fails, and B4 (superposition vs overwrite) has NO discriminating
+          # power because base==0 makes both implementations identical.
+          # terzaghi1D_bodyforce.yaml differs ONLY by cs0001.Force
+          # 0,0,0 -> 0,-9.81,0 (no spaces), so |baseForce| grows 0 -> 9.81.
+          # This is DIAGNOSTIC ONLY: the production mesh is already frozen in
+          # /tmp/out_main.gen and is restored below for Gates 3.1/3.2/3.3,
+          # so introducing a body force can never perturb the green gate.
+          # --------------------------------------------------------------------
+          echo "=== Gate 4.1 BODYFORCE diagnostic run (Force=0,-9.81,0, ksponly) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi1D_bodyforce.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_bodyforce.log
+          bf_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.1 BODYFORCE mpirun exit code: $bf_rc ==="
+          echo "=== Gate 4.1 BODYFORCE CellSet Force as parsed by PetscBag ==="
+          grep -aE "^[[:space:]]*Force = " /tmp/terzaghi_bodyforce.log | sort -u | head -5 || true
+          if [ -s data/Beam1x10-tri3_out.gen ]; then
+            cp -f data/Beam1x10-tri3_out.gen /tmp/out_bodyforce.gen
+            echo "=== saved BODYFORCE result mesh -> /tmp/out_bodyforce.gen ==="
+          else
+            echo "=== WARN: BODYFORCE produced no result mesh; Gate 4.1 B3/B4 must FAIL ==="
           fi
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
           # artifact stay the main-run output (diagnostic variants overwrite it).
@@ -770,17 +785,19 @@ jobs:
           fi
           # --- Gate 4.1 (hard): Biot body-force superposition -----------------
           # Checklist 4.1a: "开启体力缩放后结果不回滚". MEF90DefMechSetTransients
-          # re-applies ForceScaling (default Linear) on EVERY outer step, so
-          # |baseForce| must grow 0 -> 9.81 over 51 steps; the production
-          # force must be exactly baseForce - alpha*grad(p). The Fortran side
-          # emits one "Gate 4.1:" diagnostic row per step with the norms and
-          # the superposition error, and the NOBIOT control mesh gives an
-          # independent check that the coupling changes the displacement.
+          # re-applies ForceScaling (default Linear) on EVERY outer step.
+          # CI #86: the PRODUCTION deck is body-force free (|base| == 0), so
+          # B3/B4 are judged on the BODYFORCE diagnostic log, where
+          # |baseForce| grows 0 -> 9.81 and the superposition error can
+          # actually distinguish "base - alpha*grad(p)" from an overwrite.
+          # B1/B2/B5/B7 cover both logs; B6 uses the NOBIOT control mesh.
+          # The Fortran side emits one "Gate 4.1:" diagnostic row per step.
           # Emit the verdict here but DEFER its exit 1 until after Gate 3.3,
           # so a Gate 4.1 failure never hides the Gate 3.3 physics table
           # (CI #82 lesson: an early exit 1 skips later diagnostics).
           python3 data/check_gate41_biot.py --gate \
             /tmp/terzaghi.log /tmp/out_main.gen /tmp/out_nobiot.gen \
+            /tmp/terzaghi_bodyforce.log \
             2>&1 | tee /tmp/gate41_verdict.log
           g41_rc=${PIPESTATUS[0]}
           # --- Gate 3.3 (hard): PHYSICS VERDICT on the production field -----
@@ -823,12 +840,13 @@ jobs:
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
-            echo "    Check /tmp/gate41_verdict.log: B1 rows, B2 alpha, B3 Linear"
-            echo "    force scaling, B4 superposition error, B5 gradp,"
-            echo "    B6 NOBIOT control, B7 run completeness."
+            echo "    Check /tmp/gate41_verdict.log: B1 both logs, B2 alpha,"
+            echo "    B3/B4 from BODYFORCE log (Linear scaling + true"
+            echo "    superposition with non-zero |base|), B5 gradp,"
+            echo "    B6 NOBIOT control, B7 both runs complete."
             exit 1
           fi
-          echo "=== Gate 4.1 PASS: Linear force scaling preserved, force = baseForce - alpha*grad(p) ==="
+          echo "=== Gate 4.1 PASS: Linear force scaling preserved on non-zero baseForce, superposition error ~0 ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -962,12 +980,14 @@ jobs:
             /tmp/terzaghi.log
             /tmp/terzaghi_ksponly_phys.log
             /tmp/terzaghi_nobiot.log
+            /tmp/terzaghi_bodyforce.log
             /tmp/terzaghi_verdict.log
             /tmp/gate33_verdict.log
             /tmp/gate41_verdict.log
             /tmp/out_main.gen
             /tmp/out_ksponly.gen
             /tmp/out_nobiot.gen
+            /tmp/out_bodyforce.gen
           retention-days: 7
       - name: Upload Terzaghi result mesh
         uses: actions/upload-artifact@v4

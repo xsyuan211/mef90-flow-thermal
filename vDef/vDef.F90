@@ -520,10 +520,16 @@ Program vDef
          !!! Gate 4.1: snapshot the TIME-SCALED preset force (gravity etc.)
          !!! into baseForce, ONCE PER TIME STEP (not once per AltMin iter).
          !!! MEF90DefMechSetTransients above re-applies ForceScaling on every
-         !!! outer step; the default is MEF90Scaling_Linear, so
-         !!! |DefMechCtx%force| = 9.81*time(step). Snapshotting only once at
-         !!! startup (as the original checklist 4.1 suggested) would roll the
-         !!! Linear scaling back to its t=0 value and silently lose gravity.
+         !!! outer step; the default is MEF90Scaling_Linear. NOTE (CI #85):
+         !!! terzaghi1D.yaml writes `Force: 0, -9.81, 0` WITH spaces after the
+         !!! commas, so PETSc 3.3's RealArray reader keeps only the first
+         !!! element and the CellSet bag view reads `Force = 0 0 0`. Hence
+         !!! |DefMechCtx%force| is currently 0 (= linear x 0), NOT 9.81*time.
+         !!! A non-zero body force is exercised only by the Gate 4.1
+         !!! BODYFORCE diagnostic deck. Snapshotting only once at startup
+         !!! (as the original checklist 4.1 suggested) would STILL be wrong
+         !!! once a non-zero force is enabled: Linear scaling would be pinned
+         !!! at its t=0 value.
          !!! MEF90FlowApplyBiotForce rebuilds force = baseForce - alpha*grad(p)
          !!! from this snapshot on every AltMin call, so the operation is
          !!! idempotent (no accumulation) and the scaling is preserved.

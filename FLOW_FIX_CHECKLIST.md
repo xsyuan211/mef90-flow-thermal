@@ -1759,7 +1759,7 @@ KSPONLY-PHYS 合计仅 ~30 s。**退役 V2 可把 CI 从 ~17 min 降到 ~3 min**
 
 ### 2. 覆盖性更正：原清单的「仅作首次快照」会引入 bug
 
-`m_vDefDefault.F90:43/79` 默认 `ForceScaling = MEF90Scaling_Linear`，`MEF90DefMechSetTransients`（`vDef.F90:447`）每步重设 `force = (0,−9.81,0)×t`。当前快照在**时间步层**（`vDef.F90:520`，AltMin 之外），所以 `|baseForce|` 应线性增长 `0 → 9.81`。若按原建议只在启动时快照一次，Linear 缩放会被回滚成 0，重力静默丢失。**当前代码本来就是对的**，原清单描述的是更早版本（行号 948-953 / 382-384 均已失效）。
+**~~`m_vDefDefault.F90:43/79` 默认 `ForceScaling = MEF90Scaling_Linear`，`MEF90DefMechSetTransients`（`vDef.F90:447`）每步重设 `force = (0,−9.81,0)×t`。~~ 此句已被 CI #85 证伪，见下文「CI #85 结果」节：deck 的 `Force: 0, -9.81, 0` 因逗号后空格被 RealArray 解析器截断成 `0 0 0`，bag view 实测 `Force = 0 0 0`，故 `linear × 0 = 0`，`baseForce` 全程恒 0。** 快照位置在**时间步层**（`vDef.F90:520`，AltMin 之外）仍然是正确的设计；原清单「仅作首次快照」的建议也仍然是错的（一旦将来启用非零体力，Linear 缩放会被回滚）。但「当前 `|baseForce|` 应为 `0→9.81` 线性增长」这一判据前提在本 deck 上不成立。
 
 ### 3. 改动清单
 
@@ -1783,7 +1783,13 @@ KSPONLY-PHYS 合计仅 ~30 s。**退役 V2 可把 CI 从 ~17 min 降到 ~3 min**
 | B6 | NOBIOT 对照 | `peak|u_x|(main) ≥ 3×peak|u_x|(nobiot)` 且主峰值 ∈ `[5e-5,2e-4] m` | 耦合没有真正驱动位移 |
 | B7 | 运行完整性 | `≥50` 探针、无崩溃签名、无 `Unknown option` | 假绿 |
 
-`superpos_err = ‖force − (baseForce − α∇p)‖∞`，从**未被修改的快照**重算，因此一个数字就能区分「叠加 / 覆盖 / 丢弃 / 累积」四种实现。
+`superpos_err = ‖force − (baseForce − α∇p)‖∞`，从**未被修改的快照**重算。
+**CI #85 更正**：所谓「一个数字区分叠加 / 覆盖 / 丢弃 / 累积」只在 `|base| > 0`
+时成立；生产 deck 的 `baseForce ≡ 0` 会让叠加与覆盖给出完全相同的 `err=0`。
+因此 **CI #86 起**：B3/B4 改判 `terzaghi1D_bodyforce.yaml` 的 BODYFORCE 诊断
+日志（`|base|` 线性 `0→9.81`），B4 额外要求 `max|base| ≥ 5` 才承认其区分力；
+B1/B2/B7 同时覆盖两份日志；B6 显式处理 NOBIOT 位移场恒零（不再算 `pm/0 → inf`）。
+详见文末「CI #86：方案 B 落地」。
 
 ### 5. 与 Gate 3.3 的关系（回归安全）
 
@@ -1797,4 +1803,168 @@ KSPONLY-PHYS 合计仅 ~30 s。**退役 V2 可把 CI 从 ~17 min 降到 ~3 min**
 
 ### 7. 状态
 
-代码已提交推送、CI #85 结果待回。**4.1b（互斥总应力模式）未实现**，理由见清单 4.1b 条目；残差平台 `3~13` 的 Fortran 装配根因、damage SNES 的 7 条 `-5` 仍在册，不属本闸门。
+代码已提交推送（`ba010ea`），CI #85 已回：**failure，且唯一失败项是 B3**；Gate 3.3 保持 PASS。详见下节。**4.1b（互斥总应力模式）未实现**，理由见清单 4.1b 条目；残差平台 `3~13` 的 Fortran 装配根因、damage SNES 的 7 条 `-5` 仍在册，不属本闸门。
+
+---
+
+## CI #85 结果（run `42478888575`，commit `ba010ea`，conclusion = failure）
+
+### 1. 结论先行
+
+**Fortran 改动是对的，物理场没变，Gate 4.1 的 B3 判据前提错了。** CI 变红只因
+`GATE41_RESULT: FAIL (B3)`；`GATE33_RESULT: PASS`，P1–P6/P8 数值与 CI #84
+**逐位一致**（`peak|u_x|=0.00011036`、`ratio=0.0905571`、`L2=0.0320613`）。
+`VecWAXPY` 单次叠加没有破坏任何东西。
+
+### 2. B1–B7 实测表
+
+| # | 实测 | 结果 |
+|---|---|---|
+| B1 | 51 行 `Gate 4.1:`，51 条 `Gate 3.2` 探针，0 不可解析 | PASS |
+| B2 | `max|α−1| = 0` | PASS |
+| **B3** | `|base| 0 → 0`，`slope 0`，`R² 0.00000`，`max resid 0` | **FAIL** |
+| B4 | `max superpos_err/|force| = 0` | PASS（但本 deck 上**无区分力**，见 §4） |
+| B5 | `|gradp| 1417 … 7.609e5`（ratio 537），`max(|force|−|base|) 7.609e5` | PASS |
+| B6 | 主 `peak|u_x|=1.1036e-4 m` / NOBIOT `0 m`，`ratio = inf` | PASS（除零侥幸，见 §4） |
+| B7 | 51 探针、无崩溃、无 `Unknown option` | PASS |
+
+时间轨迹：step1 `|base|=0 |gradp|=7.609e5 |force|=7.609e5 err=0`；step51
+`|base|=0 |gradp|=1417 |force|=1417 err=0`。每时间步 1 条诊断（ksponly 下
+每步 1 次 AltMin），行数完整。
+
+### 3. B3 根因：deck 里的重力从来没生效，不是代码 bug
+
+生产日志 CellSet PetscBagView 三个 set 全部是：
+
+```
+force_scaling = linear;   Force = 0 0 0 ;   pressureForce = 0
+```
+
+而 `vDef/data/terzaghi1D.yaml:116` 写的是 `Force: 0, -9.81, 0`（**逗号后带空格**）。
+这是全 deck 唯一一个带逗号空格的数组键；`displacementBC` /
+`boundaryDisplacement` 早已统一为无空格写法（`1,1,1` / `0,0,0`）。
+PETSc 3.3 的 `PetscBagRegisterRealArray(...,3,'Force',...)`
+（`m_DefMech/m_MEF90_DefMechCtx.F90:936`）在同样带空格的输入上只读到首元素
+`0`，其余补 0 ⇒ `Force = 0 0 0`。赋值链
+`cellSetOptions%force → MEF90DefMechSetForceCst`（`m_MEF90_DefMech.F90:212`）
+→ `VecScale(force,time)`（`m_MEF90_DefMech.F90:92`）因此恒为 0：
+**`force_scaling = linear` 确实在跑，只是 `linear × 0 = 0`。**
+
+4 个 deck（`terzaghi1D*.yaml`）都带同一处写法，属历史遗留。CI #85 的 B3
+不是「叠加被回滚」，而是**根本没有非零体力可供回滚**。
+
+### 4. 由此暴露的两个判据缺陷（必须修，否则第六/第七次假绿）
+
+1. **B4 在 `baseForce ≡ 0` 时退化**：此时
+   `superpos_err = ‖force − (0 − α∇p)‖∞`，叠加与覆盖结果完全相同，
+   `err=0` 无法区分两者。上一轮声称「一个数字区分叠加/覆盖/丢弃/累积」，
+   只在 `|base| > 0` 时成立。B4 的 PASS 在本 deck 上**不能证明叠加语义**。
+2. **B6 用 `ratio = pm/pn`，`pn=0` ⇒ `inf`**，靠 `inf >= 3` 判 PASS。
+   物理结论是对的（`out_nobiot.gen` 实测 51 步 `ux/uy` 严格全 0，是
+   「去掉唯一驱动 ⇒ 无位移」的理想对照），但脚本没有显式处理 `pn==0`，
+   属除零侥幸，且 `inf` 未进 B7 的非有限值检查。
+
+另有一处**注释错误**需就地更正：`vDef/vDef.F90:524` 写死
+`|DefMechCtx%force| = 9.81*time(step)`，与 CI #85 实测 `0` 不符。
+
+### 5. 其他核实（防误判）
+
+- 构建日志两条 `f951: Fatal Error: gfortran: Only one '-J' option allowed`：
+  **CI #84 同样有 2 条**，属既有噪音；job 正常产出 15 个 artifact 与
+  `vDef` 二进制，编译成功。
+- NOBIOT 运行 `biot_coeff=0` 生效：其日志 `Gate 4.1:` 行数为 **0**
+  （`biotCoeff==0` 时 early-return，符合预期）；`out_nobiot.gen` 全 51 步
+  `peak|u_x|=peak|u_y|=0`。
+- Gate 4.1 的 `exit 1` 按设计排在 Gate 3.3 PASS 之后，判据表完整打印，
+  没有重演 CI #82 的早退隐藏数据。
+- job 全文 `FAIL` 行只有 2 条，均属 Gate 4.1；主运行仍只有 7 条
+  `damage field -5`（报告项，P8 兜底 `3.7458e-5`）。
+
+### 6. 下一步的三条路（**用户已选 B，见文末 CI #86 节**）
+
+- **A 最小修**：把 4 个 deck 的 `Force` 改成无空格 `0,-9.81,0`，
+  让重力真正生效 ⇒ B3 自然 PASS、B4 恢复区分力。**风险**：给 Terzaghi
+  基准引入体力，两端固定梁会产生 `u_y` 弯曲，可能顶到 Gate 3.3 的
+  P2 阈值（`1e-5 m` / `5%×peak`）。
+- **B 零物理风险（推荐）**：新增 `terzaghi1D_bodyforce.yaml`（仅把 `Force`
+  修为无空格非零值）+ 一个 8 秒的 BODYFORCE ksponly 变体，用**它**的日志
+  验 B3/B4；生产 deck 保持纯净（顺手把误导性的 `0, -9.81, 0` 改为
+  `0,0,0` 并改注释，解析结果不变、物理场逐位不变）。B6 显式处理 `pn==0`。
+  Gate 3.3 完全不受影响。
+- **C 放水（不推荐）**：把 B3 改成「`base` 恒 0 也算 PASS」，则 4.1a
+  的「叠加而非覆盖」验收彻底失去区分力，等于取消闸门。
+
+另：CI #85 耗时 14m27s，其中 CI #73 遗留的 V2（FD Jacobian + GMRES）变体
+约占 14 分钟；它的假设早被 CI #82/#83 证伪，退役可把 CI 压到 ~3 分钟。
+
+**本轮动作**：只读核对 job log + `build-diagnostics` artifact（15 文件）、
+原始 `Gate 4.1:` 行、CellSet bag view、两份网格全步位移、跨 CI 编译噪音对比，
+并就地更正本文档与 `vDef.F90` 注释所对应的错误结论；
+**未改 deck / build.yml / 判据脚本 / Fortran 逻辑，未提交、未推 CI**。
+
+---
+
+## CI #86：方案 B 落地（用户选 B，零物理风险）
+
+### 1. 思路
+
+不在生产 deck 上引入重力（那会给 Terzaghi 基准加体力、可能顶到 Gate 3.3
+的 P2 阈值），而是**新增一个只用于诊断的 BODYFORCE 变体**：它带非零预设
+体力，让 B3「Linear 缩放不回滚」和 B4「叠加而非覆盖」重新具备区分力；
+生产 mesh 在变体运行**之前**已冻结到 `/tmp/out_main.gen`，Gates 3.1/3.2/3.3
+完全不受影响。生产 deck 则把误导性的 `Force: 0, -9.81, 0` 写成显式
+`0,0,0` —— 两种写法在 PETSc 3.3 下都解析成 `0 0 0`，**物理场逐位不变**。
+
+### 2. 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `vDef/data/terzaghi1D_bodyforce.yaml`（新增） | 主 deck 逐字副本，唯一语义差异 `cs0001.Force: 0,0,0 → 0,-9.81,0`（**无逗号空格**）；头部注明只作 Gate 4.1 B3/B4 诊断 |
+| `vDef/data/terzaghi1D{,_nobiot,_nodamage,_robustksp}.yaml` | 4 个 deck 的 `Force: 0, -9.81, 0` → `Force: 0,0,0`，注释改为解释 CI #85 的 RealArray 截断；解析结果均为 `0 0 0`，物理场不变 |
+| `vDef/data/check_gate41_biot.py` | `--gate` 增第 4 参数 `<bodyforce.log>`；B1/B2/B7 覆盖两份日志；**B3/B4 改判 BODYFORCE 日志**（B4 额外要求 `max|base|≥5` 才承认区分力）；B5 仍判生产日志；**B6 显式处理 NOBIOT 位移恒零**（`pn ≤ 1e-9 m` 走「精确解耦」分支，不再产生 `inf`）；报告打印两段轨迹 |
+| `.github/workflows/build.yml` | ① NOBIOT 之后、恢复主网格之前插入 BODYFORCE ksponly 变体，保存 `/tmp/terzaghi_bodyforce.log` 与 `/tmp/out_bodyforce.gen`，并打印 CellSet bag 中实际解析到的 `Force` 行；② Gate 4.1 命令加第 4 参数；③ **退役 CI #73 的 V2 变体**（FD Jacobian + GMRES，1500 s cap，占 ~14/17 min，假设早在 CI #82/#83 证伪，无外部引用）；④ artifact 增 2 文件 |
+| `FLOW_FIX_CHECKLIST.md`、工作日志 | 4.1a 判据表加 CI #86 更正注记，新增本节 |
+
+### 3. 判据新语义（B1–B7）
+
+| # | 数据源 | CI #86 起的变化 |
+|---|---|---|
+| B1 | 生产 + BODYFORCE | 两份日志都要 `≥50` 行、探针数匹配、全有限值 |
+| B2 | 生产 + BODYFORCE | 两份日志 α 全为 1 |
+| **B3** | **BODYFORCE** | `|base|` 线性 `0→≥5`、R²≥0.98；生产 `|base|==0` 属**预期**、不再被判 FAIL |
+| **B4** | **BODYFORCE** | `superpos_err/|force| ≤1e-8` **且** `max|base|≥5`；后者保证能区分叠加/覆盖 |
+| B5 | 生产 | 不变（`|gradp|` 时变、Biot 项活跃） |
+| **B6** | 两份网格 | `pn≤1e-9` → 判「NOBIOT 精确解耦」且主峰值在 `[5e-5,2e-4] m`；否则仍用 `pm/pn≥3`。**不再出现 `ratio=inf`** |
+| B7 | 生产 + BODYFORCE | 两份日志都 `≥50` 探针、无崩溃 / `Unknown option` |
+
+### 4. 静态校验与离线自测（零本地编译 / 零求解器运行）
+
+- `PyYAML`、10 个 `run` 块 `bash -n`、两个脚本 `ast.parse`、`git diff --check` 全过；
+  `build.yml` 中 `run_variant` / `diag_V2` 已完全消失。
+- YAML 语义差异：NOBIOT 仅 `flow.biot_coeff 1.0→0.0`，BODYFORCE 仅
+  `cs0001.Force '0,0,0'→'0,-9.81,0'`；4 个既有 deck 都只含一处 `Force: 0,0,0`。
+- 判据自测 **15/15 通过**，用 **CI #85 真实生产日志 + 真实两份网格**
+  （`peak|u_x| main=1.1036e-4 m`、`nobiot=0`）+ 合成 BODYFORCE 日志：
+  完整 PASS；`base` 回滚/常量 → B3(、B4) FAIL；覆盖 / 丢 Biot → B4 FAIL；
+  α=0 → B2；行数不足 → B1；缺日志 → DATA ERROR；崩溃 / `Unknown option` → B7；
+  对照网格同值 / 缺失 → B6；gradp 恒定 → B5；Fortran `D` 指数与无空格标签均可解析。
+  `--gate` 的 PASS / 参数错误 / 缺日志 / 判据失败四种退出码正确，report 模式恒 0。
+
+### 5. 诚实说明（本轮唯一未验证项）
+
+**无法在零本地编译约束下确证 `Force: 0,-9.81,0`（无空格）会被 PETSc 3.3
+的 RealArray 读成三个分量。** 历史证据是 `displacementBC: 1,1,1` 修好了
+BoolArray、`boundaryDisplacement: 0,0,0` 也是无空格写法，但 RealArray 的
+行为只能由 CI #86 实测：BODYFORCE 日志会打印 CellSet bag 中解析出的
+`Force = ...`，且 B3 就是「`|baseForce|` 是否线性增长到 9.81」的直接判据。
+若 B3 仍 FAIL 而 bag 仍显示 `Force = 0 0 0`，说明无空格写法对 RealArray
+也不够，需要换格式（例如 PETSc bag view 原样输出的方括号 / 分号形式），
+那将是**下一轮**的新实验，不是本轮可以假设的结论。
+
+另：退役 V2 后预计 job 从 ~17 min 降到 ~3 min；`timeout-minutes: 75`
+作为上限保持不变（不依赖它来压缩实际耗时）。
+
+### 6. 状态
+
+改动已提交推送、CI #86 结果待回。**4.1b（互斥总应力模式）未实现**；
+残差平台 `3~13` 的 Fortran 装配根因、damage SNES 的 7 条 `-5` 仍在册。

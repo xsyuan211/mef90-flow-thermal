@@ -6,42 +6,58 @@ no numpy / scipy / matplotlib).
 
 Two modes
 ---------
-  report : python3 check_gate41_biot.py <prod.log> <prod.gen> <nobiot.gen>
+  report : python3 check_gate41_biot.py <prod.log> <prod.gen> <nobiot.gen> <bodyforce.log>
       INFORMATIONAL. Always exits 0, never a gate.
 
-  gate   : python3 check_gate41_biot.py --gate <prod.log> <prod.gen> <nobiot.gen>
+  gate   : python3 check_gate41_biot.py --gate <prod.log> <prod.gen> <nobiot.gen> <bodyforce.log>
       HARD Gate 4.1. Prints ``GATE41_RESULT: PASS|FAIL`` and exits 0 / 1.
       Missing / empty / short / unreadable / non-finite data is ALWAYS FAIL
       (CI #73 lesson: "no data" must never read as a pass).
 
-What checklist item 4.1 actually asks
--------------------------------------
-"开启体力缩放后结果不回滚" -- the preset body force is rescaled on EVERY
-outer step by ``MEF90DefMechSetTransients`` (default ForceScaling=Linear,
-Force = (0,-9.81,0) in terzaghi1D.yaml), so |baseForce| must grow
-0 -> 9.81 over the 51 steps. An implementation that snapshots baseForce
-only once at startup, or copies the snapshot back over the scaled force,
-pins it at its t=0 value -> B3 fails.
+Why a BODYFORCE variant is required (CI #85)
+--------------------------------------------
+The production deck is body-force free. Its old ``Force: 0, -9.81, 0`` had
+spaces after the commas; PETSc 3.3's ``PetscBagRegisterRealArray`` keeps only
+the first element, so the CellSet bag view reads ``Force = 0 0 0``. With
+``force_scaling = linear`` the preset force is ``linear * 0 = 0`` and
+``|baseForce|`` is identically zero. On such a run:
+
+  * B3 ("Linear scaling not rolled back") cannot pass -- there is nothing
+    to roll back, so CI #85 failed B3 even though the Fortran code was fine;
+  * B4 ("superposition vs overwrite") has NO discriminating power, because
+    ``force = base - alpha*grad(p)`` and ``force = -alpha*grad(p)`` are the
+    same when ``base == 0``. CI #85's ``err = 0`` proved nothing.
+
+``terzaghi1D_bodyforce.yaml`` is byte-identical to the production deck except
+``cs0001.Force: 0,0,0 -> 0,-9.81,0`` (no spaces after commas). It is a
+DIAGNOSTIC run only; Gates 3.1/3.2/3.3 keep using the frozen production
+mesh. On that run ``|baseForce|`` grows 0 -> 9.81 and B3/B4 become meaningful.
 
 The force written into DefMechCtx must be ``baseForce - alpha*grad(p)``.
 ``superpos_err`` is ||force - (base - alpha*gradp)||_inf computed from the
 UNMODIFIED snapshot, so it is ~0 for a true superposition, ~|base| if the
 force was overwritten by the Biot term alone, and ~|alpha*gradp| if the
-Biot term was dropped. This single number distinguishes all three.
+Biot term was dropped. This distinguishes the four implementations ONLY
+when |base| > 0, which B4 now checks explicitly.
 
-The NOBIOT control deck (terzaghi1D_nobiot.yaml, only biot_coeff 1.0->0.0)
-gives an independent physical check that the coupling is live: with alpha=0
-the u_x peak collapses to the gravity-only level.
+The NOBIOT control deck (only biot_coeff 1.0 -> 0.0) gives an independent
+physical check: with alpha=0 and no body force, the displacement field is
+exactly zero (CI #85 measured ux/uy == 0 over all 51 records).
 
 Criteria
 --------
-  B1  >= 50 parseable ``Gate 4.1:`` rows, and row count ~= Gate 3.2 probes
-  B2  alpha == 1.0 on every row
-  B3  |base|inf grows linearly 0 -> >=5 (Linear scaling NOT rolled back)
-  B4  superpos_err ~= 0 on every row (superposition, not overwrite/accumulate)
-  B5  |gradp|inf > 0, evolves in time, and |force| exceeds |base|
-  B6  peak|u_x|(main) >= 3 x peak|u_x|(nobiot), and peak in [5e-5,2e-4] m
-  B7  production log has >= 50 Gate 3.2 probes, no crash / unknown option
+  B1  >= 50 parseable rows in BOTH logs, row count ~= Gate 3.2 probes,
+      all values finite, no unparsed rows
+  B2  alpha == 1.0 on every row of BOTH logs
+  B3  BODYFORCE |base|inf grows linearly 0 -> >=5 (Linear scaling not
+      rolled back); production |base| is expected to be 0 and NOT judged
+  B4  BODYFORCE superpos_err ~= 0 AND max|base| >= 5 (so the test can
+      actually tell superposition from overwrite)
+  B5  production |gradp|inf > 0, evolves in time, |force| exceeds |base|
+  B6  NOBIOT control: main peak|u_x| in [5e-5,2e-4] m and either
+      (a) nobiot peak == 0 (exact decoupling), or
+      (b) main/nobiot >= 3. CI #85's ``ratio = inf`` is no longer used.
+  B7  BOTH logs have >= 50 Gate 3.2 probes, no crash / unknown option
 
 Note on checklist 4.1b (effective stress): adding a separate
 (-alpha*p*I) volume term ON TOP of the body force would DOUBLE-COUNT the
@@ -72,7 +88,7 @@ CRASH_RE = re.compile(r'Caught signal|SEGV|MPI_ABORT|PETSC ERROR', re.I)
 MIN_ROWS = 50
 MIN_PROBES = 50
 TOL_ALPHA = 1.0e-6
-BASE_MIN_END = 5.0          # 9.81 at t=1
+BASE_MIN_END = 5.0          # 9.81 at t=1 in the BODYFORCE variant
 BASE_MAX_START = 1.0        # 0 at t=0
 R2_MIN = 0.98
 SLOPE_MIN = 5.0
@@ -81,6 +97,7 @@ TOL_SUPERPOS = 1.0e-8       # relative to max(1,|force|)
 GRAD_EVOL_MIN = 1.5         # max/min of |gradp|
 FORCE_EXCESS_MIN = 1.0      # |force|-|base| must exceed this somewhere
 UX_RATIO_MIN = 3.0
+UX_ZERO_TOL = 1.0e-9       # NOBIOT field counts as identically zero below this
 UX_PEAK_LO, UX_PEAK_HI = 5.0e-5, 2.0e-4
 
 
@@ -149,87 +166,120 @@ def linfit(xs, ys):
     return k, b, r2, resid
 
 
-def evaluate(log_path, main_mesh, nobiot_mesh):
-    """Return (checks, metrics, load_error). checks: name -> (ok, detail)."""
-    chk = {}
-    met = {}
-    data, err = read_rows(log_path)
-    if err:
-        return chk, met, err
+def _unpack(data):
     rows = data['rows']
-    met['rows'] = len(rows)
-    met['probes'] = data['probes']
-    met['unparsed'] = data['unparsed']
+    return dict(alpha=[r[0] for r in rows], base=[r[1] for r in rows],
+                grad=[r[2] for r in rows], force=[r[3] for r in rows],
+                serr=[r[4] for r in rows])
 
-    # B1 -- completeness
-    ok = (len(rows) >= MIN_ROWS and not data['unparsed']
-          and abs(len(rows) - data['probes']) <= 2
-          and all(all(math.isfinite(v) for v in r) for r in rows))
-    chk['B1'] = (ok, '%d parseable rows, %d Gate 3.2 probes, %d unparsed'
-                 % (len(rows), data['probes'], len(data['unparsed'])))
+
+def evaluate(prod_log, main_mesh, nobiot_mesh, bf_log):
+    """Return (checks, metrics, load_error). checks: name -> (ok, detail)."""
+    chk, met = {}, {}
+    dp, errp = read_rows(prod_log)
+    db, errb = read_rows(bf_log)
+    if errp or errb:
+        return chk, met, '; '.join(x for x in (errp, errb) if x)
+
+    p, b = _unpack(dp), _unpack(db)
+    met.update(p_rows=len(dp['rows']), b_rows=len(db['rows']),
+               p_probes=dp['probes'], b_probes=db['probes'],
+               p_unparsed=dp['unparsed'], b_unparsed=db['unparsed'],
+               p=p, b=b)
+
+    # B1 -- completeness of BOTH logs
+    ok = all((
+        len(dp['rows']) >= MIN_ROWS, len(db['rows']) >= MIN_ROWS,
+        not dp['unparsed'], not db['unparsed'],
+        abs(len(dp['rows']) - dp['probes']) <= 2,
+        abs(len(db['rows']) - db['probes']) <= 2,
+        all(all(math.isfinite(v) for v in r) for r in dp['rows']),
+        all(all(math.isfinite(v) for v in r) for r in db['rows']),
+    ))
+    chk['B1'] = (ok, 'prod %d rows/%d probes, bodyforce %d rows/%d probes, '
+                 '%d unparsed' % (len(dp['rows']), dp['probes'],
+                                  len(db['rows']), db['probes'],
+                                  len(dp['unparsed']) + len(db['unparsed'])))
     if not ok:
         return chk, met, None
 
-    alpha = [r[0] for r in rows]
-    base = [r[1] for r in rows]
-    grad = [r[2] for r in rows]
-    force = [r[3] for r in rows]
-    serr = [r[4] for r in rows]
-    met.update(alpha=alpha, base=base, grad=grad, force=force, serr=serr)
-
-    # B2 -- alpha
-    worst_a = max(abs(a - 1.0) for a in alpha)
+    # B2 -- alpha in BOTH runs
+    worst_a = max(abs(a - 1.0) for a in p['alpha'] + b['alpha'])
     met['worst_alpha'] = worst_a
     chk['B2'] = (worst_a <= TOL_ALPHA,
                  'max |alpha-1| = %.3g (tol %.3g)' % (worst_a, TOL_ALPHA))
 
-    # B3 -- Linear force scaling is NOT rolled back
-    ts = [i / float(len(base) - 1) for i in range(len(base))]
-    k, b, r2, resid = linfit(ts, base)
-    met.update(lin_k=k, lin_b=b, lin_r2=r2, lin_resid=resid)
-    ok = (max(base) >= BASE_MIN_END and min(base) <= BASE_MAX_START
+    # B3 -- Linear force scaling is NOT rolled back (BODYFORCE run only).
+    # The production deck has no body force by design, so its |base| == 0
+    # is EXPECTED and must never be judged here (CI #85 lesson).
+    ts = [i / float(len(b['base']) - 1) for i in range(len(b['base']))]
+    k, b0, r2, resid = linfit(ts, b['base'])
+    met.update(lin_k=k, lin_b=b0, lin_r2=r2, lin_resid=resid,
+               bf_base_max=max(b['base']), prod_base_max=max(p['base']))
+    ok = (max(b['base']) >= BASE_MIN_END and min(b['base']) <= BASE_MAX_START
           and r2 >= R2_MIN and k >= SLOPE_MIN and resid <= LIN_RESID_MAX)
-    chk['B3'] = (ok, '|base| %.4g -> %.4g, slope %.4g, R2 %.5f, '
-                 'max resid %.4g' % (min(base), max(base), k, r2, resid))
+    chk['B3'] = (ok, 'BODYFORCE |base| %.4g -> %.4g, slope %.4g, R2 %.5f, '
+                 'max resid %.4g (prod |base|max %.4g, expected 0)'
+                 % (min(b['base']), max(b['base']), k, r2, resid,
+                    max(p['base'])))
 
-    # B4 -- true superposition (no overwrite, no accumulation)
-    worst_s = max(s / max(1.0, abs(f)) for s, f in zip(serr, force))
+    # B4 -- true superposition, WITH a non-zero base so it can discriminate.
+    worst_s = max(s / max(1.0, abs(f)) for s, f in zip(b['serr'], b['force']))
+    has_power = max(b['base']) >= BASE_MIN_END
     met['worst_superpos_rel'] = worst_s
-    chk['B4'] = (worst_s <= TOL_SUPERPOS,
-                 'max superpos_err/|force| = %.3g (tol %.3g)'
-                 % (worst_s, TOL_SUPERPOS))
+    met['b4_has_power'] = has_power
+    ok = worst_s <= TOL_SUPERPOS and has_power
+    power = 'with |base|>0 discriminating power' if has_power else \
+            'NO POWER: |base|==0 (overwrite would also give err=0)'
+    chk['B4'] = (ok, 'BODYFORCE max superpos_err/|force| = %.3g (tol %.3g), %s'
+                 % (worst_s, TOL_SUPERPOS, power))
 
-    # B5 -- Biot term is live and time-dependent
-    gmin, gmax = min(grad), max(grad)
+    # B5 -- Biot term is live and time-dependent (production run)
+    gmin, gmax = min(p['grad']), max(p['grad'])
     evol = gmax / gmin if gmin > 0 else float('inf')
-    excess = max(f - bb for f, bb in zip(force, base))
+    excess = max(f - bb for f, bb in zip(p['force'], p['base']))
     met.update(grad_min=gmin, grad_max=gmax, grad_evol=evol,
                force_excess=excess)
     ok = (gmin > 0.0 and evol >= GRAD_EVOL_MIN
-          and excess >= FORCE_EXCESS_MIN and max(force) > max(base))
-    chk['B5'] = (ok, '|gradp| %.4g..%.4g (ratio %.3g), '
+          and excess >= FORCE_EXCESS_MIN
+          and max(p['force']) > max(p['base']))
+    chk['B5'] = (ok, 'prod |gradp| %.4g..%.4g (ratio %.3g), '
                  'max(|force|-|base|) %.4g' % (gmin, gmax, evol, excess))
 
-    # B6 -- NOBIOT control: the coupling really drives the displacement
+    # B6 -- NOBIOT control. CI #85 found an EXACTLY ZERO control field; do
+    # not compute pm/0 -> inf (the inf was not caught by B7 either).
     try:
         pm, nm = peak_ux(main_mesh)
         pn, nn = peak_ux(nobiot_mesh)
-        ratio = pm / pn if pn > 0 else float('inf')
-        met.update(peak_main=pm, peak_nobiot=pn, ux_ratio=ratio,
-                   nrec_main=nm, nrec_nobiot=nn)
-        ok = (ratio >= UX_RATIO_MIN and UX_PEAK_LO <= pm <= UX_PEAK_HI)
-        chk['B6'] = (ok, 'peak|u_x| main %.5g m (%d rec) vs nobiot %.5g m '
-                     '(%d rec), ratio %.4g' % (pm, nm, pn, nn, ratio))
+        met.update(peak_main=pm, peak_nobiot=pn, nrec_main=nm,
+                   nrec_nobiot=nn)
+        in_band = UX_PEAK_LO <= pm <= UX_PEAK_HI
+        if pn <= UX_ZERO_TOL:
+            ratio = None
+            ok = in_band
+            detail = ('peak|u_x| main %.5g m (%d rec) vs nobiot %.5g m '
+                      '(%d rec), NOBIOT identically zero (exact decoupling)'
+                      % (pm, nm, pn, nn))
+        else:
+            ratio = pm / pn
+            ok = in_band and ratio >= UX_RATIO_MIN
+            detail = ('peak|u_x| main %.5g m (%d rec) vs nobiot %.5g m '
+                      '(%d rec), ratio %.4g (need >= %.4g)'
+                      % (pm, nm, pn, nn, ratio, UX_RATIO_MIN))
+        met['ux_ratio'] = ratio
+        chk['B6'] = (ok, detail)
     except Exception as exc:                       # noqa: BLE001 - gate fails
         chk['B6'] = (False, 'mesh read FAILED: %s' % exc)
 
-    # B7 -- production run completeness
-    txt = read_log_text(log_path)
-    crash = bool(CRASH_RE.search(txt))
-    unknown = 'Unknown option' in txt
-    ok = (data['probes'] >= MIN_PROBES and not crash and not unknown)
-    chk['B7'] = (ok, '%d probes, crash=%s, unknown_option=%s'
-                 % (data['probes'], crash, unknown))
+    # B7 -- completeness of BOTH runs
+    tp, tb = read_log_text(prod_log), read_log_text(bf_log)
+    crash = bool(CRASH_RE.search(tp) or CRASH_RE.search(tb))
+    unknown = 'Unknown option' in tp or 'Unknown option' in tb
+    ok = (dp['probes'] >= MIN_PROBES and db['probes'] >= MIN_PROBES
+          and not crash and not unknown)
+    chk['B7'] = (ok, 'prod %d / bodyforce %d probes, crash=%s, '
+                 'unknown_option=%s' % (dp['probes'], db['probes'],
+                                        crash, unknown))
     return chk, met, None
 
 
@@ -243,14 +293,17 @@ def print_report(chk, met, err):
             print('  %-3s %-4s %s' % (name, 'PASS' if ok else 'FAIL', detail))
         else:
             print('  %-3s ---- (not evaluated)' % name)
-    if met.get('rows'):
-        print('  --- time trace (first / middle / last) ---')
-        n = met['rows']
-        for i in (0, n // 2, n - 1):
-            print('    step %2d  |base|=%10.4g  |gradp|=%10.4g  '
-                  '|force|=%10.4g  err=%8.3g'
-                  % (i + 1, met['base'][i], met['grad'][i],
-                     met['force'][i], met['serr'][i]))
+    if met.get('p_rows'):
+        for label, key in (('production (body-force free)', 'p'),
+                           ('BODYFORCE (Force=0,-9.81,0)', 'b')):
+            d = met[key]
+            n = len(d['base'])
+            print('  --- %s: first / middle / last ---' % label)
+            for i in (0, n // 2, n - 1):
+                print('    step %2d  |base|=%10.4g  |gradp|=%10.4g  '
+                      '|force|=%10.4g  err=%8.3g'
+                      % (i + 1, d['base'][i], d['grad'][i],
+                         d['force'][i], d['serr'][i]))
     fails = [k for k, v in chk.items() if not v[0]]
     return fails
 
@@ -258,23 +311,27 @@ def print_report(chk, met, err):
 def main(argv):
     gate = bool(argv) and argv[0] == '--gate'
     args = argv[1:] if gate else argv
-    if gate and len(args) != 3:
-        print('GATE41_RESULT: FAIL (usage: --gate <prod.log> <prod.gen> <nobiot.gen>)')
+    usage = '<prod.log> <prod.gen> <nobiot.gen> <bodyforce.log>'
+    if gate and len(args) != 4:
+        print('GATE41_RESULT: FAIL (usage: --gate %s)' % usage)
         return 1
-    if not gate and len(args) != 3:
-        print('usage: check_gate41_biot.py [--gate] <prod.log> <prod.gen> <nobiot.gen>')
+    if not gate and len(args) != 4:
+        print('usage: check_gate41_biot.py [--gate] %s' % usage)
         return 0
-    chk, met, err = evaluate(args[0], args[1], args[2])
+    chk, met, err = evaluate(args[0], args[1], args[2], args[3])
     fails = print_report(chk, met, err)
     if gate:
         if err or fails or len(chk) < 7:
             print('GATE41_RESULT: FAIL (%s)'
                   % (err if err else ','.join(fails) or 'incomplete criteria'))
             return 1
-        print('GATE41_RESULT: PASS (B1-B7 on %d steps, '
-              'Linear force scaling preserved, superposition error ~0, '
-              'NOBIOT ratio %.4g)'
-              % (met['rows'], met.get('ux_ratio', float('nan'))))
+        ratio = met.get('ux_ratio')
+        rtxt = ('NOBIOT field zero' if ratio is None
+                else 'NOBIOT ratio %.4g' % ratio)
+        print('GATE41_RESULT: PASS (B1-B7; prod %d steps, BODYFORCE %d steps, '
+              'Linear scaling preserved with non-zero |base|, '
+              'superposition error ~0, %s)'
+              % (met['p_rows'], met['b_rows'], rtxt))
         return 0
     print('VERDICT: %s (report mode, informational only)'
           % ('FAIL ' + ','.join(fails) if fails else 'PASS'))
