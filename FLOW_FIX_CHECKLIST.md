@@ -223,11 +223,16 @@
   - **已验收（CI #104 = `success`，`0a0c468`）**：`GATE48_RESULT: PASS`，U1–U8 全绿，实测与 #102 离线回放**逐位吻合**：`U2` 速度场相对误差 `3.11e-16`（排水面 `x=−5`、6 节点 / 5 边 / 长 1.0000 m）；`U3/U4` 能量残差 `0.01121 / 0.01118`、`U5/U6` 质量残差 `0.009763 / 0.009753`（阈值 3%）；`U7` 流出 `1.688e-3 → 7.087e-5`、late/early 残差 `0.77–0.88`（不增长）；`U8` `W·S·Area = F·M` 相对误差 `7.12e-16`。**原有八组 verdict 与 #102 全部逐位 IDENTICAL**（连 Gate 3.3 的日志字节数都不变，因为 4.8 完全不改 Fortran、不新增日志行）⇒ 纯后处理零扰动。九组判据在 #104 全绿。
   - **勾选条件（已满足）**：CI `conclusion=success` 且 `GATE48_RESULT: PASS`，且原有八组判据全绿（纯后处理，物理场逐位不变）。
 
-- [ ] **4.9 逐单元 IS 装配性能**
-  - 位置：`m_Flow/m_MEF90_FlowAssembly.F90`（`MEF90FlowMakeSingleCellIS` 每单元一次 + 一次 Diffusion 调用）
-  - 问题：装配复杂度 O(N) 次 PETSc 对象创建/销毁。
-  - 改法：把 `A` 从"单元常数"放宽到"按 Gauss 点取值"（需改 Diffusion 接口或自写装配），或批量复用 IS。
-  - 验收：大网格装配耗时显著下降。
+- [x] **4.9 逐单元 IS 装配性能**（**CI #114 `success` 验收通过**，`GATE49_RESULT: PASS`）
+  - 位置：`m_Flow/m_MEF90_FlowAssembly.F90`（`MEF90FlowMakeSingleCellIS` 每单元一次 + 一次 Diffusion 调用）；`m_Flow/m_MEF90_FlowCtx.F90` / `vDef/m_vDefDefault.F90`（选项袋）。
+  - 问题：装配复杂度 O(N) 次 PETSc 对象（IS / elem）创建销毁。`MEF90DiffusionOperatorSet` / `BilinearFormSet` / `RHSSetCell` / `OperatorAddTransientTermSet` 内部按 `cell=1..size(cellID)` 顺序 `ADD_VALUES`；系数逐位均匀时，整组一次传入与逐单元多次传入的浮点累加顺序完全相同。
+  - 改法（已落地，**不改 Diffusion 接口**）：新增 `flow.batched_assembly`（默认 `PETSC_FALSE`）；`MEF90FlowUniformCellField` 用逐位 `/=` 判定整组系数是否均匀（`sec` 声明为 `Intent(INOUT)`，规避 CI #95 的 PETSc 3.3 外部绑定 INTENT 问题）；均匀且 `size(cellID)>1` 时，`OperatorCore` / `BilinearFormCore` / `AddStorageToResidual` / `AddStorageMassMatrix` 四处循环把整个 `setIS` 一次传入 Diffusion，并用**同一个 `setIS`** 创建 `elem`（CI #65 几何契约）；不均匀则逐单元回退。`MEF90FlowEnergy` 有意不批量化 —— `DiffusionEnergySet` 内部累加标量，批量调用会改变浮点求和顺序，破坏逐位等价。
+  - `PetscBag` 第 37 个字段 `batchedAssembly` 按 CI #50 教训追加在类型 / 注册 / 默认构造器末尾，默认 `PETSC_FALSE` ⇒ 生产路径保持 superposition 逐单元装配，零扰动。
+  - 验收（可证伪，**不用噪声大的 wall-clock timing**）：`vDef/data/check_gate49_batch.py` Y1–Y8 —— Y1 数据完整性；Y2 静态反回归（helper / 4 处 fast path / bag 顺序 / 默认 FALSE）；Y3 deck 只差一行 `batched_assembly: true`；Y4 bag 可见性（对照 TRUE / 生产 FALSE）；Y5 确定性复杂度计数 `Gate 4.9: tag=... nCells=N nIS=1 nElem=1 mode=batched`（3 个运行时活跃 tag，生产日志无该行）；Y6 `p / u_x / u_y` 在 51 记录 × 356 节点**逐位一致**；Y7 O(N)→O(1) 外推 + `elem` 与 `cellIS` 同源；Y8 生产隔离（step 数相等、无 fatal 签名）。`--selftest` 1 正例 + 10 负例全 PASS；接入 `build.yml` 的 `g49_rc` 延迟 `exit 1` 与 `gate49_verdict.log` / `terzaghi_batched.log` / `out_batched.gen` artifact。
+  - **CI #113 失败根因与修复（`dabe01a`）**：#113 编译 clean、Y6/Y7/Y8 全 PASS（物理逐位一致 `max|dPhysics|=0`、对象创建 `2400→8`、每步省 2392 次），但两处静态裁决误判。① `GATE49 Y5 FAIL`：判据要求 4 个 tag，而 `MEF90FlowAddStorageToResidual` 自 CI #64 起在 `TS_LINEAR + ksponly` 下 `xDot==0`、额外 scatter 被删除后已不被调用，其 fast path 是源码存在但运行时 dead code，永不打印 tag ⇒ Y5 改为只要求 3 个运行时活跃 tag（`OperatorCore` / `BilinearFormCore` / `StorageMassMatrix`），Y2/Y7 仍静态审计全部 4 处 fast path 并按 `N_FAST=4` 外推。② `GATE47 X2 FAIL`：硬编码「恰好 36 个 bag 字段」，4.9 合法追加第 37 个字段被误判为回归 ⇒ X2 改为 **append-only 契约**（4.7 六字段固定占据槽位 30..35、字段数只设下界、默认构造器 arity 注释必须与活跃 bag 数一致），插入中间字段仍会 FAIL；4.9 Y2 同步采用同一契约，构造器注释改 `37 components`，并各加 1 个精确负例。离线用 #113 真实日志 / EXO 回放：`GATE47_RESULT: PASS`、`GATE49_RESULT: PASS`。
+  - **已验收（CI #114 = `success`，`dabe01a`）**：`GATE49_RESULT: PASS`，Y1–Y8 全绿；十三组 verdict 同轮全 PASS。实测 `nCells=300`（`-np 2` 每 rank）、`nIS=nElem=1`、151 条 `Gate 4.9:` 行（3 个运行时活跃 tag）、对象创建 `legacy=2400 → batched=8`（**300×** 归约，每步省 2392 次）、`p/u_x/u_y` 在 51 记录 × 356 节点逐位一致、`max|dPhysics|=0`、生产 step marker 408 相等且无 fatal 签名。
+  - **生产零扰动（逐字节证明）**：与 #111 的 12 组共同 verdict 相比，**10 组逐字节 IDENTICAL**；`gate33_verdict.log` / `terzaghi_verdict.log` 唯一差异是 solver log 字节数 `297901→298025` / `297823→297947`（+124 B），来源仅两处：git changeset 行 `ef6ee2a→dabe01a` 与 PetscBag 视图新增一行 `batched_assembly = FALSE`，**所有物理判据数值逐位一致**。与 #113 相比生产 `terzaghi.log` 仅差 changeset 行，`out_main.gen` 的 `p/u_x/u_y` 共 54,468 个数值 **differing=0 / max|d|=0**。
+  - **勾选条件（已满足）**：CI `conclusion=success` 且 `GATE49_RESULT: PASS`，原有 12 组 verdict 全绿、生产物理场逐位不变。
 
 - [x] **4.10 清理根目录同名旧副本**（**CI #109 `success` 验收通过**，`GATE410_RESULT: PASS`）
   - **精读范围远超清单点名的几个文件**：根目录 tracked 的 84 个 `.F90`/`.inc` 中 **66 个与活子目录同名**；另有 `vDefDefault_remote.F90`、17 个 `test_*.F90`/`test20.F90`、9 个顶层 `Makefile_*`/`Makefile.include_*` 镜像。哈希比对显示 66 个同名镜像里 **56 个逐字节相同**（纯冗余）、**10 个已分叉**（`m_MEF90_Flow*.F90`、`m_MEF90_DefMechAssembly/Ctx/DefMech.F90`、`m_MEF90_HeatXferAssembly/Ctx.F90`、`m_vDefDefault.F90`、`vDef.F90`），再加上 `Makefile_m_Flow` 也分叉 —— 这才是「误改 / 误读」的真实风险面。
@@ -252,8 +257,8 @@
 - 闸门 1（不崩+边界）：**4 / 4**。1.1 / 1.2 / 1.3 已落地；1.4 经核实是 `use-rename` 分离设计、无需改动。CI #47 首次完整编译，此后由 Gate 3.3 / 4.x 持续回归。
 - 闸门 2（可见）：**4 / 4**。2.1–2.4 完成；2.3 的 TEMP `source: 1.0e-6` 已在闸门 3 前改回 `0.0`，「务必改回」注意项解除。
 - 闸门 3（瞬态+符号）：**2 / 2**。3.1 TS 瞬态主循环已实际运行（`Gate 3.1` / `Gate 3.2` 诊断行）；3.2 由 **Gate 3.3 P1–P8** 硬判据验收 —— P6「L2 err vs BE series」CI #99 实测 `0.03206 ≤ 0.05`，衰减方向与量级正确，**无需改算子符号**（该结论与源项符号无关，见 3.2 / 4.4）。
-- 闸门 4（物理+工程）：**10 项收口 / 10 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返）；4.10 根目录旧副本清理（**CI #109 `GATE410_RESULT: PASS`**，W1–W8 全绿，93 个文件 100% rename 归档、根目录 tracked `.F90` 归零、原有十组 verdict 与 #106 逐位一致）；4.7 时变材料入口（**CI #111 `GATE47_RESULT: PASS`**，X1–X8 全绿、`A(t)`/`S(t)` 双通道可证伪、生产物理场逐位不变）；仅 4.9 逐单元 IS 装配性能未动。
-- 合计：**20 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 10 项），**3 项待做**：4.9 逐单元 IS 性能、`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代。
+- 闸门 4（物理+工程）：**11 项收口 / 11 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返）；4.10 根目录旧副本清理（**CI #109 `GATE410_RESULT: PASS`**，W1–W8 全绿，93 个文件 100% rename 归档、根目录 tracked `.F90` 归零、原有十组 verdict 与 #106 逐位一致）；4.7 时变材料入口（**CI #111 `GATE47_RESULT: PASS`**，X1–X8 全绿、`A(t)`/`S(t)` 双通道可证伪、生产物理场逐位不变）；4.9 逐单元 IS 批量装配（**CI #114 `GATE49_RESULT: PASS`**，Y1–Y8 全绿、O(N)→O(1) 300× 归约、物理场逐位一致、生产零扰动）。
+- 合计：**21 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 11 项），**2 项待做**：`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代。
 - **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)、4.10 (W1–W8，根目录清零 + 归档 blob 校验 + 构建隔离)；**十一组判据在 CI #109 全绿**（4.10 已验收）；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
 - **最近八次 CI**：#109 `success`（`f2d7f57`，W3 改校验 git index blob，Gate 4.10 W1–W8 全绿；十一组判据全绿，原有十组 verdict 与 #106 逐位 IDENTICAL）；#108 `failure`（`fdeca5b`，Gate 4.10 归档 93 个旧副本；编译与十组物理判据全绿，仅 W3 因 `dos2unix` 移除 BOM 误判，已由 #109 修复）；#107 `success`（`627fe7d`，纯文档收尾的重复回归）；#106 `success`（`a260d7b`，Gate 4.6 μ(T) 别名加固 + V1–V8 硬判据，十组判据全绿）；#105 `success`（`7b4fded`，纯文档收尾的重复回归）；#104 `success`（`0a0c468`，Gate 4.8 守恒性纯后处理 U1–U8 硬判据）；#103 `success`（`3d2d45a`，纯文档收尾的重复回归）；#102 `success`（`c05bac5`，Gate 4.5 能量诊断修好 + 接线 + T1–T8 硬判据）。（#97 `failure`（`f20fa18`）为旧 E2「位等价」前提错误，已由 #98 改物理签名判据修复。）
 
@@ -2615,3 +2620,43 @@ artifact 增 `/tmp/gate43_verdict.log`。静态校验：PyYAML 6.0.3 解析、
 **代码修改核查（本轮静态审查，零本地编译）**：工作树与 `HEAD=ef6ee2a` 一致，无未提交源码改动。4.7 的 6 个 bag 字段按 CI #50 教训加在类型/注册末尾且一一对应，默认 `MEF90Scaling_CST` 严格 no-op；`SetTransients → UpdateMu → UpdatePerm → UpdateStorativity` 调用顺序正确；两个 factor Vec 生命周期完整；`g47_rc` 延迟 `exit 1`（CI #82 教训），artifact 三项齐备。判据脚本 `--selftest` 离线重放 **1 正例 + 9 负例全 PASS**。另确认 4.1b 的两处历史隐患均已闭环：`INTENT(IN)→INTENT(INOUT)`（`f20fa18`，CI #97 编译通过）、单位张量改 `MEF90_MATS_IDENTITY`（CI #99，2D/3D 双编译 + LTE=0 防回归 deck），E2 判据亦已由错误的「位移逐位等价」更正为 8 项物理签名。
 
 **结论：4.7（时间相关材料参数入口）已收口，闸门 4 累计 10 项完成。** 仍在册：4.9 逐单元 IS 装配性能、`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因、damage SNES 7 条 `-5`（信息性）。
+
+---
+
+## CI #114 结果（4.9 收口，commit `dabe01a`，conclusion=success）
+
+`dabe01a` 的 CI #114（run `42597311984`）`conclusion=success`，20 个 job step 全 success（含 `Build MEF90 + m_Flow + vDef` 与 `Run Terzaghi`）。下载真实 `build-diagnostics` artifact（14,868,569 B，`zipfile.testzip()` 无错）离线复核，**十三组 verdict 同轮全 PASS**：
+
+| 闸门 | verdict | 关键结果 |
+|---|---|---|
+| 3.3 | PASS | 51 records P1–P6,P8 全过；7 条 SNESSolve-failed 为信息性 |
+| 4.1 / 4.1b | PASS | B1–B7；E1–E4（E2 8/8，`cos_ux=0.9994`、`ux_ratio=0.6912`） |
+| 4.2 / 4.3 | PASS | D1–D8；C1–C7（116 项 deck↔bag 0 失配） |
+| 4.4 / 4.5 | PASS | S1–S8；T1–T8（`E(1)/E(50)=335.0`、`E(50)/E_an=0.937`） |
+| 4.6 / 4.8 | PASS | V1–V8（`ratio=2.36441`）；U1–U8（能量 ≤0.0112、质量 ≤0.00976） |
+| 4.7 | PASS | X1–X8；`A(t)=5e-8(1+0.8t)` 零误差、末步比 `1.800000`、时变 BE `relL2(50)=0.0368` |
+| 4.9 | **PASS** | **Y1–Y8**，详见下表 |
+| 4.10 | PASS | W1–W8；93 个归档 git-blob sha256 全匹配 |
+
+**Gate 4.9 实测（Y1–Y8 全绿）**
+
+| 判据 | 结果 |
+|---|---|
+| Y1 | 两 deck 51 记录 / 356 节点、几何与时间轴对齐，无 fatal |
+| Y2 | helper + 4 处 fast path、bag `37/37/37` 顺序、默认 `PETSC_FALSE` |
+| Y3 | `terzaghi1D_batched.yaml` 与生产 deck 只差一行 `batched_assembly: true` |
+| Y4 | 对照 bag `TRUE` / 生产 bag `FALSE` |
+| Y5 | 151 条 `Gate 4.9:` 行、3 个运行时活跃 tag、`nCells=300`、`nIS=nElem=1`、生产日志 0 行 |
+| Y6 | `p/u_x/u_y` 在 51 记录 × 356 节点**逐位一致**，`max\|dPhysics\|=0` |
+| Y7 | `legacy=2400 → batched=8` 对象创建（**300×** 归约）、`elem` 与 `cellIS` 同源（CI #65 契约） |
+| Y8 | step marker 408 相等、无 fatal 签名 |
+
+复杂度证据取自确定性计数而非噪声大的 wall-clock：每步省 `2392` 次 PETSc 对象创建、`reduction_x=300`。生产 `terzaghi.log` 中 `PETSC ERROR` / `Caught signal` / `SEGV` / `fortran runtime error` 全为 0，51 步完整。
+
+**CI #113 失败 → 修复（本轮核心）**：#113 编译 clean 且 Y6/Y7/Y8 已 PASS，但两处静态裁决误判 —— ① `GATE49 Y5` 要求 4 个 tag，而 `MEF90FlowAddStorageToResidual` 自 CI #64 起在 `TS_LINEAR + ksponly` 下 `xDot==0`、额外 scatter 删除后已不被调用，其 fast path 是源码存在但运行时 dead code；② `GATE47 X2` 硬编码「恰好 36 个 bag 字段」，把 4.9 合法追加的第 37 个字段误判为回归。修复为统一的 **append-only 契约**：Y5 只要求 3 个活跃 tag，Y2/Y7 仍静态审计全部 4 处 fast 路径并按 `N_FAST=4` 外推；4.7 X2 校验 4.7 六字段固定槽位 30..35 + 字段数下界 + 构造器 arity 注释与活跃 bag 一致；4.9 Y2 采用同一契约；`vDef/m_vDefDefault.F90` 注释改 `37 components`。各加 1 个精确负例 —— `--selftest`：4.7 为 1 正例 + 10 负例、4.9 为 1 正例 + 10 负例，全 PASS。
+
+**生产零扰动（逐字节证明）**：与 #111 的 12 组共同 verdict 相比 **10 组逐字节 IDENTICAL**；`gate33_verdict.log` / `terzaghi_verdict.log` 唯一差异是 solver log 字节数 `297901→298025` / `297823→297947`（+124 B），来源仅 git changeset 行 `ef6ee2a→dabe01a` 与 PetscBag 视图新增的 `batched_assembly = FALSE` 一行，物理判据数值全部不变。与 #113 相比生产日志只差 changeset 行；`out_main.gen` 的 `p/u_x/u_y` 共 54,468 个数值 `differing=0`、`max|d|=0`。
+
+**提交前离线复核（零本地编译 / 零本地求解器）**：`git diff --check`、`ast.parse`、PyYAML 三份 deck、10 个 workflow `run` block `bash -n`、bag 声明/注册 37-37 一致、新增行非 ASCII=0、两个判据 `--selftest` 全 PASS、用 #113 真实日志 / EXO 离线 `--gate` 回放提前得到 `GATE47_RESULT: PASS` 与 `GATE49_RESULT: PASS`，与 CI #114 实测一致。
+
+**结论：4.9（逐单元 IS 装配性能）已收口，闸门 4 累计 11 项完成，合计 21 项已落地。** 仍在册：`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因、damage SNES 7 条 `-5`（信息性）。
