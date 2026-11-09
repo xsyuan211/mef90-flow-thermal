@@ -226,11 +226,14 @@
   - 改法：把 `A` 从"单元常数"放宽到"按 Gauss 点取值"（需改 Diffusion 接口或自写装配），或批量复用 IS。
   - 验收：大网格装配耗时显著下降。
 
-- [ ] **4.10 清理根目录同名旧副本**
-  - 位置：根目录 `m_MEF90_Flow.F90`(637行)、`m_MEF90_FlowAssembly.F90`(937行)、`FlowCtx.F90`、`m_MEF90_FlowCtx.F90`、`m_vDefDefault.F90` 等（与 `m_Flow/`、`vDef/` 分叉，首行 `Use` 列表不同）
-  - 问题：同名副本极易误改/误读。
-  - 改法：删除或移入归档目录；确认顶层 Makefile 只引用子目录。
-  - 验收：根目录无参与编译的过期 `.F90` 副本。
+- [x] **4.10 清理根目录同名旧副本**（**CI #109 `success` 验收通过**，`GATE410_RESULT: PASS`）
+  - **精读范围远超清单点名的几个文件**：根目录 tracked 的 84 个 `.F90`/`.inc` 中 **66 个与活子目录同名**；另有 `vDefDefault_remote.F90`、17 个 `test_*.F90`/`test20.F90`、9 个顶层 `Makefile_*`/`Makefile.include_*` 镜像。哈希比对显示 66 个同名镜像里 **56 个逐字节相同**（纯冗余）、**10 个已分叉**（`m_MEF90_Flow*.F90`、`m_MEF90_DefMechAssembly/Ctx/DefMech.F90`、`m_MEF90_HeatXferAssembly/Ctx.F90`、`m_vDefDefault.F90`、`vDef.F90`），再加上 `Makefile_m_Flow` 也分叉 —— 这才是「误改 / 误读」的真实风险面。
+  - **构建隔离核实（归档前）**：顶层 `Makefile` 与 CI 只用 `make -C objs/${PETSC_ARCH} -f ../../<子目录>/Makefile`；`MEF90/`、`m_DefMech/`、`m_HeatXfer/`、`m_Flow/`、`vDef/` 五个活 Makefile 的源路径分别是 `${MEF90_DIR}/MEF90/...`、`BASE_DIR=${MEF90_DIR}/m_Flow` 等；全仓库 Makefile / CI / shell / 文档**无任何一处引用**根目录 `.F90` 或镜像 Makefile。`Tests/Makefile` 用 `${MEF90_DIR}/Tests/*.F90`，与根目录 `test_*.F90` 无关。
+  - **落地（零删除）**：93 个文件 `git mv` 到归档目录，git 全部识别为 **100% rename（0 insertions / 0 deletions）**，历史完整可回溯；根目录 tracked 的 `.F90`/`.inc` 归零，只剩真正参与构建的 `Makefile` 与 `Makefile.include`。新增归档 `README.md`（原因 / 分类 / 11 个分叉清单 / 活源码对照 / 不参与构建声明 / 找回方式）与 `MANIFEST.sha256`（93 个 sha256）。`FlowCtx.F90` / `HeatXferCtx.F90` 是 `.gitignore` 明确忽略的本地诊断残留（untracked），不属于仓库内容，保留原地。
+  - **W1–W8 硬判据（`vDef/data/check_gate410_legacy.py`，纯标准库 + git index）**：W1 根目录无 tracked `.F90`/`.inc` 镜像且未 tracked 者必须被 gitignore 覆盖；W2 归档 93 个文件与 manifest 条目集合一致；W3 每个哈希与**版本库 blob** 一致；W4 66 个同名镜像都有活版本；W5 五个活 Makefile 只引用子目录源且 `BASE_DIR` 正确；W6 顶层 Makefile / CI 只用 `-f ../../<子目录>/Makefile` 且不引用镜像 Makefile；W7 构建入口不引用归档目录；W8 README 列全 11 个分叉文件与 no-build 契约。`--selftest` 1 正例 + 10 负例全 PASS。
+  - **CI #108 失败 → 根因 → 修复（重要经验）**：#108 编译与十组物理判据全绿，**仅 W3 FAIL**。用本机 `dos2unix` 复现 CI 的 `Fix CRLF` 步骤，发现 93 个归档文件中恰好 **1 个**被改写：`vDefDefault_remote.F90` 的 UTF-8 BOM 被移除（head `\xef\xbb\xbf#incl` → `#incl`，长度 `18808→18618`），其余 92 个匹配，`all()` 因此为 False。**归档是历史快照，应校验「提交进版本库的内容」而非会被 CI 换行修复改写的工作区字节**：W3 改为读 `git show :<path>` 的 index blob（CRLF→LF 规范化），manifest 本就基于同一 blob 故无需重算；同时让 W3 打印不匹配文件名而非只给布尔值。本地实测：干净树 PASS，且真的跑一次 `dos2unix` 去掉 BOM 后仍 PASS。
+  - **已验收（CI #109 = `success`，`f2d7f57`）**：`GATE410_RESULT: PASS`，W1–W8 全绿；`W3` 报 `93 archived git-blob sha256 match MANIFEST.sha256: True; mismatched=none`；**十一组判据全绿，原有十组 verdict 与 CI #106 逐位 IDENTICAL**（连 `terzaghi_verdict.log` 也一样）⇒ 纯工程归档零扰动。
+  - **勾选条件（已满足）**：CI `conclusion=success` 且 `GATE410_RESULT: PASS`，且原有十组判据全绿、物理场逐位不变。
 
 - [ ] **4.11 CI 断言 + 回归 + 解析解比对**
   - 位置：`.github/workflows/build.yml:394-408`（Run Terzaghi，`continue-on-error: true` + `set +e` 仅 tee）；`vDef/Makefile` 的 `test` 只跑 test7/8
@@ -240,16 +243,16 @@
 
 ---
 
-## 进度跟踪（按 CI #106 实测，2026-11-09）
+## 进度跟踪（按 CI #109 实测，2026-11-09）
 
 **代码进度（以清单条目计）**
 - 闸门 1（不崩+边界）：**4 / 4**。1.1 / 1.2 / 1.3 已落地；1.4 经核实是 `use-rename` 分离设计、无需改动。CI #47 首次完整编译，此后由 Gate 3.3 / 4.x 持续回归。
 - 闸门 2（可见）：**4 / 4**。2.1–2.4 完成；2.3 的 TEMP `source: 1.0e-6` 已在闸门 3 前改回 `0.0`，「务必改回」注意项解除。
 - 闸门 3（瞬态+符号）：**2 / 2**。3.1 TS 瞬态主循环已实际运行（`Gate 3.1` / `Gate 3.2` 诊断行）；3.2 由 **Gate 3.3 P1–P8** 硬判据验收 —— P6「L2 err vs BE series」CI #99 实测 `0.03206 ≤ 0.05`，衰减方向与量级正确，**无需改算子符号**（该结论与源项符号无关，见 3.2 / 4.4）。
-- 闸门 4（物理+工程）：**8 项收口 / 9 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返，生产 opt-out 路径与 #104 逐位一致）；4.7 / 4.9 / 4.10 等工程项未动。
-- 合计：**18 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 8 项），**5 项待做**：4.7 时变材料、4.9 逐单元 IS 性能、4.10 根目录旧副本清理、`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代。
-- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)；**十组判据在 CI #106 全绿**（4.6 已验收）；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
-- **最近八次 CI**：#106 `success`（`a260d7b`，Gate 4.6 μ(T) 别名加固 + V1–V8 硬判据，十组判据全绿；原有九组 verdict 与 #104 逐位 IDENTICAL）；#105 `success`（`7b4fded`，纯文档收尾的重复回归，无源码变化）；#104 `success`（`0a0c468`，Gate 4.8 守恒性纯后处理 U1–U8 硬判据，九组判据全绿；原有八组 verdict 与 #102 逐位一致）；#103 `success`（`3d2d45a`，纯文档收尾的重复回归）；#102 `success`（`c05bac5`，Gate 4.5 能量诊断修好 + 接线 + T1–T8 硬判据，八组判据全绿）；#101 `success`（`97fa070`，Gate 4.4 源项符号修复 + 非零源解析硬判据，七组判据全绿）；#100 `success`（`3acc4d4`，两个 deck 的 `cs0001.LinearThermalExpansion: 0,0,0` 防回归实验 + 进度重整）；#99 `success`（`74b6c87`，LTE→`MEF90_MATS_IDENTITY`，六组判据全绿）。（#97 `failure`（`f20fa18`）为旧 E2「位等价」前提错误，已由 #98 改物理签名判据修复。）
+- 闸门 4（物理+工程）：**9 项收口 / 9 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返）；4.10 根目录旧副本清理（**CI #109 `GATE410_RESULT: PASS`**，W1–W8 全绿，93 个文件 100% rename 归档、根目录 tracked `.F90` 归零、原有十组 verdict 与 #106 逐位一致）；4.7 / 4.9 等工程项未动。
+- 合计：**19 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 9 项），**4 项待做**：4.7 时变材料、4.9 逐单元 IS 性能、`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代。
+- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)、4.10 (W1–W8，根目录清零 + 归档 blob 校验 + 构建隔离)；**十一组判据在 CI #109 全绿**（4.10 已验收）；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
+- **最近八次 CI**：#109 `success`（`f2d7f57`，W3 改校验 git index blob，Gate 4.10 W1–W8 全绿；十一组判据全绿，原有十组 verdict 与 #106 逐位 IDENTICAL）；#108 `failure`（`fdeca5b`，Gate 4.10 归档 93 个旧副本；编译与十组物理判据全绿，仅 W3 因 `dos2unix` 移除 BOM 误判，已由 #109 修复）；#107 `success`（`627fe7d`，纯文档收尾的重复回归）；#106 `success`（`a260d7b`，Gate 4.6 μ(T) 别名加固 + V1–V8 硬判据，十组判据全绿）；#105 `success`（`7b4fded`，纯文档收尾的重复回归）；#104 `success`（`0a0c468`，Gate 4.8 守恒性纯后处理 U1–U8 硬判据）；#103 `success`（`3d2d45a`，纯文档收尾的重复回归）；#102 `success`（`c05bac5`，Gate 4.5 能量诊断修好 + 接线 + T1–T8 硬判据）。（#97 `failure`（`f20fa18`）为旧 E2「位等价」前提错误，已由 #98 改物理签名判据修复。）
 
 **历史提交 / CI 记录（2026-11-07 09:55 快照，保留备查）**
 
