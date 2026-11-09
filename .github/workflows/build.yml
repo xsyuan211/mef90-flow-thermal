@@ -944,12 +944,17 @@ jobs:
           # --- Gate 4.1b (hard): effective-stress Biot form equivalence ------
           # Checklist 4.1b: "含孔压时应力场体现有效应力修正" implemented as a mode
           # MUTUALLY EXCLUSIVE with the 4.1a body-force superposition. The stress
-          # deck must emit "Gate 4.1b: form=stress" (E1); its displacement field
-          # must match the superposition production run to relative L2 <= 1e-3 (E2);
-          # the default production run must NOT emit the stress diagnostic (E3);
-          # and the two forms must be mutually exclusive (E4). Verdict printed
-          # here; exit 1 DEFERRED until after the other gates (CI #82 lesson), so
-          # a 4.1b failure never hides the 4.1/4.2/4.3 physics tables.
+          # deck must emit "Gate 4.1b: form=stress" (E1). E2 checks the PHYSICAL
+          # SIGNATURE of the effective-stress form: CI #97 proved the two forms
+          # are NOT bit-equivalent -- only the end facets x=+/-5 are pinned, the
+          # free lateral Neumann facets y=+/-0.5 have p!=0 and v_y unconstrained,
+          # so int(alpha*p*v.n) != 0 and sigma_total.n=0 produces an outward
+          # u_y ~ k*(y*p) swelling absent in the body-force form. E2 now requires
+          # identical pressure drive, preserved u_x shape shortened by that
+          # swelling, and the swelling compliance inside the plane-strain
+          # envelope. E3: default production run unchanged; E4: mutual exclusion.
+          # Verdict printed here; exit 1 DEFERRED until after the other gates
+          # (CI #82 lesson), so a 4.1b failure never hides the physics tables.
           python3 data/check_gate41b.py --gate \
             /tmp/terzaghi_stress.log /tmp/terzaghi.log \
             /tmp/out_stress.gen /tmp/out_main.gen \
@@ -990,12 +995,12 @@ jobs:
           if [ "$g41b_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1b rejected the effective-stress Biot form (rc=$g41b_rc) ==="
             echo "    Check /tmp/gate41b_verdict.log: E1 effective form active,"
-            echo "    E2 displacement equivalence to superposition (relL2<=1e-3),"
+            echo "    E2 physics signature (same p, cos_ux, ux_ratio, u_y~y*p, k),"
             echo "    E3 production unchanged (no stress diagnostic),"
             echo "    E4 forms mutually exclusive."
             exit 1
           fi
-          echo "=== Gate 4.1b PASS: effective-stress form active, displacement matches superposition, mutually exclusive with body force ==="
+          echo "=== Gate 4.1b PASS: effective-stress form active, boundary-traction swelling signature verified, mutually exclusive with body force ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
