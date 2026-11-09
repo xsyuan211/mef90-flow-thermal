@@ -118,7 +118,11 @@ def read_rows(path):
                 m = ROW_RE.search(line)
                 if m:
                     rows.append(tuple(_f(v) for v in m.groups()))
-                elif 'Gate 4.1' in line:
+                # Match the COLON: 'Gate 4.1' is also a prefix of the Gate
+                # 4.12/4.13 diagnostics, and of 'Gate 4.1b:'. Counting those
+                # as unparsed Gate 4.1 rows made B1 fail on CI #116 (102
+                # phantom rows = 2 logs x 51 steps).
+                elif 'Gate 4.1:' in line:
                     bad.append(line.strip()[:120])
     except Exception as exc:                       # noqa: BLE001 - gate fails
         return None, 'log unreadable: %s' % exc
