@@ -56,6 +56,10 @@ Program vDef
    PetscReal                                          :: pressureMin, pressureMax
    !!! Gate 4.2: per-step infinity norm of the cell-centered Darcy velocity
    PetscReal                                          :: darcyVmin, darcyVmax
+   !!! Gate 4.5: Darcy dissipation energy / source injection work.
+   !!! SCALARS, not pointers: Gate 1 removed the old unallocated
+   !!! flowEnergy/flowInjectionWork pointer arrays that crashed on DeAllocate.
+   PetscReal                                          :: flowEnergy, flowInjectionWork
 
    SNESConvergedReason                                :: snesDispConvergedReason
    Type(Vec)                                          :: residualDisp
@@ -559,6 +563,17 @@ Program vDef
             Call VecMin(MEF90FlowCtx%pressure,PETSC_NULL_INTEGER,pressureMin,ierr);CHKERRQ(ierr)
             Call VecMax(MEF90FlowCtx%pressure,PETSC_NULL_INTEGER,pressureMax,ierr);CHKERRQ(ierr)
             Write(IOBuffer,*) 'Gate 3.2: step',step,' pmin',pressureMin,' pmax',pressureMax,'\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+            !!! Gate 4.5: Darcy dissipation + injection work for THIS step.
+            !!! Pure post-processing (no feedback into the solve); collective
+            !!! on every rank via MPI_AllReduce inside MEF90FlowEnergy. All
+            !!! decks emit these rows, so the no-source production deck must
+            !!! give W=0 while terzaghi1D_source.yaml gives W>0: a
+            !!! falsifiable check that sourceSec is really wired.
+            Call MEF90FlowEnergy(MEF90FlowCtx%pressure,time(step),MEF90FlowCtx, &
+                 flowEnergy,flowInjectionWork,ierr);CHKERRQ(ierr)
+            Write(IOBuffer,*) 'Gate 4.5: step',step,' t',time(step), &
+                 ' E',flowEnergy,' W',flowInjectionWork,'\n'
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
          End If
 

@@ -1002,6 +1002,18 @@ jobs:
             /tmp/terzaghi_source.log /tmp/out_source.gen /tmp/out_main.gen \
             2>&1 | tee /tmp/gate44_verdict.log
           g44_rc=${PIPESTATUS[0]}
+          # --- Gate 4.5 (hard): Darcy energy diagnostics ---------------------
+          # vDef.F90 now calls MEF90FlowEnergy once per outer step and prints
+          # "Gate 4.5: step N t T E X W Y". Both the production (f=0) and
+          # source (f=1e-6) runs emit the rows, so W_main must be identically
+          # zero while W_src tracks int(f*p) dOmega. E must be a real,
+          # decaying dissipation matching the BE analytic series. This is
+          # PURE post-processing: every earlier physics gate must be
+          # unchanged. Verdict printed here; exit 1 DEFERRED (CI #82 lesson).
+          python3 data/check_gate45_energy.py --gate \
+            /tmp/terzaghi.log /tmp/terzaghi_source.log \
+            2>&1 | tee /tmp/gate45_verdict.log
+          g45_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1053,6 +1065,16 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.4 PASS: positive deck source raises pressure; Bourdin G-F contract honoured ==="
+          # Gate 4.5 deferred verdict (see the deferred-exit note above).
+          if [ "$g45_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.5 rejected the Darcy energy diagnostics (rc=$g45_rc) ==="
+            echo "    Check /tmp/gate45_verdict.log: T1 row integrity, T2 W_main=0,"
+            echo "    T3 E nonzero + decaying, T4 E(50) analytic magnitude,"
+            echo "    T5 W_src>0 + decaying, T6/T7 W_src vs int(f*p),"
+            echo "    T8 E_src alive and same order as E_main."
+            exit 1
+          fi
+          echo "=== Gate 4.5 PASS: Darcy dissipation and injection work are live, global and analytic-consistent ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1196,6 +1218,7 @@ jobs:
             /tmp/gate43_verdict.log
             /tmp/gate41b_verdict.log
             /tmp/gate44_verdict.log
+            /tmp/gate45_verdict.log
             /tmp/terzaghi_stress.log
             /tmp/terzaghi_source.log
             /tmp/out_stress.gen

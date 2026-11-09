@@ -173,18 +173,25 @@
     新增行非 ASCII=0 / `git diff --check` 全绿。
   - **勾选条件**：CI #94 `conclusion=success` 且 `GATE43_RESULT: PASS`。
 
-- [x] **4.4 源项符号对齐**（真 bug；代码 + 判据已落地，离线自测通过，CI 硬判据已接入）
+- [x] **4.4 源项符号对齐**（真 bug；**CI #101 `success` 验收通过**）
   - 位置：`m_Flow/m_MEF90_FlowAssembly.F90:139-153`（`MEF90FlowOperatorCore` 调 `MEF90DiffusionRHSSetCell`）；底层 `MEF90/m_MEF90_DiffusionImplementation.F90:376-413`。
   - **结论更正**：原清单把因果写反了。注释 "Subtract source RHS: G = DiffusionOperator - Source" 是**正确意图**，代码漏了负号；不是"注释错"。Bourdin 契约（`MEF90/m_MEF90_DiffusionImplementation.F90:27-60`）：`-div(A∇p)+λp=f`，Operator `G=+∫A∇p·∇w`、RHS `F=+∫fw`（两者都 `ADD_VALUES`），SNES Function 必须是 **`G−F`**。HeatXfer 遵守（`m_MEF90_HeatXferAssembly.F90:113` / `:476` `modifiedFluxPtr = -fluxPtr` 后再 ADD）；Flow 的 `SetSourceCst` 存物理 `+f` 且 `OperatorCore` 直接 ADD → 实际 `G+F`，**正源被当成汇**。
   - 为什么一直没发现：所有生产/诊断 deck 都是 `cs0001.source: 0.0`，六组判据对源项符号零区分力；Gate 3.3 P6 只约束 `f=0` 时的衰减方向，与 f 的符号无关，故其"无需改算子符号"的结论仍然成立。
   - 改法（最小侵入；**未采用**清单原提议的 `SectionRealAXPY`，全库无该 API 先例）：在 `OperatorCore` 的 cell 循环里，把**局部** `sourceSec` 的当前 cell 值取负后再交给 `MEF90DiffusionRHSSetCell`；复用已声明未用的 `sourceCell` 和 `SetSourceCst` / `UpdatePerm` 已验证的 `SectionRealRestrict/Restore` 写入模式，删掉死变量 `rhsSec`。`FlowCtx%source` 仍存物理 `+f`，EXO 输出与 Gate 4.3 比对不受影响。
   - 验收（可证伪）：新增 `vDef/data/terzaghi1D_source.yaml`，与主 deck **只差一行**（`cs0001.source: 0.0 → 1.0e-6`）；`delta_p = p_source − p_main` 消去 1e5 Pa 的 Terzaghi 衰减，与一维解析源响应 `p_f(s,n)=f/(2A)(H²−s²)+Σa_m cos(λ_m s)(1+c_vλ_m²dt)^(−n)`（`a_m=−2(−1)^m f/(A H λ_m³)`）比对。`check_gate44_source.py` 的 S1–S8 硬判据要求 `cos(delta_p,+p_f)≥0.95`（旧 `G+F` 会给 −1）、幅值 `[0.70,1.30]`、`relL2≤0.15`、闭合端正峰、单调递增，并把"两 deck 只差一行"本身列为 S2。离线自测：正例 PASS、5 个负例全 FAIL；用 #97 真实 mesh 回放得 `S3 baseline relL2=0.00887`、解析峰值 `924.3 Pa`。
-  - **勾选条件**：CI `conclusion=success` 且 `GATE44_RESULT: PASS`，同时原有六组判据全绿（`source=0` 时本修复是严格 no-op）。
+  - **已验收（CI #101 = `success`，`97fa070`）**：`GATE44_RESULT: PASS`，S1–S8 全绿；实测 `cos(delta_p,+p_f)=0.9999975`、`||delta_p||/||p_f||=1.0049`、`relL2=0.00536`、末态闭合端 `926.55 Pa` vs 解析 `924.30 Pa`（比值 1.0024）、闭合端 `0→391.9→724.6→926.6 Pa` 单调增长；bag dump 为 `source = 1e-06`。原有六组判据全绿，Gate 3.3 P6 `0.0320613`、Gate 4.1b E2 七指标与 #98/#99/#100 **逐位一致** ⇒ `source=0` 时本修复是严格 no-op。
 
-- [ ] **4.5 能量诊断**
-  - 位置：`m_Flow/m_MEF90_FlowAssembly.F90:275-345`（`permFieldSec`/`sourceSec`/`p0Sec` 从未从 Vec 填入 → 能量恒 0）；主程序未调用 `MEF90FlowEnergy`
-  - 改法：若做能量诊断，补三行反向 `SectionRealToVec` 散射填充；否则连同 `vDef.F90:37` 的变量一起删干净。
-  - 验收：能量项非零（或确认已移除相关死代码）。
+- [x] **4.5 能量诊断**（修好并接线，代码 + 判据已落地，CI 硬判据已接入）
+  - 实际位置：`m_Flow/m_MEF90_FlowAssembly.F90:399-520`（`MEF90FlowEnergy`）；`vDef.F90:567-577`（时间步层接线）。
+  - **复核结论**：选择清单给的两条路中"修好"这一条 —— 删死代码会同时失去 4.8 守恒性后处理的落点。除清单指出的三个未填充 section 外，还发现 4 个额外缺陷：
+    1. `MEF90DiffusionEnergySet` / `MEF90DiffusionWorkSetCell` 的 `energy`/`work` 声明为 `Intent(OUT)` 但内部只做 `+=`（`MEF90/m_MEF90_DiffusionImplementation.F90:491` / `:580`），调用方**必须预先清零** —— HeatXfer 在 `m_MEF90_HeatXferAssembly.F90:354-355` 做了，Flow 没有（`energyCell`/`workCell` 是未定义值）。
+    2. 两处 `mesh` 参数传 `FlowCtx%DM`（主 DM，2 dof/vertex），而 `pSec` 是 `DMScalSec`（1 dof/vertex）；清单文末 767 行早就记过"留待后续统一"。改为 `DMScal`，与 HeatXfer `:365` / `:370` 一致。
+    3. 逐 rank 部分和未经 `MPI_AllReduce` 就返回，CI 用 `-np 2`，打印值只是半个域。
+    4. `vDef.F90` 从未调用 `MEF90FlowEnergy`（闸门 1 删掉的 `flowEnergy`/`flowInjectionWork` 是未分配 pointer 数组，这次改用 scalar）。
+  - 改法：补 `permFieldSec` / `sourceSec` 的 `SectionRealToVec(SCATTER_REVERSE)` 填充，`p0Sec` 清零（FlowCtx 无对应 Vec，且 `lambda=0` 使参考压力不参与 E，取 0 与 drained BC 一致，避免 `0*NaN`）；`energyCell`/`workCell` 每 cell 前清零；两处 `DMScal`；末尾 `MPI_AllReduce` 得到全局 E / W。`vDef.F90` 在 Gate 3.2 压力包络之后每步输出 `Gate 4.5: step N t T E X W Y`，**纯后处理，不回写求解**。
+  - 验收（可证伪）：新增 `check_gate45_energy.py` 的 T1–T8 硬判据。因 4.4 的两 deck 只差 `cs0001.source`，主 deck `f=0` ⇒ `W_main≡0`，source deck ⇒ `W_src>0` 且跟随 `∫f·p dΩ`；`E=½∫(k/μ)|∇p|²` 必须非零、单调衰减、与 BE 解析级数同量级。解析锚：`E_an(n)=(A·W·P0²/H)Σd_m²`（因 `a_m²λ_m²≡4/H²`，n=0 阶跃发散故只比 n≥1），`E_an(50)=0.269`；`W_an(n)=f·W·[(8P0H/π²)Σd_m/(2m+1)² + fH³/(3A) − (2f/(AH))Σd_m/λ_m⁴]`，`W_an` 从 `0.999` 降到 `0.0656`。离线自测正例 PASS、6 个负例（E 恒 0 / W_src 恒 0 / W_src 反号 / E 递增 / W_main 非零 / 缺行）全 FAIL。**所有诊断 deck 都会自动输出该行，无需新增 CI 运行**。
+  - **提交前离线预测（CI #101 artifact 真实场，零 Fortran 风险）**：用 `parse_cdf2.CDF2` 从 `out_main.gen` / `out_source.gen` 读 51 步 `Pressure` 节点场与逐单元 `permField`（EXO slot 4 = `5e-8`），按线性三角形精确梯度重建 `E=½Σ A_c|∇p_c|²Ω_c` 与 `W=Σ f_c(Σp_i/3)Ω_c`，再喂给 `evaluate_text`。T1–T8 **全部 PASS**：`W_main≡0`、`E(1)/E(50)=334.98`、`E(50)=0.2520` vs `E_an(50)=0.2690`（比值 0.937）、`W_src(0)/W_src(50)=15.57`、`cos(W_src,W_an)=0.99998`、`W_src(50)=0.06372` vs 解析 `0.06564`（比值 0.971）、`E_src/E_main=1.223`（交叉项抬高，实证 T8 必须用 `[0.30,3.00]` 宽幅而非"小扰动"窄幅）。日志侧 `Gate 3.2` 在两个 deck 各 51 行 ⇒ 4.5 输出行数满足 T1。综合静态自检 **17/17 PASS**（10 个 `run: |` 块 `bash -n`、12 个 Python AST、INTENT 链、延迟判据顺序、`--selftest`）。
+  - **勾选条件**：CI `conclusion=success` 且 `GATE45_RESULT: PASS`，且原有六组 + Gate 4.4 判据全绿（纯后处理，物理场应逐位不变）。离线预测已先行通过，CI 只负责确认 Fortran 编译与运行期接线。
 
 - [ ] **4.6 μ(T) 别名加固（脆弱但当前不崩）**
   - 位置：`m_Flow/m_MEF90_Flow.F90:270-278`（`UpdatePerm` 从 `cellDMScalSec` 同时取 `permPtr`/`muPtr`，二者同内存；`cellMuField` Vec 仅作 `Associated()` 守卫、值从未被读回）
@@ -224,16 +231,16 @@
 
 ---
 
-## 进度跟踪（按 CI #100 实测 + Gate 4.4 落地，2026-11-09）
+## 进度跟踪（按 CI #101 实测，2026-11-09）
 
 **代码进度（以清单条目计）**
 - 闸门 1（不崩+边界）：**4 / 4**。1.1 / 1.2 / 1.3 已落地；1.4 经核实是 `use-rename` 分离设计、无需改动。CI #47 首次完整编译，此后由 Gate 3.3 / 4.x 持续回归。
 - 闸门 2（可见）：**4 / 4**。2.1–2.4 完成；2.3 的 TEMP `source: 1.0e-6` 已在闸门 3 前改回 `0.0`，「务必改回」注意项解除。
 - 闸门 3（瞬态+符号）：**2 / 2**。3.1 TS 瞬态主循环已实际运行（`Gate 3.1` / `Gate 3.2` 诊断行）；3.2 由 **Gate 3.3 P1–P8** 硬判据验收 —— P6「L2 err vs BE series」CI #99 实测 `0.03206 ≤ 0.05`，衰减方向与量级正确，**无需改算子符号**（该结论与源项符号无关，见 3.2 / 4.4）。
-- 闸门 4（物理+工程）：**5 项收口 / 9 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号已落地（`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据，离线自测通过，CI 结果待确认）；4.5–4.10 等工程项未动。
-- 合计：**15 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 5 项），**8 项待做**：4.5 能量诊断、4.6 μ(T) 别名加固、4.7 时变材料、4.8 守恒性、4.9 逐单元 IS 性能、4.10 根目录旧副本清理、`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代。
-- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
-- **最近四次 CI**：#100 `success`（`3acc4d4`，两个 deck 的 `cs0001.LinearThermalExpansion: 0,0,0` 防回归实验 + 进度重整，六组判据全绿、E2 数值与 #98/#99 逐位一致）；#99 `success`（`74b6c87`，LTE→`MEF90_MATS_IDENTITY`，六组判据全绿）；#98 `success`（`b2f94ea`，E2 改物理签名判据）；#97 `failure`（`f20fa18`，编译已过、五组回归全绿，仅旧 E2 的「位等价」前提错误）。
+- 闸门 4（物理+工程）：**6 项收口 / 9 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出，T1–T8 判据已接入；#101 真实场离线预测 T1–T8 全 PASS、静态自检 17/17，CI 结果待确认）；4.6–4.10 等工程项未动。
+- 合计：**16 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 6 项），**7 项待做**：4.6 μ(T) 别名加固、4.7 时变材料、4.8 守恒性、4.9 逐单元 IS 性能、4.10 根目录旧副本清理、`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代。
+- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
+- **最近五次 CI**：#101 `success`（`97fa070`，Gate 4.4 源项符号修复 + 非零源解析硬判据，七组判据全绿；原六组数值与 #100 逐位一致）；#100 `success`（`3acc4d4`，两个 deck 的 `cs0001.LinearThermalExpansion: 0,0,0` 防回归实验 + 进度重整，六组判据全绿、E2 数值与 #98/#99 逐位一致）；#99 `success`（`74b6c87`，LTE→`MEF90_MATS_IDENTITY`，六组判据全绿）；#98 `success`（`b2f94ea`，E2 改物理签名判据）；#97 `failure`（`f20fa18`，编译已过、五组回归全绿，仅旧 E2 的「位等价」前提错误）。
 
 **历史提交 / CI 记录（2026-11-07 09:55 快照，保留备查）**
 

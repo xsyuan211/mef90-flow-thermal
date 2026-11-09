@@ -413,6 +413,18 @@ Contains
       Type(MEF90_MATS)                                   :: A_cell
       PetscReal,Dimension(:),Pointer                      :: permCell
       PetscReal                                          :: energyCell, workCell
+      PetscReal                                          :: eGlobal, wGlobal
+      !!! Gate 4.5 -- this routine used to be dead code AND wrong:
+      !!!   * permFieldSec / sourceSec / p0Sec were duplicated but never
+      !!!     filled from their Vecs (uninitialised reads -> E, W ~ garbage).
+      !!!   * MEF90DiffusionEnergySet / WorkSetCell declare energy/work as
+      !!!     INTENT(OUT) yet only ACCUMULATE (+=); the caller must zero them
+      !!!     first (m_MEF90_HeatXferAssembly.F90:354-355 does exactly that).
+      !!!   * the mesh argument must match pSec's section: DMScal (1 dof /
+      !!!     vertex), not the 2-dof default FlowCtx%DM.
+      !!!   * per-rank partial sums need an MPI reduction before reporting.
+      !!! timeVal is only the caller's time label; E and W are functionals
+      !!! of p, permField and source, all frozen for this post-processing.
 
       Energy = 0.0_Kr
       InjectionWork = 0.0_Kr
@@ -422,6 +434,13 @@ Contains
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,permFieldSec,ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,sourceSec,ierr);CHKERRQ(ierr)
       Call SectionRealToVec(pSec,FlowCtx%DMScalScatter,SCATTER_REVERSE,pressure,ierr);CHKERRQ(ierr)
+      !!! Gate 4.5: fill the three CELL sections that used to stay empty.
+      !!! p0Sec is the cell-wise reference pressure; FlowCtx has no such Vec,
+      !!! and lambda=0 makes it irrelevant to E, so zero it (consistent with
+      !!! the drained p=0 BC) instead of leaving NaN-prone uninitialised data.
+      Call SectionRealToVec(permFieldSec,FlowCtx%cellDMScalScatter,SCATTER_REVERSE,FlowCtx%permField,ierr);CHKERRQ(ierr)
+      Call SectionRealToVec(sourceSec,FlowCtx%cellDMScalScatter,SCATTER_REVERSE,FlowCtx%source,ierr);CHKERRQ(ierr)
+      Call SectionRealSet(p0Sec,0.0_Kr,ierr);CHKERRQ(ierr)
 
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -459,11 +478,14 @@ Contains
                   !!! 0.087). MEF90MatS2DIdentity is MatS2D(1,1,0).
                   A_cell = permCell(1) * MEF90_MATS_IDENTITY
 
-                  Call MEF90DiffusionEnergySet(energyCell,pSec,p0Sec,FlowCtx%DM, &
+                  !!! Gate 4.5: INTENT(OUT) accumulators MUST start at zero.
+                  energyCell = 0.0_Kr
+                  workCell   = 0.0_Kr
+                  Call MEF90DiffusionEnergySet(energyCell,pSec,p0Sec,FlowCtx%DMScal, &
                        A_cell,0.0_Kr,singleIS,elem,elemType,ierr)
                   Energy = Energy + energyCell
 
-                  Call MEF90DiffusionWorkSetCell(workCell,pSec,FlowCtx%DM, &
+                  Call MEF90DiffusionWorkSetCell(workCell,pSec,FlowCtx%DMScal, &
                        sourceSec,singleIS,elem,elemType,ierr)
                   InjectionWork = InjectionWork + workCell
 
@@ -477,6 +499,14 @@ Contains
       End Do
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
       Call ISDestroy(CellSetGlobalIS,ierr)
+
+      !!! Gate 4.5: each rank assembled only its own cells. Reduce so the
+      !!! reported E and W are GLOBAL (CI runs np=2). Same pattern as
+      !!! m_MEF90_HeatXferAssembly.F90:366 / :371.
+      Call MPI_AllReduce(Energy,eGlobal,1,MPIU_SCALAR,MPI_SUM,FlowCtx%MEF90Ctx%comm,ierr);CHKERRQ(ierr)
+      Call MPI_AllReduce(InjectionWork,wGlobal,1,MPIU_SCALAR,MPI_SUM,FlowCtx%MEF90Ctx%comm,ierr);CHKERRQ(ierr)
+      Energy         = eGlobal
+      InjectionWork  = wGlobal
 
       Call SectionRealDestroy(pSec,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(p0Sec,ierr);CHKERRQ(ierr)
