@@ -352,13 +352,27 @@ def check_x2(sources):
             if token not in st:
                 issues.append('SetTransients lacks ' + token)
     up = sub_body(flow, 'MEF90FlowUpdatePerm')
+    up2 = sub_body(flow, 'MEF90FlowUpdatePerm2D')
+    up3 = sub_body(flow, 'MEF90FlowUpdatePerm3D')
     us = sub_body(flow, 'MEF90FlowUpdateStorativity')
-    if 'FlowCtx%permTimeFactor' not in up or 'facPtr(1)' not in up:
-        issues.append('UpdatePerm does not consume permTimeFactor')
+    # Gate 4.14 / CI #119: UpdatePerm became a DMMeshGetDimension wrapper and
+    # the coefficient math moved into a 2D/3D implementation pair. Audit ALL
+    # three bodies, otherwise a 3D-only regression hides behind the 2D twin.
+    if ('DMMeshGetDimension' not in up
+            or 'Call MEF90FlowUpdatePerm2D(' not in up
+            or 'Call MEF90FlowUpdatePerm3D(' not in up):
+        issues.append('UpdatePerm lost 2D/3D dimension dispatch')
+    for name, body in (('UpdatePerm2D', up2), ('UpdatePerm3D', up3)):
+        if not body:
+            issues.append('missing ' + name + ' implementation')
+        elif ('FlowCtx%permTimeFactor' not in body
+              or 'facPtr(1)' not in body):
+            issues.append(name + ' does not consume permTimeFactor')
     if 'FlowCtx%storTimeFactor' not in us or 'facPtr(1)' not in us:
         issues.append('UpdateStorativity does not consume storTimeFactor')
     # Gate 4.6 V1: every coefficient routine must stay alias-free.
-    for name, body in (('UpdatePerm', up), ('UpdateStorativity', us)):
+    for name, body in (('UpdatePerm2D', up2), ('UpdatePerm3D', up3),
+                       ('UpdateStorativity', us)):
         if 'SectionRealDuplicate(FlowCtx%cellDMScalSec' not in body:
             issues.append(name + ': no private section')
         if re.search(r'SectionReal(?:Restrict|Restore)\s*\(\s*'
@@ -811,6 +825,16 @@ def selftest():
     mat_log = _synthetic_log(PERM_RATE, STOR_RATE, True)
     ctrl_log = _synthetic_log(0.0, 0.0, False)
 
+    def mutate_3d_perm(src):
+        """Disturb only the 3D implementation (CI #119 regression guard)."""
+        i = src.find('Subroutine MEF90FlowUpdatePerm3D')
+        j = src.find('End Subroutine MEF90FlowUpdatePerm3D', i)
+        if i < 0 or j < 0:
+            return src
+        return (src[:i]
+                + src[i:j].replace('FlowCtx%permTimeFactor',
+                                   'FlowCtx%unusedVec', 1) + src[j:])
+
     cases = [
         ('positive: both channels live',
          (sources, decks, (mat_log, ctrl_log), (mat, ctrl)), set()),
@@ -853,6 +877,16 @@ def selftest():
          (sources, decks, (mat_log, ctrl_log),
           (mat, _synthetic_mesh('full', x, times, None, 1.0, 0.0))),
          {'X8'}),
+        # CI #119: the 3D UpdatePerm twin must stay wired to the per-step
+        # factor AND the dimension dispatch must keep its 3D branch.
+        ('NEG 3D UpdatePerm loses permTimeFactor',
+         ((sources[0], mutate_3d_perm(sources[1])) + sources[2:],
+          decks, (mat_log, ctrl_log), (mat, ctrl)), {'X2'}),
+        ('NEG UpdatePerm 3D dispatch removed',
+         ((sources[0],
+           sources[1].replace('Call MEF90FlowUpdatePerm3D(',
+                              'Call MEF90FlowUpdatePerm2D(', 1))
+           + sources[2:], decks, (mat_log, ctrl_log), (mat, ctrl)), {'X2'}),
     ]
     all_ok = True
     for label, args, want_fail in cases:

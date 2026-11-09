@@ -184,8 +184,26 @@ def check_w3(d):
         issues.append('assembly no longer uses the dimension-aware identity')
     if 'Displacement_Z' not in s['dm_facade']:
         issues.append('DefMech EXO naming lost its 3D branch')
+    # CI #119: the Flow facade is compiled WITHOUT -DMEF90_DIM, so the
+    # compile-time MEF90_ELEMENT_SCAL macro silently bound to the 2D element
+    # type. MEF90Element_Create is a GENERIC resolved by the DECLARED type of
+    # elem, so a 3D mesh hit "Element2D_Scal_Init: not implemented yet" in
+    # MEF90FlowUpdatePerm. Freeze the 2D/3D implementation-pair fix here.
+    ff = s['flow_facade']
+    for token in ('MEF90FlowUpdatePerm2D', 'MEF90FlowUpdatePerm3D',
+                  'MEF90FlowUpdateMuFromTemperature2D',
+                  'MEF90FlowUpdateMuFromTemperature3D',
+                  'Type(MEF90Element2D_Scal)', 'Type(MEF90Element3D_Scal)',
+                  'Call MEF90FlowUpdatePerm2D(', 'Call MEF90FlowUpdatePerm3D(',
+                  'Call MEF90FlowUpdateMuFromTemperature2D(',
+                  'Call MEF90FlowUpdateMuFromTemperature3D('):
+        if token not in ff:
+            issues.append('flow facade lost %s' % token)
+    if 'Type(MEF90_ELEMENT_SCAL)' in ff:
+        issues.append('flow facade bound elem to the compile-time 2D macro again')
     return pass_fail(not issues, '; '.join(issues) if issues else
-                     '3D/2D identity macros, -DMEF90_DIM=3 twins, DMMeshGetDimension dispatch, 3D EXO naming')
+                     '3D/2D identity macros, -DMEF90_DIM=3 twins, runtime dispatch, '
+                     '2D/3D facade update pair, 3D EXO naming')
 
 
 def check_w4(d):
@@ -374,6 +392,14 @@ def selftest():
                  lambda d: d['src'].update(flow_mk=d['src']['flow_mk'].replace('-DMEF90_DIM=3', '')), {'W3'})
     allok &= neg('runtime 3D dispatch removed',
                  lambda d: d['src'].update(flow_facade=d['src']['flow_facade'].replace('dim == 3', 'dim == 9')), {'W3'})
+    allok &= neg('3D facade update pair removed (CI #119 regression)',
+                 lambda d: d['src'].update(flow_facade=d['src']['flow_facade'].replace('Call MEF90FlowUpdatePerm3D(', 'Call MEF90FlowUpdatePerm2D(')), {'W3'})
+    allok &= neg('2D facade update pair removed',
+                 lambda d: d['src'].update(flow_facade=d['src']['flow_facade'].replace('Call MEF90FlowUpdatePerm2D(', 'Call MEF90FlowUpdatePerm3D(')), {'W3'})
+    allok &= neg('3D mu(T) twin removed',
+                 lambda d: d['src'].update(flow_facade=d['src']['flow_facade'].replace('Call MEF90FlowUpdateMuFromTemperature3D(', 'Call MEF90FlowUpdateMuFromTemperature2D(')), {'W3'})
+    allok &= neg('compile-time 2D element macro reintroduced',
+                 lambda d: d['src'].update(flow_facade=d['src']['flow_facade'].replace('Type(MEF90Element3D_Scal)', 'Type(MEF90_ELEMENT_SCAL)')), {'W3'})
     allok &= neg('3D pressure does not consolidate',
                  lambda d: d['exo3'].update(pmax=[1.0e5] * N_REC_3D), {'W4'})
     allok &= neg('3D displacement identically zero',

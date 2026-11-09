@@ -109,8 +109,13 @@ LEGACY_ALIAS_RE = re.compile(
     r'\s*muPtr', re.I)
 SHARED_COMPLETE_RE = re.compile(
     r'SectionReal(?:Complete|ToVec)\s*\(\s*FlowCtx%cellDMScalSec', re.I)
-SUBS = ('MEF90FlowUpdatePerm', 'MEF90FlowUpdateMuFromTemperature',
+SUBS = ('MEF90FlowUpdatePerm2D', 'MEF90FlowUpdatePerm3D',
+        'MEF90FlowUpdateMuFromTemperature2D',
+        'MEF90FlowUpdateMuFromTemperature3D',
         'MEF90FlowUpdateStorativity')
+# Gate 4.14 / CI #119: these two entry points are now dimension-dispatching
+# wrappers; the coefficient math lives in the 2D/3D implementation pairs above.
+DISPATCH = ('MEF90FlowUpdatePerm', 'MEF90FlowUpdateMuFromTemperature')
 
 
 def read_text(path):
@@ -151,6 +156,17 @@ def sub_body(src, name):
     return m.group(0) if m else ''
 
 
+def mutate_routine(src, name, old, new, count=1):
+    """Replace a token inside ONE subroutine body (offline selftest only)."""
+    i = src.find('Subroutine ' + name)
+    j = src.find('End Subroutine ' + name, i)
+    if i < 0 or j < 0:
+        return src
+    seg = src[i:j]
+    seg = seg.replace(old, new) if count == 0 else seg.replace(old, new, count)
+    return src[:i] + seg + src[j:]
+
+
 def static_checks(src):
     """V1, V2, V3 -- the anti-regression guard against re-aliasing."""
     chk = {}
@@ -158,8 +174,16 @@ def static_checks(src):
         return {'V1': (False, 'source unreadable'),
                 'V2': (False, 'source unreadable'),
                 'V3': (False, 'source unreadable')}
-    # V1: private sections everywhere
+    # V1: private sections everywhere (both 2D and 3D twins must be clean),
+    # plus the runtime dimension dispatch on the two public entry points.
     ok, miss = True, []
+    for name in DISPATCH:
+        b = sub_body(src, name)
+        if (not b or 'DMMeshGetDimension' not in b
+                or ('Call %s2D(' % name) not in b
+                or ('Call %s3D(' % name) not in b):
+            ok = False
+            miss.append(name + ':no-dispatch')
     for name in SUBS:
         b = sub_body(src, name)
         if not b:
@@ -176,19 +200,24 @@ def static_checks(src):
                      b, re.I):
             ok = False
             miss.append(name + ':direct-shared-access')
-    chk['V1'] = (ok, '3 routines private sections; problems=%s'
+    chk['V1'] = (ok, '5 routines private sections + 2D/3D dispatch; problems=%s'
                  % (','.join(miss) or 'none'))
 
-    # V2: mu really travels through the persistent cellMuField Vec
-    bp = sub_body(src, 'MEF90FlowUpdatePerm')
-    bm = sub_body(src, 'MEF90FlowUpdateMuFromTemperature')
-    ok = (bool(bp) and bool(bm)
-          and 'SCATTER_REVERSE' in bp and 'FlowCtx%cellMuField' in bp
-          and 'SCATTER_FORWARD' in bm and 'FlowCtx%cellMuField' in bm
-          and 'muVal' in bp and 'useMuT' in bp
-          and not LEGACY_ALIAS_RE.search(src))
-    chk['V2'] = (ok, 'REVERSE(cellMuField)->muSec in UpdatePerm, '
-                 'FORWARD->cellMuField in UpdateMu, legacy alias present=%s'
+    # V2: mu really travels through the persistent cellMuField Vec, in BOTH
+    # dimension twins. A 3D-only dead mu(T) channel must not pass (CI #119).
+    bp = (sub_body(src, 'MEF90FlowUpdatePerm2D'),
+          sub_body(src, 'MEF90FlowUpdatePerm3D'))
+    bm = (sub_body(src, 'MEF90FlowUpdateMuFromTemperature2D'),
+          sub_body(src, 'MEF90FlowUpdateMuFromTemperature3D'))
+    ok = all(bp) and all(bm)
+    for b in bp:
+        ok &= ('SCATTER_REVERSE' in b and 'FlowCtx%cellMuField' in b
+               and 'muVal' in b and 'useMuT' in b)
+    for b in bm:
+        ok &= ('SCATTER_FORWARD' in b and 'FlowCtx%cellMuField' in b)
+    ok = bool(ok) and not LEGACY_ALIAS_RE.search(src)
+    chk['V2'] = (ok, 'REVERSE(cellMuField)->muSec in UpdatePerm2D/3D, '
+                 'FORWARD->cellMuField in UpdateMu2D/3D, legacy alias present=%s'
                  % bool(LEGACY_ALIAS_RE.search(src)))
 
     # V3: shared section is complete/ToVec-free
@@ -355,6 +384,20 @@ def selftest():
          ctrl_deck, ctrl_deck, 1.0, None, None, False),
         ('opt-out control perm disturbed', src, good_log,
          visc_deck, ctrl_deck, 1.0, None, PERM_CTRL * 1.5, False),
+        # CI #119: a 3D-only regression must be caught by the static guard.
+        ('3D dispatch branch removed',
+         src.replace('Call MEF90FlowUpdatePerm3D(',
+                     'Call MEF90FlowUpdatePerm2D(', 1),
+         good_log, visc_deck, ctrl_deck, 1.0, None, None, False),
+        ('3D perm lost its private section',
+         mutate_routine(src, 'MEF90FlowUpdatePerm3D',
+                        'SectionRealDuplicate(FlowCtx%cellDMScalSec',
+                        'SectionRealDuplicate(sSec', 0),
+         good_log, visc_deck, ctrl_deck, 1.0, None, None, False),
+        ('3D mu(T) Vec disconnected',
+         mutate_routine(src, 'MEF90FlowUpdateMuFromTemperature3D',
+                        'FlowCtx%cellMuField', 'FlowCtx%cellStorField', 0),
+         good_log, visc_deck, ctrl_deck, 1.0, None, None, False),
     ]
     print('=== Gate 4.6 offline selftest (real source + synthetic fields) ===')
     print('  source: %s (%d chars)' % (os.path.normpath(src_path), len(src)))
