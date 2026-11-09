@@ -162,9 +162,10 @@ module m_vDefDefault
 !!!       pressurePreviousStepScaling, pressureScaling, pressureATol,
 !!!       pressureRTol, pressureMaxIt, biotEffectiveStress,
 !!!       permeabilityScaling, permeabilityRate, storativityScaling,
-!!!       storativityRate, materialPermOffset, materialStorOffset.
-!!!       The last six are Gate 4.7 and MUST stay at the end: PetscBag offset
-!!!       order equals declaration order (CI #50).
+!!!       storativityRate, materialPermOffset, materialStorOffset,
+!!!       batchedAssembly.
+!!!       The last seven are Gate 4.7 / 4.9 and MUST stay at the end: PetscBag
+!!!       offset order equals declaration order (CI #50).
    Type(MEF90FlowGlobalOptions_Type),Parameter    :: vDefFlowDefaultGlobalOptions = MEF90FlowGlobalOptions_Type( &
                                                          MEF90Flow_timeSteppingTypeSteadyState, &
                                                          PETSC_FALSE,    &
@@ -201,7 +202,8 @@ module m_vDefDefault
                                                          MEF90Scaling_CST, &               ! storativityScaling (Gate 4.7: no-op)
                                                          0.0_Kr,          &                ! storativityRate [1/s]
                                                          0,               &                ! materialPermOffset (File law unused)
-                                                         0)                  ! materialStorOffset (File law unused)
+                                                         0,               &                ! materialStorOffset (File law unused)
+                                                         PETSC_FALSE)        ! batchedAssembly (Gate 4.9: default per-cell path)
    Type(MEF90FlowCellSetOptions_Type),Parameter   :: vDefFlowDefaultCellSetOptions = MEF90FlowCellSetOptions_Type( &
                                                          -1,              & ! elemTypeShortID (overridden)
                                                          0.0_Kr,          & ! source (volumetric injection/sink)

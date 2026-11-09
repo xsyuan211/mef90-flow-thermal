@@ -149,6 +149,13 @@ Module m_MEF90_FlowCtx_Type
       PetscReal                        :: storativityRate      ! [1/s], Linear law: S(t) = S0*(1+rate*t)
       PetscInt                         :: materialPermOffset   ! EXO cell slot for the File law (0 = unused)
       PetscInt                         :: materialStorOffset   ! EXO cell slot for the File law (0 = unused)
+
+      !!! Gate 4.9 -- batched (uniform-coefficient) diffusion assembly.
+      !!! APPENDED AT THE END on purpose (CI #50 lesson): PetscBag writes each
+      !!! value at bag->data + bag->offset, so registration order must equal
+      !!! declaration order byte-for-byte. Default FALSE keeps the production
+      !!! per-cell assembly path bit-for-bit unchanged.
+      PetscBool                        :: batchedAssembly     ! .true. = assemble a whole cell set in one call when its coefficient is uniform
    End Type MEF90FlowGlobalOptions_Type
 
    !!!
@@ -759,6 +766,9 @@ Contains
       Call PetscBagRegisterInt(bag,FlowGlobalOptions%materialStorOffset, &
            default%materialStorOffset,'material_stor_offset', &
            'EXO cell slot holding the per-cell S(t) factor for the File law (0=unused)',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterBool(bag,FlowGlobalOptions%batchedAssembly, &
+           default%batchedAssembly,'batched_assembly', &
+           'Batch diffusion assembly over a whole cell set when its coefficient is uniform (bit-identical)',ierr);CHKERRQ(ierr)
    End Subroutine PetscBagRegisterMEF90FlowCtxGlobalOptions
 
 

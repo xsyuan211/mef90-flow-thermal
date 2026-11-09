@@ -42,6 +42,45 @@ Contains
 
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!  Gate 4.9 -- detect a bit-wise uniform cell coefficient over a cell set.
+!!!  MEF90Diffusion*Set take a CONSTANT A / alpha, which is why the Flow
+!!!  assembly built one IS + one element array per cell. When the coefficient
+!!!  is uniform, passing the WHOLE cell-set IS in ONE call is bit-for-bit
+!!!  identical: DiffusionOperatorSet / BilinearFormSet / RHSSetCell /
+!!!  AddTransientTermSet all loop cell = 1..size(cellID) and call
+!!!  SectionRealUpdateClosure(...,ADD_VALUES) / DMmeshAssembleMatrix in exactly
+!!!  that order. Only the number of PETSc object creations changes: O(N) -> O(1).
+!!!  Comparison is exact (bit-wise); any non-uniform coefficient falls back to
+!!!  the legacy per-cell loop, so the physics can never be silently changed.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+   Subroutine MEF90FlowUniformCellField(sec,cellID,uniform,value,ierr)
+      !!! INOUT (not IN): SectionRealRestrict/Restore are PETSc 3.3 externals
+      !!! whose section dummy may be INTENT(INOUT). Passing an INTENT(IN)
+      !!! dummy into an INOUT argument is a hard gfortran error (CI #95).
+      !!! All callers pass a local SectionRealDuplicate, so INOUT is safe.
+      Type(SectionReal),Intent(INOUT)                    :: sec
+      PetscInt,Dimension(:),Intent(IN)                   :: cellID
+      Logical,Intent(OUT)                                :: uniform
+      PetscReal,Intent(OUT)                              :: value
+      PetscErrorCode,Intent(OUT)                         :: ierr
+      PetscInt                                           :: cell
+      PetscReal,Dimension(:),Pointer                     :: vLoc
+
+      uniform = .true.
+      value = 0.0_Kr
+      Do cell = 1, size(cellID)
+         Call SectionRealRestrict(sec,cellID(cell),vLoc,ierr);CHKERRQ(ierr)
+         If (cell == 1) Then
+            value = vLoc(1)
+         Else If (vLoc(1) /= value) Then
+            uniform = .false.
+         End If
+         Call SectionRealRestore(sec,cellID(cell),vLoc,ierr);CHKERRQ(ierr)
+      End Do
+   End Subroutine MEF90FlowUniformCellField
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 !!!  SNES RESIDUAL:  G(p) = DiffusionOperator(p) - SourceRHS  +  Dirichlet BC
 !!!
 !!!  Gate 4.4 -- Bourdin's diffusion contract, see
@@ -78,6 +117,10 @@ Contains
       Type(MEF90Element_Type)                            :: elemType
       Type(MEF90_MATS)                                   :: A_cell
       PetscReal,Dimension(:),Pointer                      :: permCell, sourceCell
+      Type(MEF90FlowGlobalOptions_Type),pointer            :: gOpt49
+      Logical                                             :: uniformCoeff
+      PetscReal                                           :: coeffVal
+      Character(len=512)                                  :: IOBuffer49
 
       !!! Create sections
       Call SectionRealDuplicate(FlowCtx%DMScalSec,pSec,ierr);CHKERRQ(ierr)
@@ -102,13 +145,45 @@ Contains
             elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
             QuadratureOrder = elemType%order * 2
             !!! CI #65: elem(k) is indexed by the k-th entry of the cellIS
-            !!! passed to MEF90Element_Create. Every assembly call below uses
-            !!! singleIS (size 1), so elem MUST be created from that same IS.
-            !!! Creating it once from the whole setIS made all 600 cells reuse
-            !!! elem(1)'s Grad_BF / Gauss_C (reproduced exactly by |K|inf in
-            !!! CI #64). elem is now created/destroyed inside the cell loop.
+            !!! passed to MEF90Element_Create. The legacy path uses singleIS
+            !!! (size 1), so elem MUST be created from that same IS. Creating
+            !!! elem once from the whole setIS and then reusing elem(1) for
+            !!! per-cell calls made all 600 cells share elem(1)'s geometry
+            !!! (CI #64). Gate 4.9's fast path passes the WHOLE setIS AND
+            !!! creates elem from that same setIS, so elem(k) still matches
+            !!! cellID(k) -- the CI #65 contract is preserved in both paths.
             If (elemType%Codim == 0) Then
                Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
+               Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt49,ierr);CHKERRQ(ierr)
+               Call MEF90FlowUniformCellField(permFieldSec,cellID,uniformCoeff,coeffVal,ierr);CHKERRQ(ierr)
+               If (gOpt49%batchedAssembly .AND. uniformCoeff .AND. (size(cellID) > 1)) Then
+                  !!! Gate 4.9: ONE element array from setIS, ONE diffusion
+                  !!! call for the whole cell set. DiffusionOperatorSet and
+                  !!! RHSSetCell loop cell=1..size(cellID) and ADD_VALUES in
+                  !!! exactly the same order as the legacy per-cell loop, so
+                  !!! the residual is bit-for-bit identical. Object creations
+                  !!! drop from O(N) to O(1).
+                  Call MEF90Element_Create(FlowCtx%DM,setIS,elem,QuadratureOrder, &
+                       cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
+                  A_cell = coeffVal * MEF90_MATS_IDENTITY
+                  Call MEF90DiffusionOperatorSet(resSec,FlowCtx%DMScal,pSec,setIS, &
+                       A_cell,0.0_Kr,elem,elemType,ierr)
+                  !!! Gate 4.4: negate the source for ALL cells before the
+                  !!! batched RHS call. Each cell is flipped exactly once, so
+                  !!! the residual still is G - F with the physical +f kept in
+                  !!! FlowCtx%source.
+                  Do cell = 1, size(cellID)
+                     Call SectionRealRestrict(sourceSec,cellID(cell),sourceCell,ierr);CHKERRQ(ierr)
+                     sourceCell(1) = -sourceCell(1)
+                     Call SectionRealRestore(sourceSec,cellID(cell),sourceCell,ierr);CHKERRQ(ierr)
+                  End Do
+                  Call MEF90DiffusionRHSSetCell(resSec,FlowCtx%DMScal,sourceSec,setIS, &
+                       elem,elemType,ierr)
+                  Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
+                  Write(IOBuffer49,*) 'Gate 4.9: tag=OperatorCore set',setID(set),' nCells',size(cellID), &
+                       ' nIS 1 nElem 1 mode batched\n'
+                  Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer49,ierr);CHKERRQ(ierr)
+               Else
                Do cell = 1, size(cellID)
                   Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr);CHKERRQ(ierr)
                   !!! CI #65: build a size-1 elem array from the SAME singleIS
@@ -118,7 +193,7 @@ Contains
                   Call MEF90Element_Create(FlowCtx%DM,singleIS,elem,QuadratureOrder, &
                        cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
 
-                  !!! A = permField(cell) (k/μ scalar)
+                  !!! A = permField(cell) (k/mu scalar)
                   Call SectionRealRestrict(permFieldSec,cellID(cell),permCell,ierr);CHKERRQ(ierr)
                   !!! CI #65: an isotropic scalar permeability is R * Identity,
                   !!! i.e. MatS2D(R,R,0). MatS2D_Get_Real (used by the plain
@@ -155,6 +230,7 @@ Contains
                   Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
+               End If
                Call ISRestoreIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
             End If
 
@@ -216,6 +292,10 @@ Contains
       Type(MEF90_MATS)                                   :: A_cell
       Type(SectionReal)                                  :: permFieldSec
       PetscReal,Dimension(:),Pointer                      :: permCell
+      Type(MEF90FlowGlobalOptions_Type),pointer            :: gOpt49
+      Logical                                             :: uniformCoeff
+      PetscReal                                           :: coeffVal
+      Character(len=512)                                  :: IOBuffer49
 
       Call MatZeroEntries(Jac,ierr);CHKERRQ(ierr)
 
@@ -232,10 +312,29 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
             QuadratureOrder = elemType%order * 2
-            !!! CI #65: elem is built from singleIS inside the cell loop below,
-            !!! NOT from the whole setIS (see MEF90FlowOperatorCore).
+            !!! CI #65: elem(k) must come from the SAME cellIS that the
+            !!! Diffusion call receives. Gate 4.9's fast path passes the whole
+            !!! setIS AND creates elem from it, so elem(k) still matches
+            !!! cellID(k); the legacy path keeps the size-1 singleIS.
             If (elemType%Codim == 0) Then
                Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
+               Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt49,ierr);CHKERRQ(ierr)
+               Call MEF90FlowUniformCellField(permFieldSec,cellID,uniformCoeff,coeffVal,ierr);CHKERRQ(ierr)
+               If (gOpt49%batchedAssembly .AND. uniformCoeff .AND. (size(cellID) > 1)) Then
+                  !!! Gate 4.9: ONE element array + ONE bilinear-form call for
+                  !!! the whole cell set. MEF90DiffusionBilinearFormSet loops
+                  !!! cell=1..size(cellID) and ADD_VALUES in exactly the legacy
+                  !!! order, so the matrix is bit-for-bit identical.
+                  Call MEF90Element_Create(FlowCtx%DM,setIS,elem,QuadratureOrder, &
+                       cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
+                  A_cell = coeffVal * MEF90_MATS_IDENTITY
+                  Call MEF90DiffusionBilinearFormSet(Jac,FlowCtx%DMScal,setIS, &
+                       A_cell,0.0_Kr,elem,elemType,ierr)
+                  Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
+                  Write(IOBuffer49,*) 'Gate 4.9: tag=BilinearFormCore set',setID(set),' nCells',size(cellID), &
+                       ' nIS 1 nElem 1 mode batched\n'
+                  Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer49,ierr);CHKERRQ(ierr)
+               Else
                Do cell = 1, size(cellID)
                   Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr);CHKERRQ(ierr)
                   !!! CI #65: build a size-1 elem array from the SAME singleIS
@@ -258,6 +357,7 @@ Contains
                   Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
+               End If
                Call ISRestoreIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
             End If
             Call ISDestroy(setIS,ierr)
@@ -1036,6 +1136,10 @@ Contains
       PetscReal,Dimension(:),Pointer                      :: SCell
       PetscReal                                           :: S_avg
       Type(MEF90_MATS)                                    :: A_zero
+      Type(MEF90FlowGlobalOptions_Type),pointer            :: gOpt49
+      Logical                                             :: uniformCoeff
+      PetscReal                                           :: coeffVal
+      Character(len=512)                                  :: IOBuffer49
 
       Call SectionRealDuplicate(FlowCtx%DMScalSec,FSec,ierr);CHKERRQ(ierr)
       Call SectionRealDuplicate(FlowCtx%DMScalSec,pDotSec,ierr);CHKERRQ(ierr)
@@ -1054,10 +1158,27 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
             QuadratureOrder = elemType%order * 2
-            !!! CI #65: elem is built from singleIS inside the cell loop below,
-            !!! NOT from the whole setIS (see MEF90FlowOperatorCore).
+            !!! CI #65: elem(k) must come from the SAME cellIS that the
+            !!! Diffusion call receives. Gate 4.9's fast path passes the whole
+            !!! setIS AND creates elem from it, so elem(k) still matches
+            !!! cellID(k); the legacy path keeps the size-1 singleIS.
             If (elemType%Codim == 0) Then
                Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
+               Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt49,ierr);CHKERRQ(ierr)
+               Call MEF90FlowUniformCellField(storativitySec,cellID,uniformCoeff,coeffVal,ierr);CHKERRQ(ierr)
+               If (gOpt49%batchedAssembly .AND. uniformCoeff .AND. (size(cellID) > 1)) Then
+                  !!! Gate 4.9: ONE element array + ONE transient-term call for
+                  !!! the whole cell set. AddTransientTermSet loops cell=1..N
+                  !!! and ADD_VALUES in exactly the legacy order.
+                  Call MEF90Element_Create(FlowCtx%DM,setIS,elem,QuadratureOrder, &
+                       cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
+                  Call MEF90DiffusionOperatorAddTransientTermSet(FSec,FlowCtx%DMScal,pDotSec, &
+                       setIS,coeffVal,elem,elemType,ierr)
+                  Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
+                  Write(IOBuffer49,*) 'Gate 4.9: tag=StorageResidual set',setID(set),' nCells',size(cellID), &
+                       ' nIS 1 nElem 1 mode batched\n'
+                  Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer49,ierr);CHKERRQ(ierr)
+               Else
                Do cell = 1, size(cellID)
                   Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr);CHKERRQ(ierr)
                   !!! CI #65: build a size-1 elem array from the SAME singleIS
@@ -1084,6 +1205,7 @@ Contains
                   Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
+               End If
                Call ISRestoreIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
             End If
             Call ISDestroy(setIS,ierr)
@@ -1119,6 +1241,10 @@ Contains
       PetscReal                                           :: lambda_val
       Type(MEF90_MATS)                                    :: A_zero
       Type(SectionReal)                                   :: storativitySec
+      Type(MEF90FlowGlobalOptions_Type),pointer            :: gOpt49
+      Logical                                             :: uniformCoeff
+      PetscReal                                           :: coeffVal
+      Character(len=512)                                  :: IOBuffer49
 
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,storativitySec,ierr);CHKERRQ(ierr)
       Call SectionRealToVec(storativitySec,FlowCtx%cellDMScalScatter,SCATTER_REVERSE,FlowCtx%storativity,ierr);CHKERRQ(ierr)
@@ -1133,11 +1259,31 @@ Contains
             Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
             elemType = MEF90knownElements(cellSetOptions%ElemTypeShortID)
             QuadratureOrder = elemType%order * 2
-            !!! CI #65: elem is built from singleIS inside the cell loop below,
-            !!! NOT from the whole setIS (see MEF90FlowOperatorCore).
+            !!! CI #65: elem(k) must come from the SAME cellIS that the
+            !!! Diffusion call receives. Gate 4.9's fast path passes the whole
+            !!! setIS AND creates elem from it, so elem(k) still matches
+            !!! cellID(k); the legacy path keeps the size-1 singleIS.
             If (elemType%Codim == 0) Then
                A_zero = 0.0_Kr
                Call ISGetIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
+               Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt49,ierr);CHKERRQ(ierr)
+               Call MEF90FlowUniformCellField(storativitySec,cellID,uniformCoeff,coeffVal,ierr);CHKERRQ(ierr)
+               If (gOpt49%batchedAssembly .AND. uniformCoeff .AND. (size(cellID) > 1)) Then
+                  !!! Gate 4.9: ONE element array + TWO bilinear-form calls
+                  !!! (Jac and PreJac) for the whole cell set. Both loop
+                  !!! cell=1..N and ADD_VALUES in exactly the legacy order.
+                  Call MEF90Element_Create(FlowCtx%DM,setIS,elem,QuadratureOrder, &
+                       cellSetOptions%ElemTypeShortID,ierr);CHKERRQ(ierr)
+                  lambda_val = a * coeffVal
+                  Call MEF90DiffusionBilinearFormSet(Jac,FlowCtx%DMScal,setIS, &
+                       A_zero,lambda_val,elem,elemType,ierr)
+                  Call MEF90DiffusionBilinearFormSet(PreJac,FlowCtx%DMScal,setIS, &
+                       A_zero,lambda_val,elem,elemType,ierr)
+                  Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
+                  Write(IOBuffer49,*) 'Gate 4.9: tag=StorageMassMatrix set',setID(set),' nCells',size(cellID), &
+                       ' nIS 1 nElem 1 mode batched\n'
+                  Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer49,ierr);CHKERRQ(ierr)
+               Else
                Do cell = 1, size(cellID)
                   Call MEF90FlowMakeSingleCellIS(FlowCtx%DM,cellID(cell),singleIS,ierr);CHKERRQ(ierr)
                   !!! CI #65: build a size-1 elem array from the SAME singleIS
@@ -1156,7 +1302,7 @@ Contains
                   Else
                      lambda_val = 0.0_Kr
                   End If
-                  !!! K += 0*∇ + λ·BFB   (lambda term only → mass matrix)
+                  !!! K += 0*grad + lambda*BFB   (lambda term only -> mass matrix)
                   Call MEF90DiffusionBilinearFormSet(Jac,FlowCtx%DMScal,singleIS, &
                        A_zero,lambda_val,elem,elemType,ierr)
                   Call MEF90DiffusionBilinearFormSet(PreJac,FlowCtx%DMScal,singleIS, &
@@ -1164,6 +1310,7 @@ Contains
                   Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
                   Call ISDestroy(singleIS,ierr);CHKERRQ(ierr)
                End Do
+               End If
                Call ISRestoreIndicesF90(setIS,cellID,ierr);CHKERRQ(ierr)
             End If
             Call ISDestroy(setIS,ierr)
