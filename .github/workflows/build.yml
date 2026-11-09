@@ -1065,6 +1065,14 @@ jobs:
             /tmp/out_viscosity.gen /tmp/out_advection.gen \
             2>&1 | tee /tmp/gate46_verdict.log
           g46_rc=${PIPESTATUS[0]}
+          # --- Gate 4.10 (hard): stale root-level source mirrors ------------
+          # Pure static / filesystem gate: W1-W8 prove the repo root has no
+          # .F90/.inc mirrors, that the 93 archived files are sha256-verified,
+          # that every mirror has a live twin, and that no build entry point
+          # references the archive or a root-level mirror Makefile.
+          python3 data/check_gate410_legacy.py --gate \
+            2>&1 | tee /tmp/gate410_verdict.log
+          g410_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1146,6 +1154,15 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.6 PASS: mu(T) is a persistent per-cell field, permField=k/mu(T), opt-out unchanged ==="
+          # Gate 4.10 deferred verdict (see the deferred-exit note above).
+          if [ "$g410_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.10 rejected the root mirror cleanup (rc=$g410_rc) ==="
+            echo "    Check /tmp/gate410_verdict.log: W1 root clean, W2/W3 archive"
+            echo "    count + sha256, W4 live twins, W5-W7 build isolation,"
+            echo "    W8 archive documentation."
+            exit 1
+          fi
+          echo "=== Gate 4.10 PASS: no root-level stale mirrors; all build inputs are subdirectory sources ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1292,6 +1309,7 @@ jobs:
             /tmp/gate45_verdict.log
             /tmp/gate48_verdict.log
             /tmp/gate46_verdict.log
+            /tmp/gate410_verdict.log
             /tmp/terzaghi_viscosity.log
             /tmp/terzaghi_stress.log
             /tmp/terzaghi_source.log
