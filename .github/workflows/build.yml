@@ -1151,6 +1151,22 @@ jobs:
             /tmp/out_batched.gen /tmp/out_main.gen \
             2>&1 | tee /tmp/gate49_verdict.log
           g49_rc=${PIPESTATUS[0]}
+          # --- Gate 4.12 (hard): previous-step snapshot is a LIVE diagnostic -
+          # Z1 data, Z2 static (init snapshot + pre-TSSolve sampling + NO
+          # assembly consumer), Z3 log self-consistency, Z4 EXO anchor,
+          # Z5 consolidation shape, Z6 isolation. exit 1 DEFERRED.
+          python3 data/check_gate412_prevstep.py --gate \
+            /tmp/terzaghi.log /tmp/out_main.gen \
+            2>&1 | tee /tmp/gate412_verdict.log
+          g412_rc=${PIPESTATUS[0]}
+          # --- Gate 4.13 (hard): standard-Newton plateau root cause ----------
+          # Q1 production stays ksponly, Q2 unit-diagonal BC vs elastic-scale
+          # interior anchors, Q3/Q4 no Newton fnorm traces, Q5 ksponly and
+          # production pressure envelopes bitwise identical. exit 1 DEFERRED.
+          python3 data/check_gate413_newton.py --gate \
+            /tmp/terzaghi.log /tmp/terzaghi_ksponly_phys.log \
+            2>&1 | tee /tmp/gate413_verdict.log
+          g413_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1263,6 +1279,25 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.9 PASS: four assembly loops batched (O(N)->O(1) object creations), physics bit-identical, production unchanged ==="
+          # Gate 4.12 deferred verdict (see the deferred-exit note above).
+          if [ "$g412_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.12 rejected the previous-step pressure diagnostic (rc=$g412_rc) ==="
+            echo "    Check /tmp/gate412_verdict.log: Z1 51+51 rows, Z2 live"
+            echo "    snapshot with no FlowAssembly consumer, Z3 drop =="
+            echo "    pmax(n)-pmax(n-1), Z4 EXO extrema, Z5 consolidation"
+            echo "    shape, Z6 no fatal signature."
+            exit 1
+          fi
+          echo "=== Gate 4.12 PASS: pressurePreviousStep consumed, step-to-step pressure drop observable, zero feedback into the solve ==="
+          # Gate 4.13 deferred verdict (see the deferred-exit note above).
+          if [ "$g413_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.13 rejected the standard-Newton plateau diagnosis (rc=$g413_rc) ==="
+            echo "    Check /tmp/gate413_verdict.log: Q1 ksponly production,"
+            echo "    Q2 unit-diagonal BC vs elastic-scale interior anchors,"
+            echo "    Q3/Q4 no Newton fnorm traces, Q5 ksponly == production."
+            exit 1
+          fi
+          echo "=== Gate 4.13 PASS: irreducible fnorm plateau traced to BC/interior scale mismatch; ksponly field bitwise identical ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1412,6 +1447,8 @@ jobs:
             /tmp/gate410_verdict.log
             /tmp/gate47_verdict.log
             /tmp/gate49_verdict.log
+            /tmp/gate412_verdict.log
+            /tmp/gate413_verdict.log
             /tmp/terzaghi_viscosity.log
             /tmp/terzaghi_material.log
             /tmp/terzaghi_batched.log

@@ -54,6 +54,11 @@ Program vDef
    !!! undrained bottom pressure -> Terzaghi decay probe (zero local compile,
    !!! VecMin/VecMax already used in m_MEF90_DefMechAssembly.F90:91-92).
    PetscReal                                          :: pressureMin, pressureMax
+   !!! Gate 4.12: previous-step pressure extrema. pressurePreviousStep used to
+   !!! be a DEAD WRITE (VecCopy at the end of each step, never read anywhere).
+   !!! It is now consumed as the reference for the per-step pressure drop,
+   !!! a pure diagnostic with ZERO feedback into the solve.
+   PetscReal                                          :: pressurePrevMin, pressurePrevMax
    !!! Gate 4.2: per-step infinity norm of the cell-centered Darcy velocity
    PetscReal                                          :: darcyVmin, darcyVmax
    !!! Gate 4.5: Darcy dissipation energy / source injection work.
@@ -231,6 +236,11 @@ Program vDef
    Call VecMax(MEF90FlowCtx%pressure,PETSC_NULL_INTEGER,pressureMax,ierr);CHKERRQ(ierr)
    Write(IOBuffer,*) 'CI #67: initial pressure after Dirichlet pmin',pressureMin,' pmax',pressureMax,'\n'
    Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+   !!! Gate 4.12: snapshot the FULLY INITIALISED pressure (after the Dirichlet
+   !!! correction above) into pressurePreviousStep. CreateVectors only does a
+   !!! uniform VecSet, so without this the step-1 drop would contain a bogus
+   !!! -1e5 Pa on the drained face.
+   Call VecCopy(MEF90FlowCtx%pressure,MEF90FlowCtx%pressurePreviousStep,ierr);CHKERRQ(ierr)
 
    Call VecDuplicate(MEF90DefMechCtx%displacement,displacementAltMinOld,ierr);CHKERRQ(ierr)
    Call VecDuplicate(MEF90DefMechCtx%displacement,residualDisp,ierr);CHKERRQ(ierr)
@@ -541,6 +551,11 @@ Program vDef
             !!! between CI #65 (ratio 0.1244) and the FE/BE value 0.0934
             !!! (continuum Terzaghi 0.0871). Advance exactly ONE fixed-dt
             !!! backward-Euler step per outer step instead.
+            !!! Gate 4.12: pressurePreviousStep still holds the PREVIOUS
+            !!! outer-step field (VecCopy at the end of each step). Sample its
+            !!! envelope BEFORE TSSolve overwrites pressure.
+            Call VecMin(MEF90FlowCtx%pressurePreviousStep,PETSC_NULL_INTEGER,pressurePrevMin,ierr);CHKERRQ(ierr)
+            Call VecMax(MEF90FlowCtx%pressurePreviousStep,PETSC_NULL_INTEGER,pressurePrevMax,ierr);CHKERRQ(ierr)
             tFlowEnd = t + dtFlow0
             Call TSSetDuration(tsPressure,10000,tFlowEnd,ierr);CHKERRQ(ierr)
             Write(IOBuffer,*) 'Gate 3.1: step',step,' pre-TSSolve TS time',t,' target',tFlowEnd,'\n'
@@ -574,6 +589,11 @@ Program vDef
             Call VecMin(MEF90FlowCtx%pressure,PETSC_NULL_INTEGER,pressureMin,ierr);CHKERRQ(ierr)
             Call VecMax(MEF90FlowCtx%pressure,PETSC_NULL_INTEGER,pressureMax,ierr);CHKERRQ(ierr)
             Write(IOBuffer,*) 'Gate 3.2: step',step,' pmin',pressureMin,' pmax',pressureMax,'\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+            !!! Gate 4.12: observable step-to-step pressure change, derived
+            !!! from the previous-step snapshot. Pure post-processing.
+            Write(IOBuffer,*) 'Gate 4.12: step',step,' t',time(step), &
+                 ' dpmax',pressureMax-pressurePrevMax,' dpmin',pressureMin-pressurePrevMin,'\n'
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             !!! Gate 4.5: Darcy dissipation + injection work for THIS step.
             !!! Pure post-processing (no feedback into the solve); collective
