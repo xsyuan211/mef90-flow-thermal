@@ -30,7 +30,8 @@ Criteria
       be gitignored local diagnostics
   W2  legacy/root-mirror/ holds exactly EXPECTED_ARCHIVE files and the
       MANIFEST.sha256 entry set matches it exactly
-  W3  every manifest sha256 matches the archived file on disk
+  W3  every manifest sha256 matches the archived file's git index blob
+      (immune to CI's dos2unix / autocrlf working-tree rewrites)
   W4  all 66 same-named Fortran mirrors have a live counterpart in the
       active source subdirectories
   W5  the five live Makefiles reference only subdirectory .F90 sources
@@ -71,14 +72,24 @@ def read_text(path):
         return ''
 
 
-def sha256(path):
-    """Hash CRLF-normalised bytes so the verdict is stable on Windows
-    (core.autocrlf=true) AND after CI's dos2unix pass over the archive.
-    The manifest is generated with exactly the same normalisation."""
+def archive_sha256(root, name):
+    """Hash the CRLF-normalised GIT INDEX blob, not the working tree.
+
+    CI #108 taught us why: the Fix-CRLF step runs dos2unix over every .F90
+    in the repo, which strips the UTF-8 BOM from vDefDefault_remote.F90
+    (the only BOM file in the archive) and therefore changes one archived
+    file's bytes without touching the committed content. The archive is a
+    historical snapshot, so what must be verified is the content COMMITTED
+    to git. That is immune to autocrlf and to any working-tree cleanup.
+    MANIFEST.sha256 is generated from the very same blob bytes.
+    """
+    rel = 'legacy/root-mirror/' + name
     try:
-        with open(path, 'rb') as fh:
-            data = fh.read().replace(b'\r\n', b'\n')
-        return hashlib.sha256(data).hexdigest()
+        p = subprocess.run(['git', 'show', ':' + rel], cwd=root,
+                           capture_output=True)
+        if p.returncode != 0:
+            return ''
+        return hashlib.sha256(p.stdout.replace(b'\r\n', b'\n')).hexdigest()
     except Exception:                                  # noqa: BLE001
         return ''
 
@@ -137,9 +148,10 @@ def collect(root):
     s['manifest_entries'] = entries
     s['manifest_extra'] = sorted(set(entries) - set(files))
     s['manifest_missing'] = sorted(set(files) - set(entries))
-    s['manifest_hash_ok'] = bool(files) and all(
-        name in entries and entries[name] == sha256(os.path.join(ld, name))
-        for name in files)
+    s['manifest_bad'] = [name for name in files
+                         if name not in entries
+                         or entries[name] != archive_sha256(root, name)]
+    s['manifest_hash_ok'] = bool(files) and not s['manifest_bad']
 
     live = {}
     for p in tracked:
@@ -221,8 +233,10 @@ def evaluate(s):
                     len(s['manifest_entries']), s['manifest_extra'] or 'none',
                     s['manifest_missing'] or 'none'))
     chk['W3'] = (s['manifest_hash_ok'] and not s['manifest_extra'],
-                 'all %d archived sha256 match MANIFEST.sha256: %s'
-                 % (len(s['legacy_files']), s['manifest_hash_ok']))
+                 'all %d archived git-blob sha256 match MANIFEST.sha256: %s; '
+                 'mismatched=%s'
+                 % (len(s['legacy_files']), s['manifest_hash_ok'],
+                    (s.get('manifest_bad') or 'none')[:5]))
     chk['W4'] = (len(s['mirrors']) == EXPECTED_MIRRORS
                  and not s['missing_live'],
                  'same-named mirrors=%d (want %d), without live twin=%s'

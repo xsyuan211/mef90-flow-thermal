@@ -33,9 +33,12 @@
 
 归档后根目录 tracked 的 `.F90` / `.inc` 为 **0**，只剩真正参与构建的
 `Makefile` 与 `Makefile.include`。`MANIFEST.sha256` 记录全部 93 个文件的
-sha256，由 W3 判据逐项校验。哈希基于 **CRLF→LF 规范化后的字节**，因此在
-`core.autocrlf=true` 的 Windows 工作区与 CI 的 `dos2unix` 之后结果一致
-（不要用 `sha256sum -c` 直接校验，它按原始字节计算）。
+sha256，由 W3 判据逐项校验。哈希基于 **git index 中的 blob 内容**（再做
+CRLF→LF 规范化），即校验「提交进版本库的内容」而非工作区字节。这一点很
+关键：CI 的 `Fix CRLF` 步骤会对全仓库 `.F90` 跑 `dos2unix`，它会移除
+`vDefDefault_remote.F90` 的 UTF-8 BOM，从而改变该文件的工作区字节，但
+版本库内容不变（CI #108 的 W3 误判由此而来）。因此不要用
+`sha256sum -c` 直接校验工作区文件。
 
 ## 已分叉文件（最需要警惕，切勿当活源码使用）
 
