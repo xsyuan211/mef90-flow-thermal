@@ -89,11 +89,11 @@
   - **实际实现**：`m_Flow/m_MEF90_Flow.F90` 重写 `MEF90FlowCreateTS`（两个独立 Mat + MAT_SPD/对称 + TSBEULER/TS_LINEAR + TSSetSolution/InitialTimeStep/ExactFinalTime/FromOptions + TSGetSNES→KSPCG）；`vDef/vDef.F90` 5 处接线（声明、初始化分支、时间步层 TSSolve+收敛检查、AltMin 内 steady 分支、收尾 TSDestroy）；`terzaghi1D.yaml` 回退 TEMP `source` 为 0、枚举值改精确 `Transient`；新增自检日志 `Gate 3.1: transient Darcy TS created`。详见文末「3.1 静态实现记录」。
   - 验收（**未执行**）：`transient` 与 `steady` 输出明显不同；p 随时间衰减。
 
-- [ ] **3.2 用解析 Terzaghi 校验符号与量级**
+- [x] **3.2 用解析 Terzaghi 校验符号与量级**（由 Gate 3.3 P1–P8 硬判据验收；结论：衰减方向与量级正确，无需改算子符号）
   - 位置：`m_Flow/m_MEF90_FlowAssembly.F90:101`（注释 `G(p)=div(A∇p)`，稳态算子符号）、`MEF90DiffusionOperatorSet` 符号；IFunction `F=K(p)+S·ṗ`、IJacobian `J=K+a·S·M`（BE 下 a=1/dt，形式自洽）
   - 问题：方程应为 `-div(k/μ∇p)=S ṗ + f`，但算子注释算的是 `+div(A∇p)`，与方程差一个符号；源项 `:105-107` 也用 `ADD_VALUES`（见 4.4）。
   - 改法：用解析解 `p(z,t)=(4σ₀/π)Σ(-1)ⁿ/(2n+1)·cos((2n+1)πz/2H)·exp(-(2n+1)²π²c_v t/4H²)`（c_v=k/(μS)，t=1s 时 T≈1.09）在单步与全程比对；若衰减方向反了，在 `MEF90FlowOperatorCore` 统一把 A 取负号，并同步源项符号。
-  - 验收：数值衰减方向与量级与解析解一致。
+  - 验收：数值衰减方向与量级与解析解一致。**已验收**：Gate 3.3 P6「L2 err vs BE series」CI #99 实测 `0.03206 ≤ 0.05`，P1–P6 / P8 全 PASS；衰减方向正确，故 `MEF90FlowOperatorCore` 的 A 未取负号、源项符号保持原样（4.4 仍单列为工程项）。
 
 ---
 
@@ -117,16 +117,16 @@
   - **CI #97 诊断更正（2026-11-09，推翻原 E2 的「位等价」前提）**：原判据称「Terzaghi 两端 Dirichlet ⇒ 自然边界项为零 ⇒ 两形式位移场逐位等价（relL2≤1e-3）」，这是**错的**。deck 只钉住 `x=±5` 两个端面（`n=±e_x`）；侧向 `y=±0.5` 是自由 Neumann 面，`v_y` 不受约束且 `p≠0`（step1 `1e5 Pa`、step25 `3.58e4 Pa`），故 `∮αp·v·n ≠ 0`。两形式是**不同边值问题**：4.1a 为 `σ'·n=0`，4.1b 的 `σ_total·n=0` 等价于 `σ'·n=+αp·n`，产生向外侧向膨胀。装配代码**没有 bug**：TRI3/P1 下 `GradS_BF` 为单元常数、`pCell` 为 Gauss 体均，`∫p·divφᵢ = pCell·Vol·tr(GradS_BFᵢ)` 精确成立，`ComputeCellPressure`/`ComputePressureGradient` 权重一致。
   - E2 实测与 `0.69` 的解释：pressure 场全 51 步完全一致（0 Pa 差）；`u_y^S ≈ k·(y·p)`、`k≈7.5e-10 1/Pa` 全步恒定、`cos(u_y^S, y·p)≈+0.97~0.98`、`|u_y^S|≈4.5·|u_y^M|` 且反相关；侧向膨胀经 Poisson 耦合带来轴向收缩，使 `u_x^S≈0.69·u_x^M` 且 `cos≈1.000`、`Δu_x` 与 `p` 相关 `-0.77`。**0.69 是边界牵引的后果，不是标量装配系数错误**。用全局 `s*=1.446` 缩放后 relL2 仍 `0.3549`，故单标量假设不成立。
   - **E2 新判据（8 项全硬）**：① 压力驱动一致 `max|pS−pM|/max|pM|≤1e-6`；② 网格坐标一致；③ `cos(u_x^S,u_x^M)≥0.99`；④ `0.40≤‖u_x^S‖/‖u_x^M‖≤0.95`（上界 `<1` 专门捕捉「4.1b 悄悄退化回 4.1a」）；⑤ `peak|u_x|∈[5e-5,2e-4]`；⑥ 额外 `u_y` 为真实场 `‖Δu_y‖≥0.5‖u_y^M‖`；⑦ `cos(Δu_y, y·p)≥0.90`；⑧ 柔度 `k` 落在平面应变解析包络 `[0.4·(1+ν)(1−2ν)/(E(1−ν)), 2.0·(1−ν²)/E]`（`α=1, E=1e9, ν=0.25`）。旧 relL2 保留但仅作信息性输出。
-  - 状态：**已实现并验收（CI #98）**；`terzaghi1D_stress.yaml` + `check_gate41b.py` 落地，Jacobian 不变、默认 superposition 零影响。P0 的两行 `INTENT(INOUT)` 修复在 `f20fa18`（CI #97 编译通过、五组回归全绿，仅旧 E2 FAIL）；判据修正在 `b2f94ea`，**CI #98 `success`**：`GATE41B_RESULT PASS`（E1/E2/E3/E4 全过，E2 8/8）、Gate 3.3 (P1–P6,P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、MAIN VERDICT 全 PASS。
+  - 状态：**已实现并验收（CI #98）**；`terzaghi1D_stress.yaml` + `check_gate41b.py` 落地，Jacobian 不变、默认 superposition 零影响。P0 的两行 `INTENT(INOUT)` 修复在 `f20fa18`（CI #97 编译通过、五组回归全绿，仅旧 E2 FAIL）；判据修正在 `b2f94ea`，**CI #98 `success`**：`GATE41B_RESULT PASS`（E1/E2/E3/E4 全过，E2 8/8）、Gate 3.3 (P1–P6,P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、MAIN VERDICT 全 PASS。**CI #99 `success`**（`74b6c87`）：Biot 单位张量换成 `MEF90_MATS_IDENTITY` 后 2D/3D 双编译通过，六组判据仍全绿且 E2 的 7 个物理指标与 #98 逐位一致。
   - **真实隐患（非 E2 成因）已修**：`m_DefMech/m_MEF90_DefMechAssembly.F90:328` 原把 `matpropSet%LinearThermalExpansion` 当单位张量用；两个 run 的 bag dump 恰好都是 `1 1 0`，但 4.2 诊断 deck 设 `0,0,0`、`test9.yaml` 设 `1.0,0.0,0.0`，开 stress 模式会静默归零 / 变成各向异性。现改为 `MEF90_MATS_IDENTITY`（`MEF90/mef90.inc`：2D→`MEF90MatS2DIdentity` = `MatS2D(1,1,0)`、3D→`MEF90MatS3DIdentity` = `MatS3D(1,1,1,0,0,0)`），是模块 `Parameter` 常量，deck 无法覆盖。可见性由 `Use m_MEF90 → Use m_MEF90_LinAlg`（两者均无模块级 `Private`）保证；`PetscReal * MEF90_MATS` 重载已有 CI 编译先例（`m_DefMech/m_MEF90_DefMechSplitDeviatoric.F90:91`、`m_Flow/m_MEF90_FlowAssembly.F90:115`）。`m_DefMech/Makefile` 同时编 `...Assembly2D.o` / `...Assembly3D.o`，故两个宏分支都会被编译。当前 deck 下新旧值数值完全相同 ⇒ 物理场零变化，只去掉隐式耦合。
-  - **可选的防回归实验（本轮未做，避免扩大改动面）**：把 `terzaghi1D_stress.yaml` 与 `terzaghi1D.yaml` 的 `cs0001` 都加 `LinearThermalExpansion: 0,0,0`（本 deck `heatxfer: null`，LTE 只用于温度禁用时不执行的热应变项，故物理量不变），两 deck 仍只差 `biot_effective_stress`。修复前这会让 stress 位移场归零 → E2 必 FAIL；修复后 E2 仍应 PASS。这样可在**不新增 CI 运行**的前提下把该修复变成可证伪的硬判据。
+  - **防回归实验已落地（deck 层，零新增 CI 运行）**：`terzaghi1D.yaml` 与 `terzaghi1D_stress.yaml` 的 `cs0001` 都写入 `LinearThermalExpansion: 0,0,0`（键名/格式沿用 CI #90 的 `terzaghi1D_advection.yaml`）。本 deck `heatxfer: null`，LTE 只用于温度禁用时不执行的热应变项，故物理量不变；`diff` 确认两 deck **仍只差一行 `biot_effective_stress: true`**。修复前 stress 位移会归零 → E2 的 `peak-ux-in-band` / `ux-shape-preserved` 必 FAIL；修复后 E2 仍 PASS。Gate 4.3 的 C4 只比对 `flow:` 段与 Flow Global bag，这个 DefMech 材料键不参与比对，故 C1–C7 不受影响。**验收方式**：CI 日志的 bag dump 必须显示 `LinearThermalExpansion = 0 0 0`（证明 deck 真的生效），同时 E2 的 7 个物理指标与 #98/#99 逐位一致。
   - **网格限制**：Exodus 只有 3 个 element block（`eb1` TRI3 600 单元、`eb2/eb3` 各 5 个 BAR2 仅 `x=±5` 两端），**没有侧向 facet 标签**。若想恢复「严格位等价」判据，需改网格或写通用边界循环补 `−αp·n` 牵引，成本高，暂不采用。
 
 - [x] **4.2 平流：把 `cellDarcyVelocity` 喂入 HeatXfer**（CI #87 落地，见文末专节）
   - 位置：`m_HeatXfer/m_MEF90_HeatXferAssembly.F90` 的 4 处平流装配（稳态残差/Jacobian、瞬态 IFunction/IJacobian）；`m_Flow/m_MEF90_Flow{F,Ctx}.F90` 的持久 `cellDarcyVelocitySec`；`vDef/vDef.F90` 的 Ctx 挂接与 `Gate 4.2:` 诊断。
   - 问题：`enableFlowAdvection`/`fluidDensity` 原是占位；`cellDarcyVelocity` 全库无消费者。且 `MEF90Diffusion*AdvectionSet` 只接受**一个常向量**（整个 cell IS 共用），直接替换会丢掉逐单元空间结构。
   - 改法：新增 `MEF90HeatXferFlowAdvectionOperatorSet` / `...BilinearFormSet` 两个**私有逐单元**装配子程序（镜像 `MEF90/m_MEF90_DiffusionImplementation.F90` 的两个循环，但每个 cell 从 `SectionReal` 读自己的 `v_darcy`），`advectionVector = -ρc_p·v_darcy(cell)` 保持原常数路径的符号/标度；`enable_advection=true` 时走场，`false` 时原常数路径完全不变。`MEF90` 核心库与 2D/3D 泛型接口**未改动**。
-  - 验收：ADVECTION / NOADVECTION 两个诊断 deck 仅差 `flow.enable_advection`，硬判据 D1–D7 要求温度场出现**非均匀、随时间增长**的差异；生产 deck 保持 `heatxfer: null`，Gate 3.3 完全隔离。
+  - 验收：ADVECTION / NOADVECTION 两个诊断 deck 仅差 `flow.enable_advection`，硬判据 **D1–D8**（CI #99 实测全 PASS）要求温度场出现**非均匀、随时间增长**的差异，并校验力学场不爆；生产 deck 保持 `heatxfer: null`，Gate 3.3 完全隔离。
 
 - [x] **4.3 边界压力时间缩放语义（CI #92 覆盖性更正：原表述不成立，降级为可见性/判据工作；CI #94 已收口）**
   - **原清单行号过时**：实际位置是 `m_Flow/m_MEF90_FlowAssembly.F90:701-735`
@@ -222,16 +222,20 @@
 
 ---
 
-## 进度跟踪（更新 2026-11-07 09:55，CI #55 定位到 cell-DM globaldof 路径）
+## 进度跟踪（按 CI #99 实测一次性重整，2026-11-09）
 
-**代码进度**
-- 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
-- 闸门 2（可见）：4 / 4
-- 闸门 3（瞬态+符号）：1 / 2（3.1 静态实现 + 二轮正确性修正；**#47 首次完整编译通过，但仍未运行到物理求解**；3.2 必须运行）
-- 闸门 4（物理+工程）：**4.1a 已收口（CI #86 全绿）；4.2 已落地（CI #87 全绿）；4.3 已收口；4.1b 有效应力互斥模式已实现并验收（CI #98 全绿）**；其余 9 项未动（4.11 的「CI 可信化」前置已做）。（注：本进度段为早期快照，其它闸门的实际落地状态见各专节。）
-- 合计：8 项功能已落地，12 项待做
+**代码进度（以清单条目计）**
+- 闸门 1（不崩+边界）：**4 / 4**。1.1 / 1.2 / 1.3 已落地；1.4 经核实是 `use-rename` 分离设计、无需改动。CI #47 首次完整编译，此后由 Gate 3.3 / 4.x 持续回归。
+- 闸门 2（可见）：**4 / 4**。2.1–2.4 完成；2.3 的 TEMP `source: 1.0e-6` 已在闸门 3 前改回 `0.0`，「务必改回」注意项解除。
+- 闸门 3（瞬态+符号）：**2 / 2**。3.1 TS 瞬态主循环已实际运行（`Gate 3.1` / `Gate 3.2` 诊断行）；3.2 由 **Gate 3.3 P1–P8** 硬判据验收 —— P6「L2 err vs BE series」CI #99 实测 `0.03206 ≤ 0.05`，衰减方向与量级正确，**无需改算子符号**。
+- 闸门 4（物理+工程）：**4 项收口 / 9 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4–4.10 等工程项未动。
+- 合计：**14 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 4 项），**9 项待做**：4.4 源项符号、4.5 能量诊断、4.6 μ(T) 别名加固、4.7 时变材料、4.8 守恒性、4.9 逐单元 IS 性能、4.10 根目录旧副本清理、`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代。
+- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
+- **最近三次 CI**：#99 `success`（`74b6c87`，LTE→`MEF90_MATS_IDENTITY`，六组判据全绿且物理数值与 #98 逐位一致）；#98 `success`（`b2f94ea`，E2 改物理签名判据）；#97 `failure`（`f20fa18`，编译已过、五组回归全绿，仅旧 E2 的「位等价」前提错误）。
 
-**提交 / CI 状态**
+**历史提交 / CI 记录（2026-11-07 09:55 快照，保留备查）**
+
+> 以下 #46–#5x 的逐轮排查日志是当时的现场记录，**不代表当前状态**；当前状态以上面的进度段与文末各专节为准。
 - 已提交 **`bd3c1f8`**（8 文件 +523 / −49）、**`1972820`**（构建修复）、**`c4732e0`**（库路径）、**`981433b`**（库 ABI），均推送到 `origin/main`（基线 `2e49c2e`）。`.trae/`、`.workbuddy/` 属工具数据，未入库。
 - CI run **#46 = failure**（构建层）：vDef 未链接。真实根因 `vDef/m_vDefDefault.F90:154:59 Error: Invalid character in name`；#45 日志有逐字相同错误 → vDef 自 Flow 默认值块加入起从未构建成功，历史 success 全是假绿。
 - CI run **#47 = failure**（运行层，12:38 UTC）：**所有 15 个构建步骤 success**，`vDef.log` / `flow.log` / `MEF90.log` / `m_DefMech.log` / `m_HeatXfer.log` 均无 error，vDef、vDefBT、vDefHF 等全部成功链接 → **闸门 1/2/3.1 的 Fortran 代码首次完整编译通过**（`flow.log` 仅一条 `PetscObjectSetName` type-mismatch warning）。唯一失败是 `Run Terzaghi`：`libmetis.so: cannot open shared object file`，mpirun exit 127。

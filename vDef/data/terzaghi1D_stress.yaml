@@ -97,6 +97,14 @@ cs0001:
     fracturetoughness: 27000.0
     residualstiffness: 1.0e-03
     internalLength: 0.2
+    # Gate 4.1b regression guard: the effective-stress Biot term must use the
+    # module-level identity tensor, NOT LinearThermalExpansion. Zeroing this
+    # material tensor is safe here (heatxfer: null -> the thermal-strain branch
+    # never runs) and makes the fix falsifiable: with the old code the stress
+    # run's displacement collapses to ~0 and Gate 4.1b E2 FAILs; with
+    # MEF90_MATS_IDENTITY the physics is unchanged and E2 still PASSes.
+    # Same key/format as terzaghi1D_advection.yaml (CI #90 precedent).
+    LinearThermalExpansion: 0,0,0
 
     # ------ DefMech options ------
     damage:
