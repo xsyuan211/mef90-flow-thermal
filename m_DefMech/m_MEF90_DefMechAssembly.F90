@@ -314,13 +314,18 @@ Contains
                   !!! term -int(alpha*p*div v) dOmega in the residual; the Jacobian
                   !!! is unchanged because pore pressure p is decoupled from u.
                   !!! MEF90_MATS exposes only a tensor-tensor "-" operator, so the
-                  !!! scalar must first be multiplied by the identity tensor. We use
-                  !!! matpropSet%LinearThermalExpansion, which is initialised to the
-                  !!! dimensional identity (MatS2D/3DIdentity) and is in scope here
-                  !!! (see the thermal-strain term above, line ~295). This avoids any
-                  !!! dependency on a module-level identity constant's visibility.
+                  !!! scalar must first be multiplied by the identity tensor. Use
+                  !!! MEF90_MATS_IDENTITY (mef90.inc: 2D -> MEF90MatS2DIdentity,
+                  !!! 3D -> MEF90MatS3DIdentity), NOT matpropSet%LinearThermalExpansion.
+                  !!! The latter only HAPPENS to default to the identity and is a
+                  !!! user-settable MATERIAL tensor: decks that set it to 0,0,0 or
+                  !!! 1,0,0 would silently zero out / make anisotropic the Biot
+                  !!! pore-pressure term. The macro is public via Use m_MEF90 ->
+                  !!! Use m_MEF90_LinAlg, and the same PetscReal*MEF90_MATS overload
+                  !!! is already compiled in m_MEF90_DefMechSplitDeviatoric.F90:91
+                  !!! and m_Flow/m_MEF90_FlowAssembly.F90:115.
                   If (MEF90DefMechCtx%applyEffectiveStress) Then
-                     stressGauss = stressGauss - (MEF90DefMechCtx%biotCoefficient * porePressureCell) * matpropSet%LinearThermalExpansion
+                     stressGauss = stressGauss - (MEF90DefMechCtx%biotCoefficient * porePressureCell) * MEF90_MATS_IDENTITY
                   End If
                   Do iDoF2 = 1,numDofDisplacement
                      residualLoc(iDoF2) = residualLoc(iDoF2) + elemDisplacement(cell)%Gauss_C(iGauss) * (stressGauss .DotP. elemDisplacement(cell)%GradS_BF(iDoF2,iGauss))

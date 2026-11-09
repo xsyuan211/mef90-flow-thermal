@@ -107,7 +107,7 @@
   - 本轮落地：`VecCopy+VecAXPy` → 单次 `VecWAXPY(force,-α,∇p,baseForce)`（清单要求的写法，数学等价、无中间态）；每步输出一条 `Gate 4.1:` 诊断；新增 `terzaghi1D_nobiot.yaml`（仅 `biot_coeff 1.0→0.0`）、`check_gate41_biot.py`、CI 硬闸门 **B1–B7**。
   - 验收（CI #86 起）：B3 判 **BODYFORCE** 日志「`|baseForce|` 线性增长 0→9.81、R²≥0.98」，B4 也判 **BODYFORCE**「`‖force−(base−α∇p)‖∞≈0` 且 `max|base|≥5`」（生产 `base≡0` 时该误差对叠加/覆盖无区分力）；B6 用 NOBIOT 对照网格判「耦合真实生效」；Gate 3.3 P1–P8 保持回归。
 
-- [x] **4.1b 有效应力项：互斥总应力模式（biot_effective_stress）**（已实现；CI #97 诊断更正 E2 物理前提，判据改为物理签名，待新 CI 验收）
+- [x] **4.1b 有效应力项：互斥总应力模式（biot_effective_stress）**（已实现；CI #98 验收通过，六组闸门全绿）
   - **原清单表述有误**：「力学侧缺 `σ' = σ + α·p·I`，当前只做了体力近似」并非缺项。分部积分
     `∫(−α∇p)·v dΩ = ∫αp·div(v) dΩ − ∫_Γ αp·v·n dΓ`，而总应力形式
     `∫(C:ε − αpI):ε(v) dΩ = ∫C:ε:ε(v) dΩ − ∫αp·div(v) dΩ`。
@@ -117,8 +117,9 @@
   - **CI #97 诊断更正（2026-11-09，推翻原 E2 的「位等价」前提）**：原判据称「Terzaghi 两端 Dirichlet ⇒ 自然边界项为零 ⇒ 两形式位移场逐位等价（relL2≤1e-3）」，这是**错的**。deck 只钉住 `x=±5` 两个端面（`n=±e_x`）；侧向 `y=±0.5` 是自由 Neumann 面，`v_y` 不受约束且 `p≠0`（step1 `1e5 Pa`、step25 `3.58e4 Pa`），故 `∮αp·v·n ≠ 0`。两形式是**不同边值问题**：4.1a 为 `σ'·n=0`，4.1b 的 `σ_total·n=0` 等价于 `σ'·n=+αp·n`，产生向外侧向膨胀。装配代码**没有 bug**：TRI3/P1 下 `GradS_BF` 为单元常数、`pCell` 为 Gauss 体均，`∫p·divφᵢ = pCell·Vol·tr(GradS_BFᵢ)` 精确成立，`ComputeCellPressure`/`ComputePressureGradient` 权重一致。
   - E2 实测与 `0.69` 的解释：pressure 场全 51 步完全一致（0 Pa 差）；`u_y^S ≈ k·(y·p)`、`k≈7.5e-10 1/Pa` 全步恒定、`cos(u_y^S, y·p)≈+0.97~0.98`、`|u_y^S|≈4.5·|u_y^M|` 且反相关；侧向膨胀经 Poisson 耦合带来轴向收缩，使 `u_x^S≈0.69·u_x^M` 且 `cos≈1.000`、`Δu_x` 与 `p` 相关 `-0.77`。**0.69 是边界牵引的后果，不是标量装配系数错误**。用全局 `s*=1.446` 缩放后 relL2 仍 `0.3549`，故单标量假设不成立。
   - **E2 新判据（8 项全硬）**：① 压力驱动一致 `max|pS−pM|/max|pM|≤1e-6`；② 网格坐标一致；③ `cos(u_x^S,u_x^M)≥0.99`；④ `0.40≤‖u_x^S‖/‖u_x^M‖≤0.95`（上界 `<1` 专门捕捉「4.1b 悄悄退化回 4.1a」）；⑤ `peak|u_x|∈[5e-5,2e-4]`；⑥ 额外 `u_y` 为真实场 `‖Δu_y‖≥0.5‖u_y^M‖`；⑦ `cos(Δu_y, y·p)≥0.90`；⑧ 柔度 `k` 落在平面应变解析包络 `[0.4·(1+ν)(1−2ν)/(E(1−ν)), 2.0·(1−ν²)/E]`（`α=1, E=1e9, ν=0.25`）。旧 relL2 保留但仅作信息性输出。
-  - 状态：**已实现**；`terzaghi1D_stress.yaml` + `check_gate41b.py` 落地，Jacobian 不变、默认 superposition 零影响。P0 的两行 `INTENT(INOUT)` 修复已在 `f20fa18` 推送（CI #97 编译通过、五组回归全绿，仅旧 E2 FAIL）。本轮改判据后待新 CI 验收。
-  - **仍在册的真实隐患（非 E2 成因，未修）**：`m_MEF90_DefMechAssembly.F90:323` 复用 `matpropSet%LinearThermalExpansion` 当单位张量；本次两个 run 的 bag dump 都是 `1 1 0`（恰好正确），但 4.2 诊断 deck 设 `0,0,0`、`test9.yaml` 设 `1.0,0.0,0.0`，一旦开 stress 模式会静默归零/各向异性，应换成显式 `MEF90MatS2DIdentity`。
+  - 状态：**已实现并验收（CI #98）**；`terzaghi1D_stress.yaml` + `check_gate41b.py` 落地，Jacobian 不变、默认 superposition 零影响。P0 的两行 `INTENT(INOUT)` 修复在 `f20fa18`（CI #97 编译通过、五组回归全绿，仅旧 E2 FAIL）；判据修正在 `b2f94ea`，**CI #98 `success`**：`GATE41B_RESULT PASS`（E1/E2/E3/E4 全过，E2 8/8）、Gate 3.3 (P1–P6,P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、MAIN VERDICT 全 PASS。
+  - **真实隐患（非 E2 成因）已修**：`m_DefMech/m_MEF90_DefMechAssembly.F90:328` 原把 `matpropSet%LinearThermalExpansion` 当单位张量用；两个 run 的 bag dump 恰好都是 `1 1 0`，但 4.2 诊断 deck 设 `0,0,0`、`test9.yaml` 设 `1.0,0.0,0.0`，开 stress 模式会静默归零 / 变成各向异性。现改为 `MEF90_MATS_IDENTITY`（`MEF90/mef90.inc`：2D→`MEF90MatS2DIdentity` = `MatS2D(1,1,0)`、3D→`MEF90MatS3DIdentity` = `MatS3D(1,1,1,0,0,0)`），是模块 `Parameter` 常量，deck 无法覆盖。可见性由 `Use m_MEF90 → Use m_MEF90_LinAlg`（两者均无模块级 `Private`）保证；`PetscReal * MEF90_MATS` 重载已有 CI 编译先例（`m_DefMech/m_MEF90_DefMechSplitDeviatoric.F90:91`、`m_Flow/m_MEF90_FlowAssembly.F90:115`）。`m_DefMech/Makefile` 同时编 `...Assembly2D.o` / `...Assembly3D.o`，故两个宏分支都会被编译。当前 deck 下新旧值数值完全相同 ⇒ 物理场零变化，只去掉隐式耦合。
+  - **可选的防回归实验（本轮未做，避免扩大改动面）**：把 `terzaghi1D_stress.yaml` 与 `terzaghi1D.yaml` 的 `cs0001` 都加 `LinearThermalExpansion: 0,0,0`（本 deck `heatxfer: null`，LTE 只用于温度禁用时不执行的热应变项，故物理量不变），两 deck 仍只差 `biot_effective_stress`。修复前这会让 stress 位移场归零 → E2 必 FAIL；修复后 E2 仍应 PASS。这样可在**不新增 CI 运行**的前提下把该修复变成可证伪的硬判据。
   - **网格限制**：Exodus 只有 3 个 element block（`eb1` TRI3 600 单元、`eb2/eb3` 各 5 个 BAR2 仅 `x=±5` 两端），**没有侧向 facet 标签**。若想恢复「严格位等价」判据，需改网格或写通用边界循环补 `−αp·n` 牵引，成本高，暂不采用。
 
 - [x] **4.2 平流：把 `cellDarcyVelocity` 喂入 HeatXfer**（CI #87 落地，见文末专节）
@@ -227,7 +228,7 @@
 - 闸门 1（不崩+边界）：3 项改动完成 + C 项（单矩阵自拷贝 / 回调错配）已补，1.4 免改 — 3 / 4
 - 闸门 2（可见）：4 / 4
 - 闸门 3（瞬态+符号）：1 / 2（3.1 静态实现 + 二轮正确性修正；**#47 首次完整编译通过，但仍未运行到物理求解**；3.2 必须运行）
-- 闸门 4（物理+工程）：**4.1a 已收口（CI #86 全绿）；4.2 已落地（CI #87 全绿）；4.1b 有效应力互斥模式已实现（待 CI #95 验收）**；其余 9 项未动（4.11 的「CI 可信化」前置已做）。
+- 闸门 4（物理+工程）：**4.1a 已收口（CI #86 全绿）；4.2 已落地（CI #87 全绿）；4.3 已收口；4.1b 有效应力互斥模式已实现并验收（CI #98 全绿）**；其余 9 项未动（4.11 的「CI 可信化」前置已做）。（注：本进度段为早期快照，其它闸门的实际落地状态见各专节。）
 - 合计：8 项功能已落地，12 项待做
 
 **提交 / CI 状态**
