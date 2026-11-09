@@ -37,8 +37,11 @@ CHECKS (all hard)
   Y2  static anti-regression: helper, 4 fast paths, bag order, default FALSE
   Y3  deck isolation: batched deck differs from control by exactly one line
   Y4  bag visibility: batched TRUE / production FALSE
-  Y5  deterministic complexity count: all 4 tags batched, nIS=nElem=1,
-      nCells>1, production log has NO `Gate 4.9:` row
+  Y5  deterministic complexity count: all 3 RUNTIME-ACTIVE tags batched
+      (OperatorCore / BilinearFormCore / StorageMassMatrix), nIS=nElem=1,
+      nCells>1, production log has NO `Gate 4.9:` row. The 4th source fast
+      path (AddStorageToResidual) is dead code since CI #64 and cannot emit a
+      row; Y2/Y7 still audit it statically.
   Y6  physics bit-equality: p / u_x / u_y identical on every record/node
   Y7  O(N)->O(1) extrapolation + CI #65 elem-from-same-IS contract
   Y8  production isolation: equal step-marker counts, no fatal signatures
@@ -73,8 +76,18 @@ CRASH_RE = re.compile(
     r'Caught signal|SEGV|MPI_ABORT|PETSC ERROR|segmentation fault|'
     r'TSSolve failed|KSP_DIVERGED|not converged|unknown option', re.I)
 
-TAGS = ('OperatorCore', 'BilinearFormCore', 'StorageResidual',
-        'StorageMassMatrix')
+# Runtime-active assembly loops on the Transient/ksponly path.
+# MEF90FlowAddStorageToResidual is NOT called any more (CI #64 removed the
+# extra scatter because xDot == 0 for TS_LINEAR + ksponly), so its fast path
+# exists in the source but can never emit a log row. Y5 therefore requires
+# the 3 ACTIVE tags; Y2/Y7 still audit all 4 source fast paths.
+TAGS = ('OperatorCore', 'BilinearFormCore', 'StorageMassMatrix')
+N_FAST = 4
+# The option bag closed Gate 4.7 with 36 fields. Gate 4.9's field must sit
+# AFTER that frozen prefix; later features may append without breaking the
+# PetscBag offset contract (CI #50). This is the same append-only rule as
+# Gate 4.7 X2, so an exact-arity check here would reject legal extensions.
+N_BASE_FIELDS = 36
 MIN_RECORDS = 50
 MIN_CELLS = 2       # a single-cell set is not a meaningful batch
 NDX = 2             # IS + element array creations per fast path
@@ -84,7 +97,7 @@ CHECK_TITLES = {
     'Y2': 'static anti-regression (helper, 4 fast paths, bag order, default)',
     'Y3': 'deck isolation (exactly one added line)',
     'Y4': 'bag visibility (batched TRUE / production FALSE)',
-    'Y5': 'deterministic complexity counts (nIS=nElem=1, all 4 tags)',
+    'Y5': 'deterministic complexity counts (nIS=nElem=1, 3 active tags)',
     'Y6': 'physics bit-identical (p / u_x / u_y on 51 records)',
     'Y7': 'O(N)->O(1) extrapolation + CI #65 elem-from-same-IS contract',
     'Y8': 'production isolation (equal step count, no fatal signature)',
@@ -237,16 +250,18 @@ def check_y2(sources):
                                                len(items)))
     if fields != regs:
         issues.append('bag declaration/registration order mismatch')
-    if not fields or fields[-1] != 'batchedAssembly':
-        issues.append('batchedAssembly is not the LAST declared field')
-    if not regs or regs[-1] != 'batchedAssembly':
-        issues.append('batched_assembly is not the LAST registered field')
+    if 'batchedAssembly' not in fields[N_BASE_FIELDS:]:
+        issues.append('batchedAssembly not appended after the frozen 4.7 prefix')
+    if 'batchedAssembly' not in regs[N_BASE_FIELDS:]:
+        issues.append('batched_assembly not registered after the 4.7 prefix')
     if 'batched_assembly' not in ctx:
         issues.append('option not registered')
-    if not items or 'PETSC_FALSE' not in items[-1]:
-        issues.append('default is not PETSC_FALSE')
+    bpos = fields.index('batchedAssembly') if 'batchedAssembly' in fields else -1
+    if bpos < 0 or bpos >= len(items) or 'PETSC_FALSE' not in items[bpos]:
+        issues.append('default for batchedAssembly is not PETSC_FALSE')
     return pass_fail(not issues, '; '.join(issues) if issues else
-                     'helper + 4 fast paths, 37/37/37 bag order, default FALSE')
+                     'helper + 4 fast paths, %d/%d/%d bag order, default FALSE'
+                     % (len(fields), len(regs), len(items)))
 
 
 def check_y3(decks):
@@ -294,11 +309,12 @@ def check_y5(logs, rows):
     if 'Gate 4.9:' in (ctrl_log or ''):
         issues.append('production log contains Gate 4.9 rows')
     n = max(ncells) if ncells else 0
-    saved = len(TAGS) * NDX * (n - 1)
-    return pass_fail(not issues, '; '.join(issues) if issues else
-                     '4 tags, %d rows, nCells=%d, nIS=nElem=1, production clean'
-                     % (len(rows), n)), dict(rows=len(rows), ncells=n,
-                                            saved_creates=saved)
+    saved = N_FAST * NDX * (n - 1)
+    detail = ('; '.join(issues) if issues else
+              '%d active tags, %d rows, nCells=%d, nIS=nElem=1, production clean'
+              % (len(TAGS), len(rows), n))
+    met5 = dict(rows=len(rows), ncells=n, saved_creates=saved)
+    return pass_fail(not issues, detail), met5
 
 
 def check_y6(meshes):
@@ -350,8 +366,8 @@ def check_y7(sources, rows, ncells):
         issues.append('fast path still creates %d objects per call' % per_call)
     if ncells < MIN_CELLS:
         issues.append('nCells=%d too small to extrapolate' % ncells)
-    legacy = len(TAGS) * NDX * ncells
-    batched = len(TAGS) * NDX * per_call
+    legacy = N_FAST * NDX * ncells
+    batched = N_FAST * NDX * per_call
     ratio = legacy / float(batched) if batched else 0.0
     if ratio < 2.0:
         issues.append('no O(N)->O(1) reduction (ratio=%.1f)' % ratio)
@@ -416,10 +432,10 @@ def print_report(chk, met):
 def verdict_line(fails, met):
     if fails:
         return ('GATE49_RESULT: FAIL (%s)' % ','.join(fails))
-    return ('GATE49_RESULT: PASS (Y1-Y8: 4 fast-path tags, '
-            'nIS=nElem=1 vs nCells=%d, %d object creations saved per step, '
-            'physics bit-identical, production unchanged)'
-            % (met['y5']['ncells'], met['y5']['saved_creates']))
+    return ('GATE49_RESULT: PASS (Y1-Y8: %d active batched tags (4 source '
+            'fast paths), nIS=nElem=1 vs nCells=%d, %d object creations saved '
+            'per step, physics bit-identical, production unchanged)'
+            % (len(TAGS), met['y5']['ncells'], met['y5']['saved_creates']))
 
 
 # ---------------------------------------------------------------------------
@@ -482,11 +498,11 @@ def selftest():
 
     # positive
     fails, met = run(good_log, ctrl_log, fields, same)
-    cases.append(('positive: all 4 tags batched, physics identical',
+    cases.append(('positive: all active tags batched, physics identical',
                   fails, set(), met))
 
     # negatives -- each must fail exactly the expected check(s)
-    f, _ = run(make_log(True, 'TRUE', tags=TAGS[:3]), ctrl_log, fields, same)
+    f, _ = run(make_log(True, 'TRUE', tags=TAGS[:2]), ctrl_log, fields, same)
     cases.append(('NEG missing StorageMassMatrix tag', f, {'Y5'}, None))
 
     f, _ = run(make_log(True, 'TRUE', nis=600), ctrl_log, fields, same)
@@ -509,6 +525,15 @@ def selftest():
         'PETSC_TRUE)         ! batchedAssembly')
     f, _ = run(good_log, ctrl_log, fields, same, src=bad_default)
     cases.append(('NEG default flipped to TRUE', f, {'Y2'}, None))
+
+    # Rename the field in BOTH declaration and registration, so the
+    # decl == regf check still passes: only the append-after-4.7 contract
+    # detects that the Gate 4.9 bag slot has been disturbed.
+    bad_ctx = dict(sources)
+    bad_ctx['ctx'] = sources['ctx'].replace('batchedAssembly',
+                                            'batchedAssemblyRenamed')
+    f, _ = run(good_log, ctrl_log, fields, same, src=bad_ctx)
+    cases.append(('NEG 4.9 bag slot disturbed', f, {'Y2'}, None))
 
     bad_asm = dict(sources)
     bad_asm['asm'] = sources['asm'].replace(

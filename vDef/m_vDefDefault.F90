@@ -151,7 +151,7 @@ module m_vDefDefault
 !!! NOTE: there must be NO ampersand after the closing parenthesis (a trailing
 !!!       & would splice the next Type declaration into this constructor).
 !!!       Decimal literals are used instead of 1.0e-20_Kr style constants.
-!!!       Value order must match MEF90FlowGlobalOptions_Type (36 components):
+!!!       Value order must match MEF90FlowGlobalOptions_Type (37 components):
 !!!       timeSteppingType, addNullSpace, permeabilityMin, permeabilityMax,
 !!!       dynamicViscosity, storativity, initialPressure, residualDamage,
 !!!       biotCoefficient, temperatureDependViscosity, referenceTemperature,

@@ -132,6 +132,16 @@ BAG_HEADER_RE = re.compile(r'^\s*PetscBag Object:\s*(.*?)\s*$')
 BAG_ITEM_RE = re.compile(r'^\s{2}(\w+)\s*=\s*(.*?)\s*;')
 BAG_KEYS = ('perm_scaling', 'perm_rate', 'stor_scaling', 'stor_rate',
             'material_perm_offset', 'material_stor_offset')
+# PetscBag offset order equals declaration order (CI #50). Gate 4.7 closed
+# with exactly 36 fields, its own six occupying fixed slots 30..35. Later
+# features (Gate 4.9's batchedAssembly) may only APPEND: inserting anywhere
+# before slot 36 silently shifts every registered offset. X2 therefore
+# checks the fixed 4.7 tail plus a lower bound, not an exact arity.
+N_BASE_FIELDS = 36
+G47_TAIL_SLOT = 30
+G47_TAIL_FIELDS = ('permeabilityScaling', 'permeabilityRate',
+                   'storativityScaling', 'storativityRate',
+                   'materialPermOffset', 'materialStorOffset')
 EXPECTED_DECK_LINES = (
     'perm_scaling: linear', 'perm_rate: 0.8',
     'stor_scaling: linear', 'stor_rate: 0.4',
@@ -355,6 +365,7 @@ def check_x2(sources):
                      r'FlowCtx%cellDMScalSec', body, re.I):
             issues.append(name + ': direct shared-section access')
     # PetscBag declaration order must equal registration order (CI #50).
+    decl = []
     tb = re.search(r'^\s*Type MEF90FlowGlobalOptions_Type\b(.*?)'
                    r'^\s*End Type MEF90FlowGlobalOptions_Type',
                    ctx, re.S | re.M)
@@ -369,14 +380,25 @@ def check_x2(sources):
                           r'bag,\s*FlowGlobalOptions%(\w+)', reg.group(1))
         if decl != regf:
             issues.append('bag declaration/registration order mismatch')
-        if len(decl) != 36:
-            issues.append('expected 36 option fields, got %d' % len(decl))
+        if len(decl) < N_BASE_FIELDS:
+            issues.append('expected >= %d option fields, got %d'
+                          % (N_BASE_FIELDS, len(decl)))
+        lo = G47_TAIL_SLOT
+        hi = lo + len(G47_TAIL_FIELDS)
+        if tuple(decl[lo:hi]) != G47_TAIL_FIELDS:
+            issues.append('4.7 fields left fixed bag slots %d..%d '
+                          '(append-only contract broken, CI #50)' % (lo, hi - 1))
         for key in BAG_KEYS:
             if "'%s'" % key not in ctx:
                 issues.append('option %s not registered' % key)
-    # Default constructor must supply all 36 values.
-    if not re.search(r'36 components', dflt):
-        issues.append('default constructor comment not updated')
+    # The constructor comment must state the CURRENT bag arity: a later
+    # appended field (Gate 4.9) must not leave a stale "36 components".
+    arity = re.search(r'MEF90FlowGlobalOptions_Type \((\d+) components\)', dflt)
+    if not arity:
+        issues.append('default constructor arity comment missing')
+    elif decl and int(arity.group(1)) != len(decl):
+        issues.append('constructor comment says %s components, bag has %d'
+                      % (arity.group(1), len(decl)))
     if dflt.count('MEF90Scaling_CST, &') < 4:
         issues.append('default constructor missing CST defaults')
     # vDef: SetTransients BEFORE UpdatePerm, plus a per-step S rebuild.
@@ -818,6 +840,15 @@ def selftest():
          ((sources[0].replace('gOpt%permeabilityScaling',
                               'gOpt%sourceScaling', 1),)
           + sources[1:], decks, (mat_log, ctrl_log), (mat, ctrl)), {'X2'}),
+        # Rename a 4.7 tail field in BOTH the declaration and the registration
+        # so decl == regf still holds: only the fixed-slot / append-only
+        # contract can detect that the 4.7 offsets were disturbed.
+        ('NEG 4.7 bag tail slot disturbed',
+         ((sources[0], sources[1],
+           sources[2].replace('permeabilityScaling',
+                              'permeabilityScalingRenamed'),
+           sources[3], sources[4]),
+          decks, (mat_log, ctrl_log), (mat, ctrl)), {'X2'}),
         ('NEG control physics disturbed',
          (sources, decks, (mat_log, ctrl_log),
           (mat, _synthetic_mesh('full', x, times, None, 1.0, 0.0))),
