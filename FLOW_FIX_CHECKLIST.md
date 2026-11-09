@@ -262,6 +262,15 @@
   - 处置：不强行"修好"标准 Newton（生产已无该循环），而是把诊断**可证伪地冻结**：`check_gate413_newton.py` Q1–Q5 —— Q1 生产命令保持 `-disp_snes_type ksponly` 且未回退；Q2 三处尺度锚点仍在源码；Q3/Q4 两份日志无 Newton fnorm / displacement `-5`（7 条 damage `-5` 为信息性）；Q5 ksponly 与生产的 51 条压力包络**逐位一致**。`--selftest` 1 正例 + 6 负例全 PASS。
   - **CI #116 插曲**：新增的 `Gate 4.12:` 行被 `check_gate41_biot.py` 的裸前缀 `'Gate 4.1' in line` 误计为 102 条未解析探针（`2 日志 × 51 步`），使 B1 与 Gate 4.3 C7 连带 FAIL；改为精确 `'Gate 4.1:'` 后 #117 全绿。**经验**：诊断行前缀不要用裸子串匹配，`4.1` 与 `4.1b` / `4.12` / `4.13` 会碰撞。
 
+- [x] **4.14 三维维度分派真实验证**（**CI #121 `success` 验收通过**，`GATE414_RESULT: PASS`，W1–W7）
+  - 问题（**验证体系空白**）：此前 15 组硬判据**全部只在 2D `Beam1x10-tri3`** 上跑过；`m_Flow/Makefile` / `m_DefMech/Makefile` 虽然同时编译 `-DMEF90_DIM=2/3` 孪生，`MEF90_MATS_IDENTITY` 在 3D 分支映射为 6 分量 `MEF90MatS3DIdentity`，但 3D 路径从未被任何闸门实际执行。Gate 4.1b 的有效应力项与 4.9 的批量扩散算子都依赖该宏，2D-only 回归无法发现 3D 装配 / 分派错误。
+  - 落地：`terzaghi1D_dim3.yaml`（与基准 deck **只差一行** `time.numstep 51→11`，dt=0.1 s、同覆盖 t=0..1 s，维度由 `-prefix data/Beam1x10-tetra4` 选择而非 YAML key）；`check_gate414_dim3.py` W1–W7；`build.yml` 的 3D 诊断运行 / 判据 / 延迟 `exit 1` / artifact 三项。3D 网格 `num_dim=3`、2635 节点、11761 TETRA4 + 56/56 TRI3 边界面、cell sets `[1,10,20]` 与 2D 一致。
+  - 判据：W1 运行 / 网格数据完整性；W2 `Displacement_Z` + `num_dim=3` + `coordz` + 同 cell sets / 几何；W3 静态反回归（3D identity 宏、`-DMEF90_DIM=3` 孪生、`DMMeshGetDimension` 分派、门面 2D/3D 实现对、3D EXO 命名）；W4 11 个共同物理时刻 3D vs 2D `pmax`（`MAX_REL_P = 0.40`）；W5 3D 位移场 live / finite / `|uz|/|ux|` 有界；W6 求解链完整 + 每步 KSP 收敛 + 无 fatal；W7 单行 deck + CI 接线（含求解器配置与 `s414_rc` 裁决）+ 生产隔离。`--selftest` 1 正例 + 18 负例全 PASS。
+  - **CI #119 失败（编译期维度宏）**：3D 运行在 `Gate 3.1: init 07 FlowUpdatePerm` 刷约 9900 行 `Element2D_Scal_Init: Element type not implemented yet MEF90_P1_Lagrange_3D_Scal` 后 MPI abort。根因：`m_MEF90_Flow.F90` 门面**不带 `-DMEF90_DIM` 编译**，`MEF90_ELEMENT_SCAL` 固定绑 2D 元素类型，而 `MEF90Element_Create` 泛型按 `elem` 的**声明类型**解析工厂。修复（`39444b8`）：`UpdatePerm` / `UpdateMuFromTemperature` 各拆 `...2D` / `...3D` 实现对 + `DMMeshGetDimension` wrapper；Gate 4.6 V1/V2、4.7 X2 的「取整段 body」静态契约同步改为审计 wrapper 与两个孪生，各自补可证伪负例。
+  - **CI #120 失败（求解器代价，非装配 bug）**：编译干净、15 组原有判据全 PASS，但 3D step 1 完成后 step 2 的**第一次 flow TSSolve** 在 900 s 内未打印任一 `Linear solve converged`（2D 控制 356 节点 CG 42 次迭代收敛；3D 2635 节点 tetra4 上 CG + bjacobi/ILU(0) + rtol 1e-10 停滞），`timeout` 发 SIGTERM → MPI_ABORT → `out_dim3.gen` 截断在 13,766,716 B，W1 解析 EXO 抛 `struct.error`。
+  - **修复（`c95a605`，仅 workflow + 判据，Fortran 零改动）**：3D 诊断运行改 `-np 1` + `-flow_pc_type bjacobi -flow_sub_pc_type lu`（单 rank 下唯一 bjacobi 子块即整个 seq-AIJ 矩阵，精确 LU 使 CG 每步 1 次迭代收敛）；加 `-flow_ksp_monitor`；cap 900→1800 s；**12 个生产 2D deck 保持 `-np 2` / ILU 不变，11 个物理步与 W1–W7 一条不减**。`s414_rc`（3D mpirun 退出码）此前只 echo、从不裁决，现接入延迟 hard fail；W6 新增「`Linear solve converged` ≥ `N_REC_3D−1`」硬要求；W7 冻结求解器配置与 `s414_rc` 裁决；`--gate` 的 data error 改为可归因的 W1 FAIL + 截断提示。
+  - **CI #121 实测**：`GATE414_RESULT: PASS`，W4 `p0=1e5 / pend=1.183e4 / max shared-time rel-diff=0.306`，W5 `|ux|max=1.01e-4 / |uz|max=6.618e-6 / ratio=0.0655`，W6 10 条 `Linear solve converged ... iterations 1`；3D 日志 `Element2D_Scal_Init` / fatal / `PETSC ERROR` / `Caught signal` / `MPI_ABORT` 全为 0；`out_dim3.gen` 15,106,908 B、11 记录、6 个 nodal vars 含 `Displacement_Z`。TS view 实证 `1 MPI processes`、`flow_ PC=bjacobi`、`flow_sub_ PC=lu`、`package: petsc`。
+
 ---
 
 ## 进度跟踪（按 CI #109 实测，2026-11-09）
@@ -270,9 +279,9 @@
 - 闸门 1（不崩+边界）：**4 / 4**。1.1 / 1.2 / 1.3 已落地；1.4 经核实是 `use-rename` 分离设计、无需改动。CI #47 首次完整编译，此后由 Gate 3.3 / 4.x 持续回归。
 - 闸门 2（可见）：**4 / 4**。2.1–2.4 完成；2.3 的 TEMP `source: 1.0e-6` 已在闸门 3 前改回 `0.0`，「务必改回」注意项解除。
 - 闸门 3（瞬态+符号）：**2 / 2**。3.1 TS 瞬态主循环已实际运行（`Gate 3.1` / `Gate 3.2` 诊断行）；3.2 由 **Gate 3.3 P1–P8** 硬判据验收 —— P6「L2 err vs BE series」CI #99 实测 `0.03206 ≤ 0.05`，衰减方向与量级正确，**无需改算子符号**（该结论与源项符号无关，见 3.2 / 4.4）。
-- 闸门 4（物理+工程）：**13 项收口 / 13 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返）；4.10 根目录旧副本清理（**CI #109 `GATE410_RESULT: PASS`**，W1–W8 全绿，93 个文件 100% rename 归档、根目录 tracked `.F90` 归零、原有十组 verdict 与 #106 逐位一致）；4.7 时变材料入口（**CI #111 `GATE47_RESULT: PASS`**，X1–X8 全绿、`A(t)`/`S(t)` 双通道可证伪、生产物理场逐位不变）；4.9 逐单元 IS 批量装配（**CI #114 `GATE49_RESULT: PASS`**，Y1–Y8 全绿、O(N)→O(1) 300× 归约、物理场逐位一致、生产零扰动）；4.12 `pressurePreviousStep` 死写转步间压降活诊断（**CI #117 `GATE412_RESULT: PASS`**，Z1–Z6）；4.13 标准 Newton 残差平台 `3~13` 根因定性为 Dirichlet 单位对角 / 弹性刚度尺度失衡（**CI #117 `GATE413_RESULT: PASS`**，Q1–Q5）。
-- 合计：**23 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 13 项），**0 项在册待做**。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代；4.11 为总括性描述，已由硬判据体系覆盖。
-- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)、4.10 (W1–W8，根目录清零 + 归档 blob 校验 + 构建隔离)；**十一组判据在 CI #109 全绿**（4.10 已验收）；此后追加 4.7 (X1–X8)、4.9 (Y1–Y8)、4.12 (Z1–Z6)、4.13 (Q1–Q5)，**CI #117 十五组判据同轮全绿**；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
+- 闸门 4（物理+工程）：**14 项收口 / 14 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返）；4.10 根目录旧副本清理（**CI #109 `GATE410_RESULT: PASS`**，W1–W8 全绿，93 个文件 100% rename 归档、根目录 tracked `.F90` 归零、原有十组 verdict 与 #106 逐位一致）；4.7 时变材料入口（**CI #111 `GATE47_RESULT: PASS`**，X1–X8 全绿、`A(t)`/`S(t)` 双通道可证伪、生产物理场逐位不变）；4.9 逐单元 IS 批量装配（**CI #114 `GATE49_RESULT: PASS`**，Y1–Y8 全绿、O(N)→O(1) 300× 归约、物理场逐位一致、生产零扰动）；4.12 `pressurePreviousStep` 死写转步间压降活诊断（**CI #117 `GATE412_RESULT: PASS`**，Z1–Z6）；4.13 标准 Newton 残差平台 `3~13` 根因定性为 Dirichlet 单位对角 / 弹性刚度尺度失衡（**CI #117 `GATE413_RESULT: PASS`**，Q1–Q5）；4.14 三维维度分派真实验证（**CI #121 `GATE414_RESULT: PASS`**，W1–W7，首次在 3D `Beam1x10-tetra4` 上跑满 11 步固结，实证 `Displacement_Z`、6 分量 `MEF90MatS3DIdentity` 与门面 2D/3D 分派）。
+- 合计：**24 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 14 项），**0 项在册待做**。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代；4.11 为总括性描述，已由硬判据体系覆盖。
+- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)、4.10 (W1–W8，根目录清零 + 归档 blob 校验 + 构建隔离)；**十一组判据在 CI #109 全绿**（4.10 已验收）；此后追加 4.7 (X1–X8)、4.9 (Y1–Y8)、4.12 (Z1–Z6)、4.13 (Q1–Q5)，**CI #117 十五组判据同轮全绿**；再追加 4.14 (W1–W7，含每步 KSP 收敛与求解器配置反回归)，**CI #121 十六组判据同轮全绿**；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
 - **最近八次 CI**：#109 `success`（`f2d7f57`，W3 改校验 git index blob，Gate 4.10 W1–W8 全绿；十一组判据全绿，原有十组 verdict 与 #106 逐位 IDENTICAL）；#108 `failure`（`fdeca5b`，Gate 4.10 归档 93 个旧副本；编译与十组物理判据全绿，仅 W3 因 `dos2unix` 移除 BOM 误判，已由 #109 修复）；#107 `success`（`627fe7d`，纯文档收尾的重复回归）；#106 `success`（`a260d7b`，Gate 4.6 μ(T) 别名加固 + V1–V8 硬判据，十组判据全绿）；#105 `success`（`7b4fded`，纯文档收尾的重复回归）；#104 `success`（`0a0c468`，Gate 4.8 守恒性纯后处理 U1–U8 硬判据）；#103 `success`（`3d2d45a`，纯文档收尾的重复回归）；#102 `success`（`c05bac5`，Gate 4.5 能量诊断修好 + 接线 + T1–T8 硬判据）。（#97 `failure`（`f20fa18`）为旧 E2「位等价」前提错误，已由 #98 改物理签名判据修复。）
 
 **历史提交 / CI 记录（2026-11-07 09:55 快照，保留备查）**
@@ -2697,3 +2706,31 @@ artifact 增 `/tmp/gate43_verdict.log`。静态校验：PyYAML 6.0.3 解析、
 **提交前离线复核（零本地编译 / 零本地求解器）**：`git diff --check`、`ast.parse`、PyYAML、10 个 workflow `run` block `bash -n`、Fortran 块平衡与 HEAD 一致、两个新判据 `--selftest`（1 正例 + 8 负例 / 1 正例 + 6 负例）全 PASS、用 #115 真实日志 / EXO 离线 `--gate` 回放提前得到 `GATE412_RESULT: PASS` 与 `GATE413_RESULT: PASS`。
 
 **结论：4.12 与 4.13 收口，闸门 4 累计 13 项完成、合计 23 项已落地，0 项在册待做。** damage SNES 7 条 `-5` 为信息性（Gate 3.3 P8 已用损伤场有界替代），4.11 总括性描述由十五组硬判据体系覆盖。
+
+---
+
+## CI #121 结果（4.14 收口，commit `c95a605`，conclusion=success）
+
+`c95a605` 的 CI #121（run `42631282654`）`conclusion=success`，job `Build + Terzaghi` 全 success：`Build MEF90 + m_Flow + vDef` 1 min 54 s、`Run Terzaghi` 9 min 19 s（#120 是被 900 s 上限杀掉的 17 min 失败）。下载完整 `build-diagnostics` artifact（23,811,138 B / 46 成员，`zipfile.testzip()` 无错）离线复核，**十六组 verdict 同轮全 PASS**，新门 `GATE414_RESULT: PASS`：
+
+| 判据 | 结果 | 关键指标 |
+|---|---|---|
+| W1 | PASS | 11 条 3D / 51 条 2D 记录、2635 个 3D 节点、所有场有限，`out_dim3.gen` 15,106,908 B **完整不再截断** |
+| W2 | PASS | `num_dim=3`、6 个 nodal vars 含 **`Displacement_Z`**、`coordz`、cell sets `[1,10,20]`、几何 10×1×1 |
+| W3 | PASS | 3D/2D identity 宏、`-DMEF90_DIM=3` 双孪生、`DMMeshGetDimension` 分派、门面 2D/3D 实现对、3D EXO 命名 |
+| W4 | PASS | `p0=1e5`、`pend=1.183e4`、单调衰减、11 个共同物理时刻最大相对差 **0.306 ≤ 0.40** |
+| W5 | PASS | `\|ux\|max=1.01e-4`、`\|uz\|max=6.618e-6`、`ratio=0.0655`、全部有限 |
+| W6 | PASS | 3.1/3.2/4.12/4.1 诊断链齐全 + **10 条 `Linear solve converged ... iterations 1`**、无 fatal |
+| W7 | PASS | 单行 deck（numstep 51→11）、默认物理、CI 接线（含求解器配置与 `s414_rc` 裁决）、2D 生产隔离 |
+| 原有 15 组 | 全 PASS | 3.3 / 4.1 / 4.2 / 4.3 / 4.1b / 4.4 / 4.5 / 4.8 / 4.6 / 4.10 / 4.7 / 4.9 / 4.12 / 4.13 / 主报告 |
+
+**两轮失败与根因（这是 4.14 真正补上的验证空白）**：此前 15 组闸门**只在 2D `Beam1x10-tri3` 上跑过**，3D 编译孪生与 `MEF90MatS3DIdentity` 从未被实际执行。
+- **CI #119（`42a9a2e`, failure）**：3D 在 `Gate 3.1: init 07 FlowUpdatePerm` 刷约 9900 行 `Element2D_Scal_Init: Element type not implemented yet MEF90_P1_Lagrange_3D_Scal` 后 MPI abort。门面 `m_MEF90_Flow.F90` 不带 `-DMEF90_DIM` 编译，`MEF90_ELEMENT_SCAL` 恒为 2D 元素类型，而 `MEF90Element_Create` 泛型按 `elem` **声明类型**选工厂。修复 `39444b8`：`UpdatePerm` / `UpdateMuFromTemperature` 拆 2D/3D 实现对 + 维度 wrapper；4.6 V1/V2、4.7 X2 静态契约同步改为审计 wrapper 与两个孪生。
+- **CI #120（`39444b8`, failure）**：编译 clean、15 组原有判据全 PASS，但 3D step 1 物理量正常（`p0=1e5`、`E=1853.2` vs 2D `1624.6`、无 NaN）后，step 2 **第一次 flow TSSolve** 在 900 s 内未打印任一 `Linear solve converged`；SIGTERM → MPI_ABORT → `out_dim3.gen` 截断在 13,766,716 B，W1 解析 EXO 抛 `struct.error`。**根因是求解器代价而非 3D 装配错误**：2D 356 节点 CG 42 次迭代收敛，3D 2635 节点 tetra4 上 CG + bjacobi/ILU(0) + rtol 1e-10 停滞。
+- **修复 `c95a605`（仅 workflow + 判据，Fortran 零改动）**：3D 诊断运行改 `-np 1` + `-flow_pc_type bjacobi -flow_sub_pc_type lu`（单 rank 下唯一 bjacobi 子块即整个 seq-AIJ 矩阵，精确 LU 让 CG 每步 1 次迭代收敛）；加 `-flow_ksp_monitor`，cap 900→1800 s；**12 个生产 2D deck 保持 `-np 2` / ILU，11 个物理步与 W1–W7 判据一条不减**。`s414_rc`（3D mpirun 退出码）此前只 echo、从不裁决，现接入延迟 hard fail；W6 新增「每步 KSP 收敛」硬要求；W7 冻结求解器配置与 `s414_rc` 裁决；`--gate` data error 改为可归因 W1 FAIL + 截断提示。TS view 实证 `1 MPI processes`、`flow_ PC=bjacobi`、`flow_sub_ PC=lu`、`package: petsc`（内置 LU，不依赖外部包）。
+
+**生产零扰动（逐字节证明）**：#121 与 #120 的 **15 组原有 verdict 逐字节 IDENTICAL**（仅 `gate414_verdict.log` 由 FAIL 转 PASS）；`out_main.gen` 2,845,300 B 中仅 **11 个 differing bytes**，全部位于 QA 记录字段 `39444b8-dirty → c95a605-dirty` 与时间戳 `13:16:28 → 14:07:52`，压力 / `u_x` / `u_y` 物理数值逐位不变。3D 日志 `Element2D_Scal_Init` / `not implemented yet` / `PETSC ERROR` / `Caught signal` / `MPI_ABORT` / `Gate 4.9:` / `Gate 4.1b:` 计数全为 0。
+
+**提交前离线复核（零本地编译 / 零本地求解器）**：`git diff --check`、`ast.parse`、PyYAML、10 个 workflow `run` block `bash -n`、全部闸门 `--selftest`（4.14 为 1 正例 + 18 负例）、用 #120 真实日志 / EXO 回放 4.2 / 4.3 / 4.6 / 4.7 / 4.9 / 4.10 / 4.12 / 4.13 全 PASS，且 #120 截断数据在修复后的判据下输出可读的 W1 FAIL + 截断 hint。
+
+**结论：4.14（三维维度分派真实验证）已收口，闸门 4 累计 14 项完成、合计 24 项已落地，0 项在册待做。** 3D 路径从「编译孪生存在但从未运行」变为「有 11 步固结物理场 + 位移 Z 分量 + 每步 KSP 收敛证据 + 静态反回归」的硬判据覆盖；`s414_rc` 的接入同时消除了「超时退出码只打印不裁决」这一类静默假绿风险。
