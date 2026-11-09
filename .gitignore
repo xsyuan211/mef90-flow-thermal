@@ -34,3 +34,15 @@ mef90version.h
 /*.code-workspace
 /src_include.mk
 /*.json
+
+!!! Local CI diagnostic downloads and watcher output (never commit)
+/ci*_diag.zip
+/ci*_art.zip
+/ci*_summary.txt
+/ci*_log_raw.bin
+/ci*_extract/
+/_terz_art.zip
+/.trae/
+/vDef/data/terzaghi_pressure_field.csv
+/vDef/data/terzaghi_pressure_timeseries.csv
+/vDef/data/terzaghi_validation.png

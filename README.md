@@ -1,3 +1,22 @@
+# This branch: petroleum-engineering Flow extension (2026-11)
+
+Upstream `mef90/vDef` is the reference implementation of variational fracture.
+This branch adds a configurable Darcy/Biot Flow side, time-dependent material
+laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
+
+* `FLOW_FIX_CHECKLIST.md` — gate status, root causes and CI acceptance records.
+* `RESEARCH_POSITIONING.md` — comparison with prior work, capability matrix,
+  honest limitations and citation leads.
+* `vDef/data/check_gate*.py` — 15+ falsifiable verdict scripts, each with a
+  positive/negative offline selftest.
+* `.github/workflows/build.yml` — build, diagnostic decks and deferred gate exit.
+
+Every verdict runs in CI; auditing a change requires no local compilation or
+solver run. Upstream must still be cited (Zenodo DOI 10.5281/zenodo.3242131 and
+the four Francfort–Marigo / Bourdin papers listed below).
+
+---
+
 mef90 / vDef: A reference implementation of the variational approach to fracture,
 as described in:
 

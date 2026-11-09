@@ -917,6 +917,30 @@ jobs:
           else
             echo "=== WARN: batched run produced no result mesh; Gate 4.9 must FAIL ==="
           fi
+          # --- Gate 4.14 (hard): 3D dimension dispatch -----------------------
+          # Every previous gate ran on Beam1x10-tri3 (num_dim=2). MEF90 also
+          # compiles -DMEF90_DIM=3 twins and dispatches on DMMeshGetDimension;
+          # MEF90_MATS_IDENTITY (used by Gates 4.1b and 4.9) becomes the
+          # 6-component MEF90MatS3DIdentity in 3D. This is the FIRST real
+          # exercise of that path. Beam1x10-tetra4.gen has the same cell set
+          # labels [1,10,20] and the same 10x1x1 m beam; only the mesh prefix
+          # and time.numstep (51 -> 11, same t=0..1 s span) change.
+          echo "=== Gate 4.14 3D dimension-dispatch diagnostic run (ksponly) ==="
+          timeout -k 10s 900 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tetra4 \
+            -options_file_yaml data/terzaghi1D_dim3.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_dim3.log
+          s414_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.14 3D mpirun exit code: $s414_rc ==="
+          if [ -s data/Beam1x10-tetra4_out.gen ]; then
+            cp -f data/Beam1x10-tetra4_out.gen /tmp/out_dim3.gen
+            echo "=== saved 3D result mesh -> /tmp/out_dim3.gen ==="
+          else
+            echo "=== WARN: 3D run produced no result mesh; Gate 4.14 must FAIL ==="
+          fi
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
           # artifact stay the main-run output (diagnostic variants overwrite it).
           if [ -s /tmp/out_main.gen ]; then
@@ -1167,6 +1191,18 @@ jobs:
             /tmp/terzaghi.log /tmp/terzaghi_ksponly_phys.log \
             2>&1 | tee /tmp/gate413_verdict.log
           g413_rc=${PIPESTATUS[0]}
+          # --- Gate 4.14 (hard): 3D dimension dispatch -----------------------
+          # W1 run/mesh data, W2 Displacement_Z + num_dim=3 + same cell sets,
+          # W3 3D identity macro / -DMEF90_DIM=3 twins / runtime dispatch,
+          # W4 3D vs 2D pmax on 11 shared physical times, W5 live 3D u field,
+          # W6 solver chain + no fatal signature, W7 one-line deck + CI wiring
+          # + production isolation. exit 1 DEFERRED.
+          python3 data/check_gate414_dim3.py --gate \
+            /tmp/terzaghi_dim3.log /tmp/out_dim3.gen \
+            /tmp/terzaghi.log /tmp/out_main.gen \
+            data/Beam1x10-tetra4.gen data/Beam1x10-tri3.gen \
+            2>&1 | tee /tmp/gate414_verdict.log
+          g414_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1298,6 +1334,17 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.13 PASS: irreducible fnorm plateau traced to BC/interior scale mismatch; ksponly field bitwise identical ==="
+          # Gate 4.14 deferred verdict (see the deferred-exit note above).
+          if [ "$g414_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.14 rejected the 3D dimension dispatch (rc=$g414_rc) ==="
+            echo "    Check /tmp/gate414_verdict.log: W1 run/mesh data, W2"
+            echo "    Displacement_Z + num_dim=3 + same cell sets, W3 3D"
+            echo "    identity macro / -DMEF90_DIM=3 twins / runtime dispatch,"
+            echo "    W4 3D vs 2D pmax on 11 shared times, W5 live 3D u field,"
+            echo "    W6 solver chain, W7 one-line deck + CI wiring + isolation."
+            exit 1
+          fi
+          echo "=== Gate 4.14 PASS: 3D twin dispatched, MEF90MatS3DIdentity exercised, consolidation matches the 2D benchmark ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1449,6 +1496,9 @@ jobs:
             /tmp/gate49_verdict.log
             /tmp/gate412_verdict.log
             /tmp/gate413_verdict.log
+            /tmp/gate414_verdict.log
+            /tmp/terzaghi_dim3.log
+            /tmp/out_dim3.gen
             /tmp/terzaghi_viscosity.log
             /tmp/terzaghi_material.log
             /tmp/terzaghi_batched.log
