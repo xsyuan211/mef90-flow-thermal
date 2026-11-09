@@ -43,6 +43,21 @@ Contains
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 !!!  SNES RESIDUAL:  G(p) = DiffusionOperator(p) - SourceRHS  +  Dirichlet BC
+!!!
+!!!  Gate 4.4 -- Bourdin's diffusion contract, see
+!!!  MEF90/m_MEF90_DiffusionImplementation.F90:27-60:
+!!!      -div(A grad p) + lambda p = f
+!!!      Operator G = +int(A grad p . grad w + lambda p w)   [ADD_VALUES]
+!!!      RHS      F = +int(f w)                              [ADD_VALUES]
+!!!      SNES Function MUST be G - F (Jacobian is K = dG/dp).
+!!!  MEF90HeatXfer honours this by negating the cell flux BEFORE calling
+!!!  MEF90DiffusionRHSSetCell (m_MEF90_HeatXferAssembly.F90:113 and :476:
+!!!  modifiedFluxPtr = -fluxPtr). FlowCtx%source stores the PHYSICAL +f
+!!!  because MEF90FlowViewEXO writes it out and Gate 4.3 compares it, so the
+!!!  sign flip belongs HERE, on the local assembly copy of the section.
+!!!  Before Gate 4.4 the residual was G + F, i.e. a positive deck source
+!!!  acted as a SINK. No production deck had source != 0, so none of the
+!!!  Gate 3.3 / 4.1 / 4.2 / 4.3 / 4.1b regressions could detect it.
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowOperatorCore"
@@ -54,7 +69,7 @@ Contains
       PetscErrorCode,Intent(OUT)                         :: ierr
 
       Type(SectionReal)                                  :: pSec, resSec
-      Type(SectionReal)                                  :: permFieldSec, sourceSec, rhsSec
+      Type(SectionReal)                                  :: permFieldSec, sourceSec
       Type(IS)                                           :: CellSetGlobalIS, setIS, singleIS
       PetscInt,dimension(:),Pointer                      :: setID, cellID
       PetscInt                                           :: set, cell, QuadratureOrder, nVal
@@ -124,7 +139,16 @@ Contains
                   Call MEF90DiffusionOperatorSet(resSec,FlowCtx%DMScal,pSec,singleIS, &
                        A_cell,0.0_Kr,elem,elemType,ierr)
 
-                  !!! Subtract source RHS: G = DiffusionOperator - Source
+                  !!! Gate 4.4: negate THIS cell's local copy of the source
+                  !!! before MEF90DiffusionRHSSetCell adds it, so the residual
+                  !!! really is G - F. sourceSec is a fresh duplicate on every
+                  !!! residual evaluation, scattered from FlowCtx%source, so
+                  !!! the flip cannot accumulate and the Vec keeps +f.
+                  !!! (Same SectionRealRestrict/Restore write pattern proven in
+                  !!!  MEF90FlowSetSourceCst and MEF90FlowUpdatePerm.)
+                  Call SectionRealRestrict(sourceSec,cellID(cell),sourceCell,ierr);CHKERRQ(ierr)
+                  sourceCell(1) = -sourceCell(1)
+                  Call SectionRealRestore(sourceSec,cellID(cell),sourceCell,ierr);CHKERRQ(ierr)
                   Call MEF90DiffusionRHSSetCell(resSec,FlowCtx%DMScal,sourceSec,singleIS, &
                        elem,elemType,ierr)
 
@@ -872,6 +896,11 @@ Contains
          Call ISGetIndicesF90(setIS,cellIDs,ierr);CHKERRQ(ierr)
          nCell = size(cellIDs)
          Do cell = 1, nCell
+            !!! Gate 4.4: store the PHYSICAL source +f here. Do NOT negate
+            !!! it: MEF90FlowViewEXO writes this Vec to the EXO source slot
+            !!! and Gate 4.3 compares deck/bag values. The Bourdin G-F sign
+            !!! flip is applied in MEF90FlowOperatorCore on the local
+            !!! assembly copy, exactly as HeatXfer negates modifiedFlux.
             Call SectionRealRestrict(sourceSec,cellIDs(cell),Sptr,ierr);CHKERRQ(ierr)
             Sptr(1) = cellSetOptions%source
             Call SectionRealRestore(sourceSec,cellIDs(cell),Sptr,ierr);CHKERRQ(ierr)

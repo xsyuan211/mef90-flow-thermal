@@ -806,6 +806,36 @@ jobs:
           else
             echo "=== WARN: effective-stress produced no result mesh; Gate 4.1b E2 must FAIL ==="
           fi
+          # --------------------------------------------------------------------
+          # Gate 4.4 (Darcy SOURCE SIGN -- Bourdin's G-F contract).
+          # terzaghi1D_source.yaml differs from terzaghi1D.yaml in EXACTLY ONE
+          # option: cs0001.source 0.0 -> 1.0e-6. p0, BCs, geometry, material
+          # and the time grid are untouched, so delta_p = p_source - p_main
+          # cancels the 1e5 Pa Terzaghi decay and isolates the source response.
+          # With G-F a POSITIVE source raises p; the old G+F assembly made it
+          # a sink, which cos(delta_p, +p_f) = -1 catches. Every earlier gate
+          # used source=0, so none of them could discriminate the sign.
+          # DIAGNOSTIC ONLY: /tmp/out_main.gen is already frozen; the
+          # production mesh is restored below.
+          # --------------------------------------------------------------------
+          echo "=== Gate 4.4 source-sign diagnostic run (cs0001.source=1e-6, ksponly) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi1D_source.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_source.log
+          s44_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.4 source mpirun exit code: $s44_rc ==="
+          echo "=== Gate 4.4: Flow CellSet source as parsed by PetscBag ==="
+          grep -aE "^[[:space:]]*source = " /tmp/terzaghi_source.log | sort -u | head -5 || true
+          if [ -s data/Beam1x10-tri3_out.gen ]; then
+            cp -f data/Beam1x10-tri3_out.gen /tmp/out_source.gen
+            echo "=== saved source-sign result mesh -> /tmp/out_source.gen ==="
+          else
+            echo "=== WARN: source run produced no result mesh; Gate 4.4 must FAIL ==="
+          fi
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
           # artifact stay the main-run output (diagnostic variants overwrite it).
           if [ -s /tmp/out_main.gen ]; then
@@ -960,6 +990,18 @@ jobs:
             /tmp/out_stress.gen /tmp/out_main.gen \
             2>&1 | tee /tmp/gate41b_verdict.log
           g41b_rc=${PIPESTATUS[0]}
+          # --- Gate 4.4 (hard): Darcy source sign / Bourdin G-F --------------
+          # S1 mesh + crash guard, S2 the two decks differ ONLY in
+          # cs0001.source AND the solver bag really carries 1e-6, S3 the
+          # production pressure still matches the Terzaghi BE series,
+          # S4-S6 delta_p = p_source - p_main aligns with the analytic
+          # source response +p_f (sign / amplitude / L2), S7 a POSITIVE
+          # closed-end peak, S8 monotone growth from 0. Verdict printed
+          # here; exit 1 DEFERRED (CI #82 lesson).
+          python3 data/check_gate44_source.py --gate \
+            /tmp/terzaghi_source.log /tmp/out_source.gen /tmp/out_main.gen \
+            2>&1 | tee /tmp/gate44_verdict.log
+          g44_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1001,6 +1043,16 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.1b PASS: effective-stress form active, boundary-traction swelling signature verified, mutually exclusive with body force ==="
+          # Gate 4.4 deferred verdict (see the deferred-exit note above).
+          if [ "$g44_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.4 rejected the Darcy source sign (rc=$g44_rc) ==="
+            echo "    Check /tmp/gate44_verdict.log: S1 mesh/crash, S2 one-line"
+            echo "    deck isolation + bag source, S3 Terzaghi baseline,"
+            echo "    S4-S6 delta_p aligns with +p_f (cos/amp/L2),"
+            echo "    S7 positive closed-end peak, S8 monotone growth."
+            exit 1
+          fi
+          echo "=== Gate 4.4 PASS: positive deck source raises pressure; Bourdin G-F contract honoured ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1143,8 +1195,11 @@ jobs:
             /tmp/gate42_verdict.log
             /tmp/gate43_verdict.log
             /tmp/gate41b_verdict.log
+            /tmp/gate44_verdict.log
             /tmp/terzaghi_stress.log
+            /tmp/terzaghi_source.log
             /tmp/out_stress.gen
+            /tmp/out_source.gen
             /tmp/out_main.gen
             /tmp/out_ksponly.gen
             /tmp/out_nobiot.gen
