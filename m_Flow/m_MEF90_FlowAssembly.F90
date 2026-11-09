@@ -1267,7 +1267,7 @@ Contains
 #define __FUNCT__ "MEF90FlowApplyBiotForce"
 
    Subroutine MEF90FlowApplyBiotForce(FlowCtx,DefMechCtx,ierr)
-      Type(MEF90FlowCtx_Type),Intent(IN)                :: FlowCtx
+      Type(MEF90FlowCtx_Type),Intent(INOUT)             :: FlowCtx
       Type(MEF90DefMechCtx_Type),Intent(INOUT)          :: DefMechCtx
       PetscErrorCode,Intent(OUT)                         :: ierr
 

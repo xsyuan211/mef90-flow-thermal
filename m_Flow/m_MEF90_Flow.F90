@@ -510,7 +510,9 @@ Contains
 #define __FUNCT__ "MEF90FlowApplyBiotForce"
 
    Subroutine MEF90FlowApplyBiotForce(FlowCtx,DefMechCtx,ierr)
-      Type(MEF90FlowCtx_Type),Intent(IN)                 :: FlowCtx
+      !!! Gate 4.1b: MEF90FlowComputeCellPressure writes FlowCtx%cellPorePressureSec,
+      !!! so the ENTIRE dispatch chain must be INTENT(INOUT), including this dispatcher.
+      Type(MEF90FlowCtx_Type),Intent(INOUT)              :: FlowCtx
       Type(MEF90DefMechCtx_Type),Intent(INOUT)           :: DefMechCtx
       PetscErrorCode,Intent(OUT)                          :: ierr
       PetscInt                                            :: dim
