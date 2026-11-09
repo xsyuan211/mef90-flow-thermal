@@ -925,12 +925,23 @@ jobs:
           # exercise of that path. Beam1x10-tetra4.gen has the same cell set
           # labels [1,10,20] and the same 10x1x1 m beam; only the mesh prefix
           # and time.numstep (51 -> 11, same t=0..1 s span) change.
-          echo "=== Gate 4.14 3D dimension-dispatch diagnostic run (ksponly) ==="
-          timeout -k 10s 900 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+          # CI #120: the 2-rank CG + bjacobi/ILU + rtol 1e-10 chain never
+          # finished the FIRST TSSolve on the 2635-node tetra4 mesh inside the
+          # 900 s cap (log stops at "0 TS dt 0.1 time 0", EXO truncated at
+          # 13,766,716 B). Keep all 11 physical steps and every W1-W7
+          # criterion; change only the DIAGNOSTIC solver settings:
+          #   -np 1 + bjacobi/sub-LU  -> the single block IS the whole
+          #   sequential AIJ matrix, so CG converges in one iteration per
+          #   step instead of stalling on a 3D-ill-conditioned ILU(0);
+          #   -flow_ksp_monitor makes every completed solve observable.
+          # Production 2D decks keep their original -np 2 / ILU chain.
+          echo "=== Gate 4.14 3D dimension-dispatch diagnostic run (direct PC) ==="
+          timeout -k 10s 1800 mpirun --allow-run-as-root -np 1 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tetra4 \
             -options_file_yaml data/terzaghi1D_dim3.yaml \
             -flow_ts_view -flow_ts_monitor \
-            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -flow_pc_type bjacobi -flow_sub_pc_type lu \
             -disp_snes_type ksponly -disp_snes_converged_reason \
             2>&1 | tee /tmp/terzaghi_dim3.log
           s414_rc=${PIPESTATUS[0]}
@@ -1335,13 +1346,22 @@ jobs:
           fi
           echo "=== Gate 4.13 PASS: irreducible fnorm plateau traced to BC/interior scale mismatch; ksponly field bitwise identical ==="
           # Gate 4.14 deferred verdict (see the deferred-exit note above).
+          # CI #120: `timeout` killed the 3D run (rc=124) but that exit code
+          # was only echoed, never judged. Make the solver exit code a
+          # first-class criterion so a partially written EXO can never pass.
+          if [ "$s414_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.14 3D diagnostic run did not complete (mpirun rc=$s414_rc) ==="
+            echo "    rc=124 means the timeout killed the run mid-solve; check"
+            echo "    /tmp/terzaghi_dim3.log for the last 'TS dt' / KSP row."
+            exit 1
+          fi
           if [ "$g414_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.14 rejected the 3D dimension dispatch (rc=$g414_rc) ==="
             echo "    Check /tmp/gate414_verdict.log: W1 run/mesh data, W2"
             echo "    Displacement_Z + num_dim=3 + same cell sets, W3 3D"
             echo "    identity macro / -DMEF90_DIM=3 twins / runtime dispatch,"
             echo "    W4 3D vs 2D pmax on 11 shared times, W5 live 3D u field,"
-            echo "    W6 solver chain, W7 one-line deck + CI wiring + isolation."
+            echo "    W6 solver chain incl. per-step KSP convergence, W7 deck + wiring."
             exit 1
           fi
           echo "=== Gate 4.14 PASS: 3D twin dispatched, MEF90MatS3DIdentity exercised, consolidation matches the 2D benchmark ==="

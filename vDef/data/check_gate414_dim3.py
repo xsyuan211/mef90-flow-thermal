@@ -19,13 +19,20 @@ The 3D mesh is already committed: Beam1x10-tetra4.gen, num_dim=3, 2635 nodes,
 code line (time.numstep 51 -> 11, dt=0.1 s, same t=0..1 s span); the dimension
 is selected by -prefix, not by a YAML key.
 
+The 3D diagnostic is the only deck that runs on one MPI rank with a direct
+block-LU preconditioner (CI #120): on two ranks the CG + bjacobi/ILU(0) chain
+never finished the FIRST TSSolve on the 2635-node tetra4 mesh within 900 s,
+leaving a truncated EXO. Production 2D decks are unchanged. W6 now also
+requires one "Linear solve converged" row per advanced time step, so a
+3D run that only initialises can never pass on a pre-allocated EXO file.
+
 W1 run/mesh data integrity
 W2 3D dispatch evidence (Displacement_Z, num_dim=3, coordz, same cell sets)
 W3 static anti-regression (3D identity macro, 3D twins, runtime dispatch)
 W4 consolidation physics on the 11 shared physical times (3D vs 2D pmax)
 W5 3D displacement field is live, finite and z-bounded
-W6 3D solver chain completed, no fatal signature, no batched rows
-W7 one-line deck contract + CI wiring + production isolation
+W6 3D solver chain completed (incl. per-step KSP convergence), no fatal signature
+W7 one-line deck + CI wiring (incl. solver config) + production isolation
 
 Run with --gate for the hard verdict (exit 0/1) or --selftest for an offline
 positive + negative replay. Pure standard library; no local compile, no solver.
@@ -258,6 +265,15 @@ def check_w6(d):
         n = log.count(tag)
         if n < 5:
             issues.append('%s appears only %d times' % (tag, n))
+    # CI #120: the 3D run reached step 2 but its FIRST flow TSSolve never
+    # printed a convergence line; the timeout killed MPI and left a
+    # truncated EXO. Diagnostic rows alone are not proof that the 3D
+    # assembly/solve path completed. Step 1 skips TSSolve ("no time
+    # advance"), so N_REC_3D-1 completed linear solves are required.
+    n_solves = log.count('Linear solve converged')
+    if n_solves < N_REC_3D - 1:
+        issues.append('only %d completed flow linear solves (expected >= %d)'
+                      % (n_solves, N_REC_3D - 1))
     if 'Gate 4.9:' in log:
         issues.append('3D deck unexpectedly enabled the batched fast path')
     if 'Gate 4.1b:' in log:
@@ -266,7 +282,8 @@ def check_w6(d):
         if sig in log:
             issues.append('fatal signature: %s' % sig)
     return pass_fail(not issues, '; '.join(issues) if issues else
-                     '3.1/3.2/4.12/4.1 diagnostic chains present, no fatal signature, default physics mode')
+                     '3.1/3.2/4.12/4.1 chains + %d converged flow solves, '
+                     'no fatal signature, default physics mode' % n_solves)
 
 
 def check_w7(d):
@@ -290,6 +307,15 @@ def check_w7(d):
                   'gate414_verdict.log', 'out_dim3.gen', 'g414_rc'):
         if token not in wf:
             issues.append('build.yml missing %s' % token)
+    # CI #120: freeze the diagnostic-only solver settings. Reverting to the
+    # 2-rank ILU chain silently brings back the 900 s first-solve stall and
+    # a truncated EXO that no W* check can read. -flow_ksp_monitor is what
+    # supplies the "Linear solve converged" rows audited by W6.
+    for token in ('-np 1 -x LD_LIBRARY_PATH', '-flow_sub_pc_type lu',
+                  '-flow_ksp_monitor', 'timeout -k 10s 1800',
+                  'if [ "$s414_rc" -ne 0 ]'):
+        if token not in wf:
+            issues.append('build.yml lost the CI #120 solver fix: %s' % token)
     if 'Beam1x10-tetra4' in d['log2'] or 'Gate 4.14:' in d['log2']:
         issues.append('3D diagnostic leaked into the 2D production log')
     return pass_fail(not issues, '; '.join(issues) if issues else
@@ -357,6 +383,10 @@ def synth():
         log3 += row % (i, p3[i - 1])
         log3 += 'Gate 4.12: step %d t %.4g dpmax %.4g dpmin 0.0\n' % (i, (i - 1) * 0.1, -1e3)
         log3 += 'Gate 4.1: alpha 1.0\n'
+        # Step 1 has no time advance; every later step must complete one
+        # flow linear solve (CI #120 / W6).
+        if i > 1:
+            log3 += '    Linear solve converged due to CONVERGED_RTOL iterations 1\n'
     log2 = 'x' * 1200 + '\n' + 'Gate 3.1: step 1\n' * 51
     return {'log3': log3, 'log2': log2, 'exo3': exo3, 'exo2': exo2,
             'm3': m3, 'm2': m2, 'src': synth_sources(),
@@ -406,6 +436,12 @@ def selftest():
                  lambda d: d['exo3'].update(ux=[0.0] * N_REC_3D), {'W5'})
     allok &= neg('fatal signature in 3D log',
                  lambda d: d.update(log3=d['log3'] + 'PETSC ERROR: boom\n'), {'W1', 'W6'})
+    allok &= neg('3D flow solve never converged (CI #120 timeout)',
+                 lambda d: d.update(log3=d['log3'].replace('Linear solve converged', 'Linear solve stalled')), {'W6'})
+    allok &= neg('CI #120 direct-PC fix reverted',
+                 lambda d: d['src'].update(workflow=d['src']['workflow'].replace('-flow_sub_pc_type lu', '')), {'W7'})
+    allok &= neg('CI #120 solver exit code no longer judged',
+                 lambda d: d['src'].update(workflow=d['src']['workflow'].replace('if [ "$s414_rc" -ne 0 ]', 'if false')), {'W7'})
     allok &= neg('deck carries a second code change',
                  lambda d: d.update(deck3=d['deck3'].replace('p0: 1.0e5', 'p0: 2.0e5')), {'W7'})
     allok &= neg('CI wiring removed',
@@ -432,7 +468,15 @@ def main(argv):
                  'src': synth_sources(),
                  'deck3': read(DECK_3D), 'deck2': read(DECK_2D)}
         except Exception as exc:
-            print('GATE414_RESULT: FAIL (data error: %r)' % exc)
+            # CI #120: a truncated out_dim3.gen (timeout killed MPI mid-write)
+            # raised KeyError('name_nod_var') / struct.error deep inside CDF2
+            # and produced a one-line verdict with no attributable check.
+            # Report it as an explicit W1 failure with a diagnostic hint.
+            print('=== Gate 4.14: 3D dimension dispatch (real CI logs/EXO) ===')
+            print('FAIL W1 run / mesh data integrity | cannot parse 3D EXO/log: %r' % exc)
+            print('GATE414_RESULT: FAIL (W1 data error: %r)' % exc)
+            print('  hint: a truncated out_dim3.gen usually means the 3D run was '
+                  'killed by the timeout before its first flow TSSolve converged')
             return 1
         rows, fails = run(d)
         report(rows, fails, '=== Gate 4.14: 3D dimension dispatch (real CI logs/EXO) ===')
