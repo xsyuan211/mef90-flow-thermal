@@ -1014,6 +1014,21 @@ jobs:
             /tmp/terzaghi.log /tmp/terzaghi_source.log \
             2>&1 | tee /tmp/gate45_verdict.log
           g45_rc=${PIPESTATUS[0]}
+          # --- Gate 4.8 (hard): discrete Darcy CONSERVATION ------------------
+          # Pure post-processing, no Fortran change. Two independent global
+          # laws are rebuilt from artefacts the solver already writes:
+          #   energy  S1/dt + 2E - W = 0   (E/W from the Gate 4.5 rows,
+          #                                S1 = S M dp . p from Exodus)
+          #   mass    dM/dt + Q - F = 0   (M from Exodus pressure, Q from
+          #                                the solver's cellDarcyVelocity)
+          # U2 proves Q is an independent field (vel == -A dp/dx), U8 checks
+          # W*S*Area == F*M. CI #102 offline replay: max |R|/scale ~1%,
+          # hard band 3%. Verdict printed here; exit 1 DEFERRED (#82 lesson).
+          python3 data/check_gate48_conservation.py --gate \
+            /tmp/terzaghi.log /tmp/terzaghi_source.log \
+            /tmp/out_main.gen /tmp/out_source.gen \
+            2>&1 | tee /tmp/gate48_verdict.log
+          g48_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1075,6 +1090,16 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.5 PASS: Darcy dissipation and injection work are live, global and analytic-consistent ==="
+          # Gate 4.8 deferred verdict (see the deferred-exit note above).
+          if [ "$g48_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.8 rejected the Darcy conservation balance (rc=$g48_rc) ==="
+            echo "    Check /tmp/gate48_verdict.log: U1 data integrity,"
+            echo "    U2 drained face + outflow field, U3/U4 energy balance,"
+            echo "    U5/U6 mass balance (injection - outflow - storage),"
+            echo "    U7 transient closure, U8 W*S*Area == F*M."
+            exit 1
+          fi
+          echo "=== Gate 4.8 PASS: energy/dissipation and mass balances close on both decks ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1219,6 +1244,7 @@ jobs:
             /tmp/gate41b_verdict.log
             /tmp/gate44_verdict.log
             /tmp/gate45_verdict.log
+            /tmp/gate48_verdict.log
             /tmp/terzaghi_stress.log
             /tmp/terzaghi_source.log
             /tmp/out_stress.gen
