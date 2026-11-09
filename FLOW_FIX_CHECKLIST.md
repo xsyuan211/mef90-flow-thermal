@@ -247,7 +247,20 @@
   - 位置：`.github/workflows/build.yml:394-408`（Run Terzaghi，`continue-on-error: true` + `set +e` 仅 tee）；`vDef/Makefile` 的 `test` 只跑 test7/8
   - 问题：编译过但算错/崩也不会拦；`terzaghi1D.yaml` 未纳入回归。
   - 改法：去掉 `continue-on-error`，检查 `mpirun` 退出码；CI 加 `make test`；加 Python 脚本读 exo 的 pressure 与解析解 `p(z,t)` 比对（t=1s 时 T≈1.09），超阈值直接 fail。
-  - 验收：CI 能拦住"编译过但算错/崩"的提交。
+  - 验收：CI 能拦住"编译过但算错/崩"的提交。（该条为总括性描述，已由 Gate 3.3 起的十五组硬判据体系覆盖，不单独计入在册待做。）
+
+- [x] **4.12 `pressurePreviousStep` 死写转活诊断**（**CI #117 `success` 验收通过**，`GATE412_RESULT: PASS`）
+  - 位置：`vDef/vDef.F90`（时间步循环）、`m_Flow/m_MEF90_FlowCtx.F90`（Vec 生命周期）。
+  - 问题：该 Vec 只被创建 / 初值 / 每步 `VecCopy` / 销毁，**全项目无消费者**；原本预留给平流 / Biot 滞后耦合，但 4.1a / 4.1b / 4.2 收口后从未需要，是每步一次 MPI 全量拷贝的死写。
+  - 改法（**零反馈后处理**）：初始化时把 Dirichlet 修正后的真实初始压力场拷入 `pressurePreviousStep`（仅靠 `CreateVectors` 的均匀 `VecSet` 会让 step 1 在排水面出现虚假 `−1e5 Pa` 压降）；每步 `TSSolve` **之前**用 `VecMin/VecMax` 采样（此时仍是上一步末场），`TSSolve` 之后打印 `Gate 4.12: step N t T dpmax ... dpmin ...`；每步末的 `VecCopy` 保留。`m_Flow` 装配例程仍不读该 Vec ⇒ 物理场逐位不变。
+  - 物理意义：`dpmax` 是闭端（不渗透底）压力的步间降幅，即离散固结速率；实测峰值在 step 10（`−3734.9 Pa/step`）、末/峰 `0.132`、后期单调衰减，与 Terzaghi 固结先加速后指数衰减一致。
+  - 硬判据 `check_gate412_prevstep.py` Z1–Z6：Z1 51+51 行 / step 连续 / `dt=0.02`；Z2 静态反回归（2 处快照 + 采样 + 打印 + CI 接线 + `FlowAssembly` 零消费者）；Z3 `dpmax(n) == pmax(n)−pmax(n−1)` 逐位一致、step 1 恰为 0；Z4 EXO 节点场极值锚定；Z5 固结形状（全负 / 单峰 step 3–20 / 末峰比 <0.30 / 尾部衰减）；Z6 无 fatal。`--selftest` 1 正例 + 8 负例全 PASS。
+
+- [x] **4.13 标准 Newton 残差平台 `3~13` 根因定性**（**CI #117 `success` 验收通过**，`GATE413_RESULT: PASS`）
+  - 背景：CI #83 实证标准 Newton（`f0=2.082e4 → it1≈9.3 → 平台 3~13`，51 次迭代无收益）与 ksponly 的物理场等价（`dP=0`、`dUx=0.21%`、`dDamage=0.38%`、应力 ≤0.41%）；CI #84 起生产改用 ksponly。故该平台**不是装配错误**，而是数值尺度问题。
+  - 根因（静态定位到具体代码行）：`m_MEF90_DefMechAssembly.F90` 自由自由度残差为 `∫(C:ε(u)):ε(v) dΩ`（量级 `E ~ 1e9`），Dirichlet 行残差为 `residualPtr = u − u_bc`（量级 1），Jacobian 用 `MatZeroRowsColumnsIS(A, setISdof, 1.0_Kr, ...)` 把 BC 行列置为单位对角 1 ⇒ 矩阵混合 1 与 ~1e9 两种尺度，条件数 ~E。CG 在**相对残差**容差下收敛时，物理力残差仍停在几牛顿，SNES 反复迭代一个降不下去的 fnorm；该 deck 实质线性（SplitNone、损伤 ~3.7e-5、零阻尼 / 内聚），一次线性解即精确解。
+  - 处置：不强行"修好"标准 Newton（生产已无该循环），而是把诊断**可证伪地冻结**：`check_gate413_newton.py` Q1–Q5 —— Q1 生产命令保持 `-disp_snes_type ksponly` 且未回退；Q2 三处尺度锚点仍在源码；Q3/Q4 两份日志无 Newton fnorm / displacement `-5`（7 条 damage `-5` 为信息性）；Q5 ksponly 与生产的 51 条压力包络**逐位一致**。`--selftest` 1 正例 + 6 负例全 PASS。
+  - **CI #116 插曲**：新增的 `Gate 4.12:` 行被 `check_gate41_biot.py` 的裸前缀 `'Gate 4.1' in line` 误计为 102 条未解析探针（`2 日志 × 51 步`），使 B1 与 Gate 4.3 C7 连带 FAIL；改为精确 `'Gate 4.1:'` 后 #117 全绿。**经验**：诊断行前缀不要用裸子串匹配，`4.1` 与 `4.1b` / `4.12` / `4.13` 会碰撞。
 
 ---
 
@@ -257,9 +270,9 @@
 - 闸门 1（不崩+边界）：**4 / 4**。1.1 / 1.2 / 1.3 已落地；1.4 经核实是 `use-rename` 分离设计、无需改动。CI #47 首次完整编译，此后由 Gate 3.3 / 4.x 持续回归。
 - 闸门 2（可见）：**4 / 4**。2.1–2.4 完成；2.3 的 TEMP `source: 1.0e-6` 已在闸门 3 前改回 `0.0`，「务必改回」注意项解除。
 - 闸门 3（瞬态+符号）：**2 / 2**。3.1 TS 瞬态主循环已实际运行（`Gate 3.1` / `Gate 3.2` 诊断行）；3.2 由 **Gate 3.3 P1–P8** 硬判据验收 —— P6「L2 err vs BE series」CI #99 实测 `0.03206 ≤ 0.05`，衰减方向与量级正确，**无需改算子符号**（该结论与源项符号无关，见 3.2 / 4.4）。
-- 闸门 4（物理+工程）：**11 项收口 / 11 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返）；4.10 根目录旧副本清理（**CI #109 `GATE410_RESULT: PASS`**，W1–W8 全绿，93 个文件 100% rename 归档、根目录 tracked `.F90` 归零、原有十组 verdict 与 #106 逐位一致）；4.7 时变材料入口（**CI #111 `GATE47_RESULT: PASS`**，X1–X8 全绿、`A(t)`/`S(t)` 双通道可证伪、生产物理场逐位不变）；4.9 逐单元 IS 批量装配（**CI #114 `GATE49_RESULT: PASS`**，Y1–Y8 全绿、O(N)→O(1) 300× 归约、物理场逐位一致、生产零扰动）。
-- 合计：**21 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 11 项），**2 项待做**：`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代。
-- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)、4.10 (W1–W8，根目录清零 + 归档 blob 校验 + 构建隔离)；**十一组判据在 CI #109 全绿**（4.10 已验收）；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
+- 闸门 4（物理+工程）：**13 项收口 / 13 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返）；4.10 根目录旧副本清理（**CI #109 `GATE410_RESULT: PASS`**，W1–W8 全绿，93 个文件 100% rename 归档、根目录 tracked `.F90` 归零、原有十组 verdict 与 #106 逐位一致）；4.7 时变材料入口（**CI #111 `GATE47_RESULT: PASS`**，X1–X8 全绿、`A(t)`/`S(t)` 双通道可证伪、生产物理场逐位不变）；4.9 逐单元 IS 批量装配（**CI #114 `GATE49_RESULT: PASS`**，Y1–Y8 全绿、O(N)→O(1) 300× 归约、物理场逐位一致、生产零扰动）；4.12 `pressurePreviousStep` 死写转步间压降活诊断（**CI #117 `GATE412_RESULT: PASS`**，Z1–Z6）；4.13 标准 Newton 残差平台 `3~13` 根因定性为 Dirichlet 单位对角 / 弹性刚度尺度失衡（**CI #117 `GATE413_RESULT: PASS`**，Q1–Q5）。
+- 合计：**23 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 13 项），**0 项在册待做**。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代；4.11 为总括性描述，已由硬判据体系覆盖。
+- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)、4.10 (W1–W8，根目录清零 + 归档 blob 校验 + 构建隔离)；**十一组判据在 CI #109 全绿**（4.10 已验收）；此后追加 4.7 (X1–X8)、4.9 (Y1–Y8)、4.12 (Z1–Z6)、4.13 (Q1–Q5)，**CI #117 十五组判据同轮全绿**；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
 - **最近八次 CI**：#109 `success`（`f2d7f57`，W3 改校验 git index blob，Gate 4.10 W1–W8 全绿；十一组判据全绿，原有十组 verdict 与 #106 逐位 IDENTICAL）；#108 `failure`（`fdeca5b`，Gate 4.10 归档 93 个旧副本；编译与十组物理判据全绿，仅 W3 因 `dos2unix` 移除 BOM 误判，已由 #109 修复）；#107 `success`（`627fe7d`，纯文档收尾的重复回归）；#106 `success`（`a260d7b`，Gate 4.6 μ(T) 别名加固 + V1–V8 硬判据，十组判据全绿）；#105 `success`（`7b4fded`，纯文档收尾的重复回归）；#104 `success`（`0a0c468`，Gate 4.8 守恒性纯后处理 U1–U8 硬判据）；#103 `success`（`3d2d45a`，纯文档收尾的重复回归）；#102 `success`（`c05bac5`，Gate 4.5 能量诊断修好 + 接线 + T1–T8 硬判据）。（#97 `failure`（`f20fa18`）为旧 E2「位等价」前提错误，已由 #98 改物理签名判据修复。）
 
 **历史提交 / CI 记录（2026-11-07 09:55 快照，保留备查）**
@@ -2660,3 +2673,27 @@ artifact 增 `/tmp/gate43_verdict.log`。静态校验：PyYAML 6.0.3 解析、
 **提交前离线复核（零本地编译 / 零本地求解器）**：`git diff --check`、`ast.parse`、PyYAML 三份 deck、10 个 workflow `run` block `bash -n`、bag 声明/注册 37-37 一致、新增行非 ASCII=0、两个判据 `--selftest` 全 PASS、用 #113 真实日志 / EXO 离线 `--gate` 回放提前得到 `GATE47_RESULT: PASS` 与 `GATE49_RESULT: PASS`，与 CI #114 实测一致。
 
 **结论：4.9（逐单元 IS 装配性能）已收口，闸门 4 累计 11 项完成，合计 21 项已落地。** 仍在册：`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因、damage SNES 7 条 `-5`（信息性）。
+
+---
+
+## CI #117 结果（4.12 / 4.13 收口，commit `d142afb`，conclusion=success）
+
+`d142afb` 的 CI #117（run `42608060588`）`conclusion=success`，job `Build + Terzaghi` 全 success。下载真实 `build-diagnostics` artifact（14,880,833 B，`zipfile.testzip()` 无错）离线复核，**十五组 verdict 同轮全 PASS**，其中新增两组：
+
+| 判据 | 结果 | 关键指标 |
+|---|---|---|
+| 4.12 | **PASS (Z1–Z6)** | 51+51 行、2 处快照 + 采样 + 零装配消费者、`dpmax(n)=pmax(n)−pmax(n−1)` 逐位一致、EXO 极值锚定、峰值 @step 10、末/峰 `0.132`、408 step marker 无 fatal |
+| 4.13 | **PASS (Q1–Q5)** | 生产 `-disp_snes_type ksponly`、三处尺度锚点齐全、两份日志无 Newton fnorm / displacement `-5`、ksponly 与生产 51 条压力包络逐位一致 |
+| 原有 13 组 | 全 PASS | 3.3 / 4.1 (B1–B7) / 4.1b / 4.2 / 4.3 (C1–C7) / 4.4 / 4.5 / 4.6 / 4.7 / 4.8 / 4.9 / 4.10 / 主报告 |
+
+**4.12 落地**：`pressurePreviousStep` 从「创建 / 初值 / 每步 VecCopy / 销毁但无人读」的死写，改造成**步间压降活诊断** —— 初始化时快照经 Dirichlet 修正的真实初始场，每步 `TSSolve` 前用 `VecMin/VecMax` 采样上一步末场，之后打印 `Gate 4.12: step N t T dpmax ... dpmin ...`；`m_Flow` 装配例程仍不读该 Vec，物理零反馈。实测 `dpmax` 首步 `−226.206 Pa`、峰值 `−3734.93 Pa`（step 10）、末步 `−491.674 Pa`，呈 Terzaghi 固结典型的先加速后指数衰减。
+
+**4.13 根因（本轮静态定位）**：`m_MEF90_DefMechAssembly.F90` 中自由自由度残差 `∫(C:ε(u)):ε(v) dΩ`（尺度 `E ~ 1e9`），Dirichlet 行残差 `u − u_bc`（尺度 1），Jacobian 用 `MatZeroRowsColumnsIS(A, setISdof, 1.0_Kr, ...)` 置单位对角 ⇒ 矩阵混合相差约 9 个数量级的行，条件数 ~E。CG 按**相对残差**收敛后，物理力残差仍剩几牛顿，SNES 于是反复迭代一个降不下去的 `fnorm`（CI #83：`2.082e4 → ~9 → 3~13`）。该 deck 实质线性，一次线性解即精确解，故 CI #84 的 ksponly 是正确规避而非掩盖 bug。判据 Q1–Q5 把这一诊断可证伪地冻结，防止有人把生产改回标准 Newton 或误判为装配错误。
+
+**CI #116 插曲（`failure`）**：新增的 51 行 `Gate 4.12:` 被 `check_gate41_biot.py` 的裸前缀 `'Gate 4.1' in line` 误计为 102 条未解析探针（2 日志 × 51 步），`B1 FAIL` 并连带 Gate 4.3 `C7 FAIL`；**#116 的 4.12 / 4.13 及其余 12 组全部 PASS**。修复为精确匹配 `'Gate 4.1:'`，先用 #116 真实日志离线回放得到 `GATE41_RESULT: PASS (B1-B7)`，再推 `d142afb` → #117 全绿。
+
+**零扰动证明**：#117 与 #116 的 `out_main.gen` 压力 / `u_x` / `u_y` 共 **54,468 个数值 differing=0、max|d|=0**；15 组 verdict 中 13 组与 #116 **逐字节 IDENTICAL**，仅 `gate41_verdict.log` 与 `gate43_verdict.log` 由 FAIL 转 PASS（正是修复目标）。相对 #115，生产日志只多 51 行 `Gate 4.12:` 与 changeset 行（字节数 `298025→304451`），所有原有物理判据数值不变。
+
+**提交前离线复核（零本地编译 / 零本地求解器）**：`git diff --check`、`ast.parse`、PyYAML、10 个 workflow `run` block `bash -n`、Fortran 块平衡与 HEAD 一致、两个新判据 `--selftest`（1 正例 + 8 负例 / 1 正例 + 6 负例）全 PASS、用 #115 真实日志 / EXO 离线 `--gate` 回放提前得到 `GATE412_RESULT: PASS` 与 `GATE413_RESULT: PASS`。
+
+**结论：4.12 与 4.13 收口，闸门 4 累计 13 项完成、合计 23 项已落地，0 项在册待做。** damage SNES 7 条 `-5` 为信息性（Gate 3.3 P8 已用损伤场有界替代），4.11 总括性描述由十五组硬判据体系覆盖。
