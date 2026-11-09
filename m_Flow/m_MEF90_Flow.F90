@@ -229,9 +229,28 @@ Contains
       PetscReal                                           :: damageGauss, vGauss, k_v, k_eff
       PetscReal,Dimension(:),Pointer                      :: dmgPtr
       PetscReal,Dimension(:),Pointer                     :: permPtr, muPtr
+      Type(SectionReal)                                  :: permSec, muSec
+      PetscReal                                           :: muVal
+      Logical                                             :: useMuT
       PetscInt                                            :: iDoF, iGauss, QuadratureOrder
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
+      !!! Gate 4.6 -- remove the mu(T)/permField ALIAS.
+      !!! FlowCtx%cellDMScalSec used to be a single scratch section shared by
+      !!! UpdateMuFromTemperature, UpdatePerm and UpdateStorativity: all three
+      !!! wrote the SAME cell slots, so mu(T) survived only because the calls
+      !!! happened to be ordered that way. Now every routine owns a private
+      !!! SectionRealDuplicate and the shared section is only a layout
+      !!! template. mu is read back from the persistent cellMuField Vec, so
+      !!! neither the call order nor an intervening write can corrupt it.
+      Call SectionRealDuplicate(FlowCtx%cellDMScalSec,permSec,ierr);CHKERRQ(ierr)
+      Call SectionRealSet(permSec,0.0_Kr,ierr);CHKERRQ(ierr)
+      useMuT = (gOpt%temperatureDependViscosity .AND. Associated(FlowCtx%cellMuField))
+      If (useMuT) Then
+         Call SectionRealDuplicate(FlowCtx%cellDMScalSec,muSec,ierr);CHKERRQ(ierr)
+         Call SectionRealToVec(muSec,FlowCtx%cellDMScalScatter,SCATTER_REVERSE, &
+              FlowCtx%cellMuField,ierr);CHKERRQ(ierr)
+      End If
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call ISGetIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
@@ -275,18 +294,22 @@ Contains
             !!! k(v) = k_min + (k_max - k_min)*v
             k_v = k_eff + (gOpt%permeabilityMax - k_eff) * vGauss
 
-            !!! SectionRealRestrict → get writeable ptr, then write perm = k/μ
-            Call SectionRealRestrict(FlowCtx%cellDMScalSec,setIdx(cell),permPtr,ierr);CHKERRQ(ierr)
-
-            !!! Use temperature-dependent viscosity μ(T) if enabled, else constant μ_ref
-            If (gOpt%temperatureDependViscosity .AND. Associated(FlowCtx%cellMuField)) Then
-               Call SectionRealRestrict(FlowCtx%cellDMScalSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
-               permPtr(1) = k_v / max(muPtr(1),1e-12_Kr)
-            Else
-               permPtr(1) = k_v / max(gOpt%dynamicViscosity,1e-12_Kr)
+            !!! Gate 4.6: permPtr lives in a PRIVATE section, muPtr in ANOTHER
+            !!! private section filled from cellMuField -- they can no longer
+            !!! alias, and permSec is not the section mu was written into.
+            Call SectionRealRestrict(permSec,setIdx(cell),permPtr,ierr);CHKERRQ(ierr)
+            muVal = gOpt%dynamicViscosity
+            If (useMuT) Then
+               Call SectionRealRestrict(muSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
+               !!! cellMuField is zero-initialised in CreateVectors; a zero
+               !!! means mu(T) has not been assembled yet on this step. Fall
+               !!! back to mu_ref instead of dividing by the 1e-12 guard,
+               !!! which would silently blow permField up by ~1e9.
+               If (muPtr(1) > 0.0_Kr) muVal = muPtr(1)
+               Call SectionRealRestore(muSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
             End If
-
-            Call SectionRealRestore(FlowCtx%cellDMScalSec,setIdx(cell),permPtr,ierr);CHKERRQ(ierr)
+            permPtr(1) = k_v / max(muVal,1e-12_Kr)
+            Call SectionRealRestore(permSec,setIdx(cell),permPtr,ierr);CHKERRQ(ierr)
          End Do
          DeAllocate(dmgPtr)
          Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
@@ -294,9 +317,13 @@ Contains
          Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
       End Do
 
-      Call SectionRealComplete(FlowCtx%cellDMScalSec,ierr);CHKERRQ(ierr)
-      Call SectionRealToVec(FlowCtx%cellDMScalSec,FlowCtx%cellDMScalScatter, &
+      Call SectionRealComplete(permSec,ierr);CHKERRQ(ierr)
+      Call SectionRealToVec(permSec,FlowCtx%cellDMScalScatter, &
            SCATTER_FORWARD,FlowCtx%permField,ierr);CHKERRQ(ierr)
+      Call SectionRealDestroy(permSec,ierr);CHKERRQ(ierr)
+      If (useMuT) Then
+         Call SectionRealDestroy(muSec,ierr);CHKERRQ(ierr)
+      End If
 
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
       Call ISDestroy(CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -321,8 +348,14 @@ Contains
       PetscInt                                            :: set, cell
       PetscReal                                           :: S_eff
       PetscReal,Dimension(:),Pointer                      :: Sptr
+      Type(SectionReal)                                  :: sSec
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
+      !!! Gate 4.6: this routine also used to write the SHARED scratch
+      !!! section, so calling it between UpdateMuFromTemperature and
+      !!! UpdatePerm would overwrite mu(T) with S. Own a private section.
+      Call SectionRealDuplicate(FlowCtx%cellDMScalSec,sSec,ierr);CHKERRQ(ierr)
+      Call SectionRealSet(sSec,0.0_Kr,ierr);CHKERRQ(ierr)
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call ISGetIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
@@ -335,17 +368,18 @@ Contains
          Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
          Call ISGetIndicesF90(setIS,setIdx,ierr);CHKERRQ(ierr)
          Do cell = 1, size(setIdx)
-            Call SectionRealRestrict(FlowCtx%cellDMScalSec,setIdx(cell),Sptr,ierr);CHKERRQ(ierr)
+            Call SectionRealRestrict(sSec,setIdx(cell),Sptr,ierr);CHKERRQ(ierr)
             Sptr(1) = S_eff
-            Call SectionRealRestore(FlowCtx%cellDMScalSec,setIdx(cell),Sptr,ierr);CHKERRQ(ierr)
+            Call SectionRealRestore(sSec,setIdx(cell),Sptr,ierr);CHKERRQ(ierr)
          End Do
          Call ISRestoreIndicesF90(setIS,setIdx,ierr);CHKERRQ(ierr)
          Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
       End Do
 
-      Call SectionRealComplete(FlowCtx%cellDMScalSec,ierr);CHKERRQ(ierr)
-      Call SectionRealToVec(FlowCtx%cellDMScalSec,FlowCtx%cellDMScalScatter, &
+      Call SectionRealComplete(sSec,ierr);CHKERRQ(ierr)
+      Call SectionRealToVec(sSec,FlowCtx%cellDMScalScatter, &
            SCATTER_FORWARD,FlowCtx%storativity,ierr);CHKERRQ(ierr)
+      Call SectionRealDestroy(sSec,ierr);CHKERRQ(ierr)
 
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
       Call ISDestroy(CellSetGlobalIS,ierr);CHKERRQ(ierr)
@@ -553,6 +587,7 @@ Contains
       PetscReal                                           :: mu_ref, C, Ea_over_R, T_dimless
       PetscReal,Dimension(:),Pointer                      :: TPtr
       PetscReal,Dimension(:),Pointer                      :: muPtr
+      Type(SectionReal)                                  :: muSec
 
       !!! Must have temperature-enabled (HeatXfer active + shared pointer)
       If (.NOT. Associated(DefMechCtx%temperature)) Return
@@ -578,6 +613,14 @@ Contains
       Ea_over_R = gOpt%arrheniusActivationEnergy
       TMin = TRef * 0.5_Kr   !!! clamp to prevent μ→∞ at T→0
       TMax = TRef * 3.0_Kr   !!! upper clamp for numerical safety
+
+      !!! Gate 4.6: mu(T) is assembled into a PRIVATE section and scattered
+      !!! to the persistent cellMuField Vec. cellDMScalSec is no longer a
+      !!! carrier for mu, so UpdatePerm cannot alias it by accident.
+      !!! Default every cell to mu_ref first: a cell set that is skipped by
+      !!! the loop must not leave an uninitialised slot behind.
+      Call SectionRealDuplicate(FlowCtx%cellDMScalSec,muSec,ierr);CHKERRQ(ierr)
+      Call SectionRealSet(muSec,mu_ref,ierr);CHKERRQ(ierr)
 
       Do set = 1, size(setID)
          Call PetscBagGetDataMEF90FlowCtxCellSetOptions(FlowCtx%CellSetOptionsBag(set),cellOpt,ierr);CHKERRQ(ierr)
@@ -610,11 +653,12 @@ Contains
             If (TCell < TMin) TCell = TMin
             If (TCell > TMax) TCell = TMax
 
-            !!! Compute μ(T). CI #89: restrict the cellMuField slot FIRST --
-            !!! muPtr is an unassociated local pointer, so writing muPtr(1)
-            !!! before SectionRealRestrict is an immediate SEGV.
+            !!! Compute μ(T). CI #89: restrict the slot FIRST -- muPtr is an
+            !!! unassociated local pointer, so writing muPtr(1) before
+            !!! SectionRealRestrict is an immediate SEGV. Gate 4.6: the slot
+            !!! now belongs to the PRIVATE muSec, not the shared scratch.
             T_dimless = TCell / TRef
-            Call SectionRealRestrict(FlowCtx%cellDMScalSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
+            Call SectionRealRestrict(muSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
             If (gOpt%useArrheniusViscosity) Then
                !!! Arrhenius-like (gas): μ ∝ T^0.5 * exp(Ea/(R*T))
                muPtr(1) = mu_ref * sqrt(T_dimless) * exp(Ea_over_R * (1.0_Kr/TCell - 1.0_Kr/TRef))
@@ -622,7 +666,7 @@ Contains
                !!! Sutherland (liquid): μ ∝ T^1.5 * (T_ref+C)/(T+C)
                muPtr(1) = mu_ref * T_dimless * sqrt(T_dimless) * (TRef + C) / (TCell + C)
             End If
-            Call SectionRealRestore(FlowCtx%cellDMScalSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
+            Call SectionRealRestore(muSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
          End Do
          DeAllocate(TPtr)
          Call MEF90Element_Destroy(elem,ierr);CHKERRQ(ierr)
@@ -633,10 +677,12 @@ Contains
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
       Call ISDestroy(CellSetGlobalIS,ierr)
 
-      !!! Scatter Section → global Vec
-      Call SectionRealComplete(FlowCtx%cellDMScalSec,ierr);CHKERRQ(ierr)
-      Call SectionRealToVec(FlowCtx%cellDMScalSec,FlowCtx%cellDMScalScatter, &
+      !!! Scatter the PRIVATE section → persistent global Vec. UpdatePerm
+      !!! later scatters this Vec back into its OWN private muSec.
+      Call SectionRealComplete(muSec,ierr);CHKERRQ(ierr)
+      Call SectionRealToVec(muSec,FlowCtx%cellDMScalScatter, &
            SCATTER_FORWARD,FlowCtx%cellMuField,ierr);CHKERRQ(ierr)
+      Call SectionRealDestroy(muSec,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowUpdateMuFromTemperature
 
 

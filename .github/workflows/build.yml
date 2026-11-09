@@ -836,6 +836,31 @@ jobs:
           else
             echo "=== WARN: source run produced no result mesh; Gate 4.4 must FAIL ==="
           fi
+          # --- Gate 4.6 (hard): mu(T) alias removal ---------------------------
+          # terzaghi1D_viscosity.yaml == terzaghi1D_advection.yaml + ONE option
+          # (flow.temp_dep_viscosity: true). The live HeatXfer field (0..100 K)
+          # is clamped to TMin=146.5 K, so Sutherland gives a UNIFORM
+          # mu=4.2294e-4 Pa.s and permField must be exactly 2.36441x the
+          # advection control deck. If mu(T) is not read back from the
+          # persistent cellMuField Vec, that ratio collapses to 1 or blows up.
+          echo "=== Gate 4.6 mu(T) diagnostic run (temp_dep_viscosity=true, ksponly) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi1D_viscosity.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_viscosity.log
+          s46_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.6 mu(T) mpirun exit code: $s46_rc ==="
+          echo "=== Gate 4.6: Flow global bag temp_dep_viscosity as parsed ==="
+          grep -aE "^[[:space:]]*temp_dep_viscosity[[:space:]]*=" /tmp/terzaghi_viscosity.log | sort -u | head -5 || true
+          if [ -s data/Beam1x10-tri3_out.gen ]; then
+            cp -f data/Beam1x10-tri3_out.gen /tmp/out_viscosity.gen
+            echo "=== saved mu(T) result mesh -> /tmp/out_viscosity.gen ==="
+          else
+            echo "=== WARN: mu(T) run produced no result mesh; Gate 4.6 must FAIL ==="
+          fi
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
           # artifact stay the main-run output (diagnostic variants overwrite it).
           if [ -s /tmp/out_main.gen ]; then
@@ -1029,6 +1054,17 @@ jobs:
             /tmp/out_main.gen /tmp/out_source.gen \
             2>&1 | tee /tmp/gate48_verdict.log
           g48_rc=${PIPESTATUS[0]}
+          # --- Gate 4.6 (hard): mu(T) / permField alias removal --------------
+          # V1-V3 static anti-regression checks on m_MEF90_Flow.F90 (all three
+          # routines own private SectionRealDuplicates; mu travels through
+          # cellMuField), V4 deck isolation + solver bag, V5-V8 the physical
+          # permField ratio 2.36441 vs the advection control deck. Verdict
+          # printed here; exit 1 DEFERRED (CI #82 lesson).
+          python3 data/check_gate46_alias.py --gate \
+            /tmp/terzaghi_viscosity.log /tmp/terzaghi_advection.log \
+            /tmp/out_viscosity.gen /tmp/out_advection.gen \
+            2>&1 | tee /tmp/gate46_verdict.log
+          g46_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1100,6 +1136,16 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.8 PASS: energy/dissipation and mass balances close on both decks ==="
+          # Gate 4.6 deferred verdict (see the deferred-exit note above).
+          if [ "$g46_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.6 rejected the mu(T) alias removal (rc=$g46_rc) ==="
+            echo "    Check /tmp/gate46_verdict.log: V1-V3 private sections +"
+            echo "    cellMuField round-trip, V4 one-line deck + bag TRUE,"
+            echo "    V5 live T, V6 perm ratio=2.36441, V7 perm*mu(T)=k_min,"
+            echo "    V8 opt-out control untouched."
+            exit 1
+          fi
+          echo "=== Gate 4.6 PASS: mu(T) is a persistent per-cell field, permField=k/mu(T), opt-out unchanged ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1245,10 +1291,13 @@ jobs:
             /tmp/gate44_verdict.log
             /tmp/gate45_verdict.log
             /tmp/gate48_verdict.log
+            /tmp/gate46_verdict.log
+            /tmp/terzaghi_viscosity.log
             /tmp/terzaghi_stress.log
             /tmp/terzaghi_source.log
             /tmp/out_stress.gen
             /tmp/out_source.gen
+            /tmp/out_viscosity.gen
             /tmp/out_main.gen
             /tmp/out_ksponly.gen
             /tmp/out_nobiot.gen
