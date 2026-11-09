@@ -7,6 +7,9 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
 * `FLOW_FIX_CHECKLIST.md` — gate status, root causes and CI acceptance records.
 * `RESEARCH_POSITIONING.md` — comparison with prior work, capability matrix,
   honest limitations and citation leads.
+* `RATE_FRACABILITY_ROADMAP.md` — injection-rate / shale-fracability matching:
+  literature survey, code entry-point audit, similarity mapping and the
+  proposed Gate 4.15 route (research design only, no solver changes).
 * `vDef/data/check_gate*.py` — 15+ falsifiable verdict scripts, each with a
   positive/negative offline selftest.
 * `.github/workflows/build.yml` — build, diagnostic decks and deferred gate exit.
