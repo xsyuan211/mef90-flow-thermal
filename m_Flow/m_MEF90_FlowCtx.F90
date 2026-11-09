@@ -33,6 +33,17 @@ Module m_MEF90_FlowCtx_Type
       Type(SectionReal)                :: cellPorePressureSec ! cell-centered pore pressure section (effective-stress Biot form)
       Type(Vec),pointer                :: cellPorePressure    ! cell-centered p (cellDMScal), wired into DefMech as porePressureSec
 
+      !!! Gate 4.7 -- per-cell TIME factors for material parameters. These two
+      !!! Vecs are the single source of truth: MEF90FlowSetTransients fills
+      !!! them from the CST / Linear / File scaling law for the current step,
+      !!! and MEF90FlowUpdatePerm / MEF90FlowUpdateStorativity multiply the
+      !!! freshly rebuilt BASE fields by them. Both start at 1.0, which makes
+      !!! the default (constant) law a strict no-op: production is unchanged
+      !!! bit-for-bit. Keeping the factors on the Ctx (not on a shared scratch
+      !!! section) also means an AltMin re-assembly cannot silently reset them.
+      Type(Vec),pointer                :: permTimeFactor      ! A(t) = A_base * permTimeFactor(cell)
+      Type(Vec),pointer                :: storTimeFactor      ! S(t) = S_base * storTimeFactor(cell)
+
       !!! PetscBag options
       PetscBag                         :: GlobalOptionsBag
       PetscBag,Dimension(:),Pointer    :: CellSetOptionsBag
@@ -121,6 +132,23 @@ Module m_MEF90_FlowCtx_Type
       PetscReal                        :: pressureRTol
       PetscInt                         :: pressureMaxIt
       PetscBool                        :: biotEffectiveStress  ! .true. = effective-stress (total-stress) Biot form; mutually exclusive with body-force superposition
+
+      !!! Gate 4.7 -- time-dependent material parameter entry point.
+      !!! These six fields are APPENDED AT THE END on purpose: PetscBag writes
+      !!! each value at bag->data + bag->offset, so registration order must
+      !!! equal declaration order byte-for-byte (CI #50 lesson). Inserting a
+      !!! field in the middle would shift every EXO offset / solver tolerance.
+      !!!
+      !!! Physics note: in the assembled Darcy operator a time-dependent
+      !!! viscosity mu(t) enters ONLY through A = k/mu, so mu(t) is expressed
+      !!! by the same permeability channel (A(t) = k(t)*mu0/mu(t)). The
+      !!! independent SPATIAL mu(T) field remains Gate 4.6's cellMuField.
+      PetscInt                         :: permeabilityScaling  ! MEF90Scaling_CST / Linear / File
+      PetscReal                        :: permeabilityRate     ! [1/s], Linear law: A(t) = A0*(1+rate*t)
+      PetscInt                         :: storativityScaling   ! MEF90Scaling_CST / Linear / File
+      PetscReal                        :: storativityRate      ! [1/s], Linear law: S(t) = S0*(1+rate*t)
+      PetscInt                         :: materialPermOffset   ! EXO cell slot for the File law (0 = unused)
+      PetscInt                         :: materialStorOffset   ! EXO cell slot for the File law (0 = unused)
    End Type MEF90FlowGlobalOptions_Type
 
    !!!
@@ -473,6 +501,19 @@ Contains
       Call DMCreateGlobalVector(FlowCtx%cellDMScal,FlowCtx%cellPorePressure,ierr);CHKERRQ(ierr)
       Call PetscObjectSetName(FlowCtx%cellPorePressure,"PorePressure",ierr);CHKERRQ(ierr)
       Call VecSet(FlowCtx%cellPorePressure,0.0_Kr,ierr);CHKERRQ(ierr)
+
+      !!! Gate 4.7: both material time factors start at exactly 1.0, which is
+      !!! the identity for the CST law. SetTransients overwrites them once per
+      !!! outer step BEFORE UpdatePerm / UpdateStorativity rebuild the fields.
+      Allocate(FlowCtx%permTimeFactor,stat=ierr)
+      Call DMCreateGlobalVector(FlowCtx%cellDMScal,FlowCtx%permTimeFactor,ierr);CHKERRQ(ierr)
+      Call PetscObjectSetName(FlowCtx%permTimeFactor,"PermTimeFactor",ierr);CHKERRQ(ierr)
+      Call VecSet(FlowCtx%permTimeFactor,1.0_Kr,ierr);CHKERRQ(ierr)
+
+      Allocate(FlowCtx%storTimeFactor,stat=ierr)
+      Call DMCreateGlobalVector(FlowCtx%cellDMScal,FlowCtx%storTimeFactor,ierr);CHKERRQ(ierr)
+      Call PetscObjectSetName(FlowCtx%storTimeFactor,"StorTimeFactor",ierr);CHKERRQ(ierr)
+      Call VecSet(FlowCtx%storTimeFactor,1.0_Kr,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowCtxCreateVectors
 
 
@@ -529,6 +570,14 @@ Contains
       If (Associated(FlowCtx%cellPorePressure)) Then
          Call VecDestroy(FlowCtx%cellPorePressure,ierr);CHKERRQ(ierr)
          DeAllocate(FlowCtx%cellPorePressure); Nullify(FlowCtx%cellPorePressure)
+      End If
+      If (Associated(FlowCtx%permTimeFactor)) Then
+         Call VecDestroy(FlowCtx%permTimeFactor,ierr);CHKERRQ(ierr)
+         DeAllocate(FlowCtx%permTimeFactor); Nullify(FlowCtx%permTimeFactor)
+      End If
+      If (Associated(FlowCtx%storTimeFactor)) Then
+         Call VecDestroy(FlowCtx%storTimeFactor,ierr);CHKERRQ(ierr)
+         DeAllocate(FlowCtx%storTimeFactor); Nullify(FlowCtx%storTimeFactor)
       End If
    End Subroutine MEF90FlowCtxDestroyVectors
 
@@ -688,6 +737,28 @@ Contains
       Call PetscBagRegisterBool(bag,FlowGlobalOptions%biotEffectiveStress, &
            default%biotEffectiveStress,'biot_effective_stress', &
            'Use effective-stress (total-stress) Biot form instead of body-force superposition',ierr);CHKERRQ(ierr)
+
+      !!! Gate 4.7: time-dependent material parameter entry point. Registered
+      !!! LAST, in exactly the declaration order of the six appended fields.
+      !!! CST is the default so every existing deck keeps its physics.
+      Call PetscBagRegisterEnum(bag,FlowGlobalOptions%permeabilityScaling,MEF90ScalingList, &
+           default%permeabilityScaling,'perm_scaling', &
+           'Time scaling law for the Darcy conductivity A=k/mu',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterReal(bag,FlowGlobalOptions%permeabilityRate, &
+           default%permeabilityRate,'perm_rate', &
+           'Linear permeability rate [1/s]: A(t)=A0*(1+rate*t)',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterEnum(bag,FlowGlobalOptions%storativityScaling,MEF90ScalingList, &
+           default%storativityScaling,'stor_scaling', &
+           'Time scaling law for storativity S',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterReal(bag,FlowGlobalOptions%storativityRate, &
+           default%storativityRate,'stor_rate', &
+           'Linear storativity rate [1/s]: S(t)=S0*(1+rate*t)',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterInt(bag,FlowGlobalOptions%materialPermOffset, &
+           default%materialPermOffset,'material_perm_offset', &
+           'EXO cell slot holding the per-cell A(t) factor for the File law (0=unused)',ierr);CHKERRQ(ierr)
+      Call PetscBagRegisterInt(bag,FlowGlobalOptions%materialStorOffset, &
+           default%materialStorOffset,'material_stor_offset', &
+           'EXO cell slot holding the per-cell S(t) factor for the File law (0=unused)',ierr);CHKERRQ(ierr)
    End Subroutine PetscBagRegisterMEF90FlowCtxGlobalOptions
 
 

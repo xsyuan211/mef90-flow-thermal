@@ -508,15 +508,26 @@ Program vDef
             !!! call in this block so the next CI log pinpoints the culprit.
             Write(IOBuffer,*) 'Gate 3.1: step',step,' enter transient block\n'
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+            !!! Gate 4.7: SetTransients is now the FIRST call of the step.
+            !!! It fills permTimeFactor / storTimeFactor from the CST/Linear/
+            !!! File law at time(step); UpdatePerm and UpdateStorativity then
+            !!! REBUILD the coefficient fields with those factors, so TSSolve
+            !!! sees A(t) and S(t) of the CURRENT step (no one-step lag).
+            !!! Moving the call is safe for source/BC: the CST law rewrites
+            !!! boundaryPressure below with exactly the same values.
+            Call MEF90FlowSetTransients(MEF90FlowCtx,step,time(step),ierr);CHKERRQ(ierr)
+            Write(IOBuffer,*) 'Gate 3.1: step',step,' post-SetTransients\n'
+            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             Call MEF90FlowUpdateMuFromTemperature(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
             Write(IOBuffer,*) 'Gate 3.1: step',step,' post-UpdateMu\n'
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
             Call MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
             Write(IOBuffer,*) 'Gate 3.1: step',step,' post-UpdatePerm\n'
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
-            Call MEF90FlowSetTransients(MEF90FlowCtx,step,time(step),ierr);CHKERRQ(ierr)
-            Write(IOBuffer,*) 'Gate 3.1: step',step,' post-SetTransients\n'
-            Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
+            !!! Gate 4.7: S used to be assembled ONCE at init, so a
+            !!! time-dependent storativity had no way to evolve. Rebuild it
+            !!! on every step from the base options and storTimeFactor.
+            Call MEF90FlowUpdateStorativity(MEF90FlowCtx,ierr);CHKERRQ(ierr)
             Call MEF90FlowUpdateboundaryPressure(MEF90FlowCtx%boundaryPressure,MEF90FlowCtx,ierr);CHKERRQ(ierr)
             Write(IOBuffer,*) 'Gate 3.1: step',step,' post-UpdateBoundaryPressure\n'
             Call PetscPrintf(MEF90Ctx%Comm,IOBuffer,ierr);CHKERRQ(ierr)
@@ -621,15 +632,23 @@ Program vDef
                         !!! NEW — Phase 1 StepμT→k(v)→p: 热→渗流→力学 完整耦合链
                         !!! 完整顺序：T → μ(T) → k(v)/μ(T) → p → ∇p → Biot f_p → u + v
                         !!!
+                        !!! Gate 4.7: in steady mode SetTransients must ALSO
+                        !!! precede the coefficient rebuilds, otherwise A(t)
+                        !!! and S(t) would lag one AltMin iteration behind.
+                        !!! In transient mode the factors were already set at
+                        !!! the step level, so do not re-apply them here.
+                        If (.not. flowTransient) Then
+                           Call MEF90FlowSetTransients(MEF90FlowCtx,step,MEF90DefMechCtx%analysisTime,ierr)
+                        End If
                         !!! Stepμ: temperature-dependent viscosity μ(T)
                         Call MEF90FlowUpdateMuFromTemperature(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
                         !!! StepP: update k(v) (now uses cellMuField if temp_dep_viscosity enabled)
                         Call MEF90FlowUpdatePerm(MEF90FlowCtx,MEF90DefMechCtx,ierr);CHKERRQ(ierr)
                         !!! Gate 3.1 — in transient mode p was already advanced on the
-                        !!! time-step level; do NOT re-solve it here, and do not re-apply
-                        !!! time scaling / boundary pressure every AltMin iteration.
+                        !!! time-step level; do NOT re-solve it here.
                         If (.not. flowTransient) Then
-                           Call MEF90FlowSetTransients(MEF90FlowCtx,step,MEF90DefMechCtx%analysisTime,ierr)
+                           !!! Gate 4.7: rebuild S with the current storTimeFactor.
+                           Call MEF90FlowUpdateStorativity(MEF90FlowCtx,ierr);CHKERRQ(ierr)
                            Call MEF90FlowUpdateboundaryPressure(MEF90FlowCtx%boundaryPressure,MEF90FlowCtx,ierr)
                            !!! StepP_solve: steady Darcy pressure
                            Call SNESSolve(snesPressure,PETSC_NULL_OBJECT,MEF90FlowCtx%pressure,ierr);CHKERRQ(ierr)

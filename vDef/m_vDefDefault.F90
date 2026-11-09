@@ -151,7 +151,7 @@ module m_vDefDefault
 !!! NOTE: there must be NO ampersand after the closing parenthesis (a trailing
 !!!       & would splice the next Type declaration into this constructor).
 !!!       Decimal literals are used instead of 1.0e-20_Kr style constants.
-!!!       Value order must match MEF90FlowGlobalOptions_Type (29 components):
+!!!       Value order must match MEF90FlowGlobalOptions_Type (36 components):
 !!!       timeSteppingType, addNullSpace, permeabilityMin, permeabilityMax,
 !!!       dynamicViscosity, storativity, initialPressure, residualDamage,
 !!!       biotCoefficient, temperatureDependViscosity, referenceTemperature,
@@ -160,7 +160,11 @@ module m_vDefDefault
 !!!       boundaryPressureOffset, pressurePreviousStepOffset, permFieldOffset,
 !!!       darcyVelocityOffset, sourceScaling, boundaryPressureScaling,
 !!!       pressurePreviousStepScaling, pressureScaling, pressureATol,
-!!!       pressureRTol, pressureMaxIt.
+!!!       pressureRTol, pressureMaxIt, biotEffectiveStress,
+!!!       permeabilityScaling, permeabilityRate, storativityScaling,
+!!!       storativityRate, materialPermOffset, materialStorOffset.
+!!!       The last six are Gate 4.7 and MUST stay at the end: PetscBag offset
+!!!       order equals declaration order (CI #50).
    Type(MEF90FlowGlobalOptions_Type),Parameter    :: vDefFlowDefaultGlobalOptions = MEF90FlowGlobalOptions_Type( &
                                                          MEF90Flow_timeSteppingTypeSteadyState, &
                                                          PETSC_FALSE,    &
@@ -191,7 +195,13 @@ module m_vDefDefault
                                                          0.00000001_Kr,  &                ! pressureATol = 1e-8
                                                          0.0001_Kr,      &                ! pressureRTol = 1e-4
                                                          100,             &                ! pressureMaxIt
-                                                         PETSC_FALSE)     ! biotEffectiveStress (Gate 4.1b: default superposition)
+                                                         PETSC_FALSE,     &                ! biotEffectiveStress (Gate 4.1b: default superposition)
+                                                         MEF90Scaling_CST, &               ! permeabilityScaling (Gate 4.7: no-op)
+                                                         0.0_Kr,          &                ! permeabilityRate [1/s]
+                                                         MEF90Scaling_CST, &               ! storativityScaling (Gate 4.7: no-op)
+                                                         0.0_Kr,          &                ! storativityRate [1/s]
+                                                         0,               &                ! materialPermOffset (File law unused)
+                                                         0)                  ! materialStorOffset (File law unused)
    Type(MEF90FlowCellSetOptions_Type),Parameter   :: vDefFlowDefaultCellSetOptions = MEF90FlowCellSetOptions_Type( &
                                                          -1,              & ! elemTypeShortID (overridden)
                                                          0.0_Kr,          & ! source (volumetric injection/sink)

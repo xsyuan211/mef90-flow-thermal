@@ -747,7 +747,7 @@ Contains
 
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-!!!  SET TRANSIENTS — apply time-scaling law to source + pressure BC
+!!!  SET TRANSIENTS — time-scaling law for source, pressure BC AND MATERIALS
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 #undef __FUNCT__
 #define __FUNCT__ "MEF90FlowSetTransients"
@@ -760,6 +760,7 @@ Contains
 
       Type(MEF90FlowGlobalOptions_Type),pointer          :: gOpt
       Character(len=256)                                 :: IOBuffer
+      PetscReal                                          :: permFac, storFac
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
       !!! CI #68: removed the per-step enter/pre/post trace prints here and in
@@ -786,6 +787,70 @@ Contains
          Case (MEF90Scaling_CST)
             Call MEF90FlowUpdateboundaryPressure(FlowCtx%boundaryPressure,FlowCtx,ierr);CHKERRQ(ierr)
       End Select
+
+      !!! ------------------------------------------------------------------
+      !!! Gate 4.7 -- TIME-DEPENDENT MATERIAL PARAMETERS.
+      !!!
+      !!! Before this gate the ONLY time-scaled quantities were the source and
+      !!! the pressure BC; k(v)/mu and S were assembled ONCE (S) or only from
+      !!! the damage field (k), so compaction / pressure-dependent material
+      !!! evolution had no entry point at all.
+      !!!
+      !!! The two persistent per-cell Vecs permTimeFactor / storTimeFactor are
+      !!! the single source of truth. MEF90FlowUpdatePerm and
+      !!! MEF90FlowUpdateStorativity rebuild the BASE fields on every outer
+      !!! step and multiply by these factors, so there is NO cumulative
+      !!! VecScale drift and an AltMin re-assembly cannot reset the factors.
+      !!! vDef.F90 calls SetTransients BEFORE those two rebuilds.
+      !!!
+      !!!   CST    : factor = 1                (strict no-op)
+      !!!   Linear : factor = 1 + rate * t    (t = 0 gives 1, no singularity)
+      !!!   File   : factor = EXO cell field at material_*_offset / step
+      !!!
+      !!! Because mu enters the assembled operator only through A = k/mu,
+      !!! a mu(t) law is expressed by the same A channel; the spatial mu(T)
+      !!! field of Gate 4.6 is untouched.
+      !!! ------------------------------------------------------------------
+      Select case (gOpt%permeabilityScaling)
+         Case (MEF90Scaling_Linear)
+            permFac = 1.0_Kr + gOpt%permeabilityRate * timeVal
+            Call VecSet(FlowCtx%permTimeFactor,permFac,ierr);CHKERRQ(ierr)
+         Case (MEF90Scaling_File)
+            If (gOpt%materialPermOffset > 0) Then
+               Call VecLoadExodusCell(FlowCtx%cellDMScal,FlowCtx%permTimeFactor, &
+                    FlowCtx%MEF90Ctx%IOcomm,FlowCtx%MEF90Ctx%fileExoUnit,step, &
+                    gOpt%materialPermOffset,ierr);CHKERRQ(ierr)
+            Else
+               Call VecSet(FlowCtx%permTimeFactor,1.0_Kr,ierr);CHKERRQ(ierr)
+            End If
+         Case Default                                  ! CST / Null / unknown -> identity
+            Call VecSet(FlowCtx%permTimeFactor,1.0_Kr,ierr);CHKERRQ(ierr)
+      End Select
+
+      Select case (gOpt%storativityScaling)
+         Case (MEF90Scaling_Linear)
+            storFac = 1.0_Kr + gOpt%storativityRate * timeVal
+            Call VecSet(FlowCtx%storTimeFactor,storFac,ierr);CHKERRQ(ierr)
+         Case (MEF90Scaling_File)
+            If (gOpt%materialStorOffset > 0) Then
+               Call VecLoadExodusCell(FlowCtx%cellDMScal,FlowCtx%storTimeFactor, &
+                    FlowCtx%MEF90Ctx%IOcomm,FlowCtx%MEF90Ctx%fileExoUnit,step, &
+                    gOpt%materialStorOffset,ierr);CHKERRQ(ierr)
+            Else
+               Call VecSet(FlowCtx%storTimeFactor,1.0_Kr,ierr);CHKERRQ(ierr)
+            End If
+         Case Default
+            Call VecSet(FlowCtx%storTimeFactor,1.0_Kr,ierr);CHKERRQ(ierr)
+      End Select
+
+      !!! Report the factors actually stored in the Vecs (not the formula),
+      !!! so the CI gate can prove the values reached the assembled fields.
+      !!! VecMax is used because the File law may produce a spatially varying
+      !!! factor; for CST/Linear this is exactly the uniform scalar.
+      Call VecMax(FlowCtx%permTimeFactor,PETSC_NULL_INTEGER,permFac,ierr);CHKERRQ(ierr)
+      Call VecMax(FlowCtx%storTimeFactor,PETSC_NULL_INTEGER,storFac,ierr);CHKERRQ(ierr)
+      Write(IOBuffer,*) 'Gate 4.7: step',step,' t',timeVal,' permF',permFac,' storF',storFac,'\n'
+      Call PetscPrintf(PETSC_COMM_WORLD,IOBuffer,ierr);CHKERRQ(ierr)
    End Subroutine MEF90FlowSetTransients
 
 

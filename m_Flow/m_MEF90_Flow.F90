@@ -228,8 +228,8 @@ Contains
       PetscInt                                            :: set, cell
       PetscReal                                           :: damageGauss, vGauss, k_v, k_eff
       PetscReal,Dimension(:),Pointer                      :: dmgPtr
-      PetscReal,Dimension(:),Pointer                     :: permPtr, muPtr
-      Type(SectionReal)                                  :: permSec, muSec
+      PetscReal,Dimension(:),Pointer                     :: permPtr, muPtr, facPtr
+      Type(SectionReal)                                  :: permSec, muSec, facSec
       PetscReal                                           :: muVal
       Logical                                             :: useMuT
       PetscInt                                            :: iDoF, iGauss, QuadratureOrder
@@ -245,6 +245,12 @@ Contains
       !!! neither the call order nor an intervening write can corrupt it.
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,permSec,ierr);CHKERRQ(ierr)
       Call SectionRealSet(permSec,0.0_Kr,ierr);CHKERRQ(ierr)
+      !!! Gate 4.7: A(t) = A_base * permTimeFactor(cell). The factor lives in
+      !!! its OWN private section (never the shared scratch section) and is
+      !!! read back from the persistent Vec, so this stays alias-free.
+      Call SectionRealDuplicate(FlowCtx%cellDMScalSec,facSec,ierr);CHKERRQ(ierr)
+      Call SectionRealToVec(facSec,FlowCtx%cellDMScalScatter,SCATTER_REVERSE, &
+           FlowCtx%permTimeFactor,ierr);CHKERRQ(ierr)
       useMuT = (gOpt%temperatureDependViscosity .AND. Associated(FlowCtx%cellMuField))
       If (useMuT) Then
          Call SectionRealDuplicate(FlowCtx%cellDMScalSec,muSec,ierr);CHKERRQ(ierr)
@@ -308,7 +314,11 @@ Contains
                If (muPtr(1) > 0.0_Kr) muVal = muPtr(1)
                Call SectionRealRestore(muSec,setIdx(cell),muPtr,ierr);CHKERRQ(ierr)
             End If
-            permPtr(1) = k_v / max(muVal,1e-12_Kr)
+            Call SectionRealRestrict(facSec,setIdx(cell),facPtr,ierr);CHKERRQ(ierr)
+            !!! Gate 4.7: factor == 1.0 for the default CST law, so this is a
+            !!! bit-for-bit no-op on every existing production / diagnostic deck.
+            permPtr(1) = (k_v / max(muVal,1e-12_Kr)) * facPtr(1)
+            Call SectionRealRestore(facSec,setIdx(cell),facPtr,ierr);CHKERRQ(ierr)
             Call SectionRealRestore(permSec,setIdx(cell),permPtr,ierr);CHKERRQ(ierr)
          End Do
          DeAllocate(dmgPtr)
@@ -321,6 +331,7 @@ Contains
       Call SectionRealToVec(permSec,FlowCtx%cellDMScalScatter, &
            SCATTER_FORWARD,FlowCtx%permField,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(permSec,ierr);CHKERRQ(ierr)
+      Call SectionRealDestroy(facSec,ierr);CHKERRQ(ierr)
       If (useMuT) Then
          Call SectionRealDestroy(muSec,ierr);CHKERRQ(ierr)
       End If
@@ -347,8 +358,8 @@ Contains
       PetscInt,dimension(:),Pointer                       :: setID
       PetscInt                                            :: set, cell
       PetscReal                                           :: S_eff
-      PetscReal,Dimension(:),Pointer                      :: Sptr
-      Type(SectionReal)                                  :: sSec
+      PetscReal,Dimension(:),Pointer                      :: Sptr, facPtr
+      Type(SectionReal)                                  :: sSec, facSec
 
       Call PetscBagGetDataMEF90FlowCtxGlobalOptions(FlowCtx%GlobalOptionsBag,gOpt,ierr);CHKERRQ(ierr)
       !!! Gate 4.6: this routine also used to write the SHARED scratch
@@ -356,6 +367,12 @@ Contains
       !!! UpdatePerm would overwrite mu(T) with S. Own a private section.
       Call SectionRealDuplicate(FlowCtx%cellDMScalSec,sSec,ierr);CHKERRQ(ierr)
       Call SectionRealSet(sSec,0.0_Kr,ierr);CHKERRQ(ierr)
+      !!! Gate 4.7: S(t) = S_base * storTimeFactor(cell). vDef.F90 now calls
+      !!! this rebuild on EVERY outer step (it used to run only once at init),
+      !!! so a time-varying S cannot be wiped or accumulate a VecScale drift.
+      Call SectionRealDuplicate(FlowCtx%cellDMScalSec,facSec,ierr);CHKERRQ(ierr)
+      Call SectionRealToVec(facSec,FlowCtx%cellDMScalScatter,SCATTER_REVERSE, &
+           FlowCtx%storTimeFactor,ierr);CHKERRQ(ierr)
       Call DMmeshGetLabelIdIS(FlowCtx%DM,'Cell Sets',CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call MEF90ISAllGatherMerge(PETSC_COMM_WORLD,CellSetGlobalIS,ierr);CHKERRQ(ierr)
       Call ISGetIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
@@ -368,9 +385,11 @@ Contains
          Call DMMeshGetStratumIS(FlowCtx%DM,'Cell Sets',setID(set),setIS,ierr);CHKERRQ(ierr)
          Call ISGetIndicesF90(setIS,setIdx,ierr);CHKERRQ(ierr)
          Do cell = 1, size(setIdx)
+            Call SectionRealRestrict(facSec,setIdx(cell),facPtr,ierr);CHKERRQ(ierr)
             Call SectionRealRestrict(sSec,setIdx(cell),Sptr,ierr);CHKERRQ(ierr)
-            Sptr(1) = S_eff
+            Sptr(1) = S_eff * facPtr(1)
             Call SectionRealRestore(sSec,setIdx(cell),Sptr,ierr);CHKERRQ(ierr)
+            Call SectionRealRestore(facSec,setIdx(cell),facPtr,ierr);CHKERRQ(ierr)
          End Do
          Call ISRestoreIndicesF90(setIS,setIdx,ierr);CHKERRQ(ierr)
          Call ISDestroy(setIS,ierr);CHKERRQ(ierr)
@@ -380,6 +399,7 @@ Contains
       Call SectionRealToVec(sSec,FlowCtx%cellDMScalScatter, &
            SCATTER_FORWARD,FlowCtx%storativity,ierr);CHKERRQ(ierr)
       Call SectionRealDestroy(sSec,ierr);CHKERRQ(ierr)
+      Call SectionRealDestroy(facSec,ierr);CHKERRQ(ierr)
 
       Call ISRestoreIndicesF90(CellSetGlobalIS,setID,ierr);CHKERRQ(ierr)
       Call ISDestroy(CellSetGlobalIS,ierr);CHKERRQ(ierr)

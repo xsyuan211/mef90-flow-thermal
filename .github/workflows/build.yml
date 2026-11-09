@@ -861,6 +861,34 @@ jobs:
           else
             echo "=== WARN: mu(T) run produced no result mesh; Gate 4.6 must FAIL ==="
           fi
+          # --- Gate 4.7 (hard): time-dependent material parameters -----------
+          # terzaghi1D_material.yaml == terzaghi1D.yaml + FOUR flow: keys
+          # (perm_scaling/perm_rate/stor_scaling/stor_rate = linear/0.8/
+          # linear/0.4). A(t)=A0(1+0.8t) is visible in the EXO perm_field slot,
+          # S(t)=S0(1+0.4t) is visible in the Gate 4.7 log rows, and the
+          # opposed rates make c_v(t)=c_v0(1+0.8t)/(1+0.4t) so the pressure
+          # field separates the "no scaling", "perm only" and "S only" bugs.
+          echo "=== Gate 4.7 material-time diagnostic run (linear A(t) and S(t), ksponly) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi1D_material.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_material.log
+          s47_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.7 material mpirun exit code: $s47_rc ==="
+          echo "=== Gate 4.7: material scaling law as parsed by PetscBag ==="
+          grep -aE "^[[:space:]]*(perm_scaling|perm_rate|stor_scaling|stor_rate)[[:space:]]*=" /tmp/terzaghi_material.log | sort -u | head -8 || true
+          echo "=== Gate 4.7: first / last factor rows ==="
+          grep -a "Gate 4.7:" /tmp/terzaghi_material.log | head -2 || true
+          grep -a "Gate 4.7:" /tmp/terzaghi_material.log | tail -2 || true
+          if [ -s data/Beam1x10-tri3_out.gen ]; then
+            cp -f data/Beam1x10-tri3_out.gen /tmp/out_material.gen
+            echo "=== saved material-time result mesh -> /tmp/out_material.gen ==="
+          else
+            echo "=== WARN: material run produced no result mesh; Gate 4.7 must FAIL ==="
+          fi
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
           # artifact stay the main-run output (diagnostic variants overwrite it).
           if [ -s /tmp/out_main.gen ]; then
@@ -1073,6 +1101,17 @@ jobs:
           python3 data/check_gate410_legacy.py --gate \
             2>&1 | tee /tmp/gate410_verdict.log
           g410_rc=${PIPESTATUS[0]}
+          # --- Gate 4.7 (hard): time-dependent material parameters -----------
+          # X1-X3 run/deck/static integrity, X4 bag visibility, X5 EXO A(t),
+          # X6 factor rows read back from the Vecs, X7 the time-varying BE
+          # product series with separation from no-scaling / single-channel
+          # bugs, X8 production isolation. Verdict printed here; exit 1
+          # DEFERRED (CI #82 lesson).
+          python3 data/check_gate47_material.py --gate \
+            /tmp/terzaghi_material.log /tmp/terzaghi.log \
+            /tmp/out_material.gen /tmp/out_main.gen \
+            2>&1 | tee /tmp/gate47_verdict.log
+          g47_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1163,6 +1202,17 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.10 PASS: no root-level stale mirrors; all build inputs are subdirectory sources ==="
+          # Gate 4.7 deferred verdict (see the deferred-exit note above).
+          if [ "$g47_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.7 rejected the time-dependent material entry point (rc=$g47_rc) ==="
+            echo "    Check /tmp/gate47_verdict.log: X1 data integrity, X2 static"
+            echo "    branches/factor Vecs/bag order/call order, X3 four-line deck,"
+            echo "    X4 bag linear 0.8/0.4, X5 EXO A(t)=5e-8(1+0.8t),"
+            echo "    X6 51 factor rows, X7 time-varying BE series + channel"
+            echo "    separation, X8 production unchanged."
+            exit 1
+          fi
+          echo "=== Gate 4.7 PASS: A(t) and S(t) live, time-varying c_v matches the analytic BE product, production unchanged ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1310,12 +1360,15 @@ jobs:
             /tmp/gate48_verdict.log
             /tmp/gate46_verdict.log
             /tmp/gate410_verdict.log
+            /tmp/gate47_verdict.log
             /tmp/terzaghi_viscosity.log
+            /tmp/terzaghi_material.log
             /tmp/terzaghi_stress.log
             /tmp/terzaghi_source.log
             /tmp/out_stress.gen
             /tmp/out_source.gen
             /tmp/out_viscosity.gen
+            /tmp/out_material.gen
             /tmp/out_main.gen
             /tmp/out_ksponly.gen
             /tmp/out_nobiot.gen
