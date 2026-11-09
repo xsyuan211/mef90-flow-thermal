@@ -203,11 +203,14 @@
   - **已验收（CI #106 = `success`，`a260d7b`）**：`GATE46_RESULT: PASS`，V1–V8 全绿。实测 bag `temp_dep_viscosity =  TRUE`、51 行 `Gate 3.2`、`0` fatal 签名；`out_viscosity.gen` 600 个 cell 的 `permField` **全部**为 `1.18220652e-07`；`V6 ratio = 2.364413`（解析 `2.364413`）、per-cell spread `0`；`V7 max|perm·μ(T)/k_min − 1| = 0`（比离线预测更精确）；`V8` 对照偏差 `0`。**原有九组 verdict（Gate 3.3 / 4.1 / 4.2 / 4.3 / 4.1b / 4.4 / 4.5 / 4.8 / terzaghi）与 CI #104 逐位 IDENTICAL** ⇒ 生产 `temp_dep_viscosity = FALSE` 路径是严格 no-op，也实证排除了「私有 section 先 `SectionRealSet(...,0)` 会让未遍历 cell 归零」的顾虑（所有 cell 均被 cell-set 循环重写）。
   - **勾选条件（已满足）**：CI `conclusion=success` 且 `GATE46_RESULT: PASS`，且原有九组判据全绿、生产路径物理场逐位不变。
 
-- [ ] **4.7 时间相关材料参数入口**
-  - 位置：`m_Flow/m_MEF90_FlowAssembly.F90:535-566`（`SetTransients` 仅缩放 source + boundaryPressure）
+- [x] **4.7 时间相关材料参数入口**（**CI #111 `success` 验收通过**，`GATE47_RESULT: PASS`）
+  - 位置：`m_Flow/m_MEF90_FlowAssembly.F90` 的 `MEF90FlowSetTransients`（原仅缩放 source + boundaryPressure）。
   - 问题：渗透率、储集系数、黏度等随时间演化（压密/损伤演化）无对应重载入口。
-  - 改法：在 `SetTransients` 增加 permeability/storativity/viscosity 的 CST/Linear/File 缩放分支（或复用 `UpdatePerm`/`UpdateStorativity` 的时变重载）。
-  - 验收：材料参数可随时间场演化。
+  - **落地方式（`ef6ee2a`，8 文件 / +1286 行）**：在 `FlowCtx` 增加两个持久逐单元 Vec `permTimeFactor` / `storTimeFactor`（`cellDMScal`，初值 1），`SetTransients` 每步按 `perm_scaling` / `stor_scaling` 写入因子；`vDef.F90` 把 `SetTransients` 提为每步**首个**调用，其后 `UpdateMuFromTemperature` → `UpdatePerm` → `UpdateStorativity` 每次**重建 base 场再乘因子**，因此不存在 `VecScale` 累积漂移，AltMin 重装配也不会把因子重置。因子是唯一真值来源。
+  - 三定律：**CST**（因子恒 1，严格 no-op，生产默认）、**Linear**（`1 + rate*t`，`t=0` 无奇点）、**File**（`VecLoadExodusCell` 读 EXO cell slot，offset=0 时退化为 1）。μ(t) 因在算子中只以 `A = k/μ` 出现，复用同一 A 通道；4.6 的空间 `μ(T)` 场不受影响。
+  - **工程防回归**：6 个新 bag 字段（2 Enum / 2 Real / 2 Int）按 CI #50 教训**加在类型声明末尾、注册末尾一一对应**，三份默认构造器同步为 `MEF90Scaling_CST` / rate=0 / offset=0；factor Vec 的 Allocate / `DMCreateGlobalVector` / `VecSet(1)` / Destroy / Nullify 生命周期完整；`flow.log` 编译 2D/3D 双份均无错。
+  - 验收（`vDef/data/check_gate47_material.py`，849 行，**X1–X8 全硬**）：X1 51 步数据完整性；X2 静态反回归（分支 / factor Vec / bag 顺序 / 调用顺序）；X3 deck 只差 4 行（`perm_scaling/perm_rate/stor_scaling/stor_rate`）；X4 bag 可见 `linear 0.8/0.4`；X5 EXO `permField == 5e-8*(1+0.8t)` 逐记录零误差（末步比值 `1.800000`）；X6 51 行 factor 回读（`permF=1.8` / `storF=1.4`）；X7 时变 `c_v` 的 BE 乘积序列（`relL2(50)=0.0368`、`cos=1.00000`、`ratio=0.9633`）并用 `sep_const=0.360 / onlyk=0.782 / onlys=0.577` 拒伪「只接单通道」；X8 生产隔离（控制组 `relL2=0.0321`、perm 平坦）。离线自测 **1 正例 + 9 负例全 PASS**（覆盖入口死掉、单通道、Vec 未写、bag 不变、deck 多改、控制场被扰动）。
+  - **CI #111 实测**：`GATE47_RESULT: PASS (X1-X8)`；`g47_rc` 延迟 `exit 1`（CI #82 早退教训），artifact 增 `gate47_verdict.log` / `out_material.gen` / `terzaghi_material.log`。**十二组判据同轮全 PASS**；与 #109 相比 9 组 verdict 中 7 组逐字节 IDENTICAL，另 2 组仅 solver log 字节数变化（每步多打印一行 `Gate 4.7:`），所有物理数值不变 ⇒ 生产路径零扰动。
 
 - [x] **4.8 守恒性（质量平衡 + 能量/耗散平衡）后处理**（**CI #104 `success` 验收通过**，`GATE48_RESULT: PASS`）
   - **设计决策**：不改 Fortran。清单原建议"挂在主循环时间步层"，但 4.5 已让每步输出 `E`/`W`，Gate 2 已让 EXO 输出 `Pressure` / `permField` / `cellDarcyVelocity`，守恒量全部可由这三处既有产物重建，故做成 `vDef/data/check_gate48_conservation.py` 纯后处理判据，**零 Fortran 风险、物理场逐位不变**。
@@ -249,8 +252,8 @@
 - 闸门 1（不崩+边界）：**4 / 4**。1.1 / 1.2 / 1.3 已落地；1.4 经核实是 `use-rename` 分离设计、无需改动。CI #47 首次完整编译，此后由 Gate 3.3 / 4.x 持续回归。
 - 闸门 2（可见）：**4 / 4**。2.1–2.4 完成；2.3 的 TEMP `source: 1.0e-6` 已在闸门 3 前改回 `0.0`，「务必改回」注意项解除。
 - 闸门 3（瞬态+符号）：**2 / 2**。3.1 TS 瞬态主循环已实际运行（`Gate 3.1` / `Gate 3.2` 诊断行）；3.2 由 **Gate 3.3 P1–P8** 硬判据验收 —— P6「L2 err vs BE series」CI #99 实测 `0.03206 ≤ 0.05`，衰减方向与量级正确，**无需改算子符号**（该结论与源项符号无关，见 3.2 / 4.4）。
-- 闸门 4（物理+工程）：**9 项收口 / 9 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返）；4.10 根目录旧副本清理（**CI #109 `GATE410_RESULT: PASS`**，W1–W8 全绿，93 个文件 100% rename 归档、根目录 tracked `.F90` 归零、原有十组 verdict 与 #106 逐位一致）；4.7 / 4.9 等工程项未动。
-- 合计：**19 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 9 项），**4 项待做**：4.7 时变材料、4.9 逐单元 IS 性能、`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代。
+- 闸门 4（物理+工程）：**10 项收口 / 10 项在册**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返）；4.10 根目录旧副本清理（**CI #109 `GATE410_RESULT: PASS`**，W1–W8 全绿，93 个文件 100% rename 归档、根目录 tracked `.F90` 归零、原有十组 verdict 与 #106 逐位一致）；4.7 时变材料入口（**CI #111 `GATE47_RESULT: PASS`**，X1–X8 全绿、`A(t)`/`S(t)` 双通道可证伪、生产物理场逐位不变）；仅 4.9 逐单元 IS 装配性能未动。
+- 合计：**20 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 10 项），**3 项待做**：4.9 逐单元 IS 性能、`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代。
 - **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)、4.10 (W1–W8，根目录清零 + 归档 blob 校验 + 构建隔离)；**十一组判据在 CI #109 全绿**（4.10 已验收）；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
 - **最近八次 CI**：#109 `success`（`f2d7f57`，W3 改校验 git index blob，Gate 4.10 W1–W8 全绿；十一组判据全绿，原有十组 verdict 与 #106 逐位 IDENTICAL）；#108 `failure`（`fdeca5b`，Gate 4.10 归档 93 个旧副本；编译与十组物理判据全绿，仅 W3 因 `dos2unix` 移除 BOM 误判，已由 #109 修复）；#107 `success`（`627fe7d`，纯文档收尾的重复回归）；#106 `success`（`a260d7b`，Gate 4.6 μ(T) 别名加固 + V1–V8 硬判据，十组判据全绿）；#105 `success`（`7b4fded`，纯文档收尾的重复回归）；#104 `success`（`0a0c468`，Gate 4.8 守恒性纯后处理 U1–U8 硬判据）；#103 `success`（`3d2d45a`，纯文档收尾的重复回归）；#102 `success`（`c05bac5`，Gate 4.5 能量诊断修好 + 接线 + T1–T8 硬判据）。（#97 `failure`（`f20fa18`）为旧 E2「位等价」前提错误，已由 #98 改物理签名判据修复。）
 
@@ -2585,3 +2588,30 @@ artifact 增 `/tmp/gate43_verdict.log`。静态校验：PyYAML 6.0.3 解析、
 
 **结论：4.3（Flow 选项袋可见性 + 恒压 BC 语义 + 116 项 deck↔bag 比对）已收口。**
 仍在册：4.1b（互斥总应力模式）、标准 Newton 残差平台 `3~13` 根因、damage SNES 7 条 `-5`（信息性）。
+
+---
+
+## CI #111 结果（4.7 收口，commit `ef6ee2a`，conclusion=success）
+
+`ef6ee2a` 的 CI #111（run `42580671359`）`conclusion=success`，20 个 job step 全 success（含 `Build MEF90 + m_Flow + vDef` 与 `Run Terzaghi`）。下载真实 `build-diagnostics` artifact（13,350,853 B，`unzip -t` 无错）离线复核，**十二组 verdict 同轮全 PASS**：
+
+| 闸门 | verdict | 关键结果 |
+|---|---|---|
+| MAIN / KSPONLY | PASS | P1–P6 + P8；P4 `0.00011036 m`、P6 压比 `0.0905571`、L2 `0.0320613` |
+| 3.3 | PASS | 51 records P1–P6,P8 全过；7 条 SNESSolve-failed 为信息性 |
+| 4.1 | PASS | B1–B7；BODYFORCE `\|base\| 0→9.81`、slope `9.81`、R²=1、叠加误差 ~0 |
+| 4.1b | PASS | E1–E4；E2 8/8（`cos_ux=0.9994`、`ux_ratio=0.6912`、`cos_bnd=0.9793`、`k=8.063e-10 1/Pa`） |
+| 4.2 | PASS | D1–D8；`max\|T_off\|=100 K`、`\|dT\| 0→0.0639432 K`、`max\|u\|=1.13e-5 m` |
+| 4.3 | PASS | C1–C7；116 项 deck↔bag 0 失配、BC `span=0 Pa`、闭端 `1e5→9055.71` |
+| 4.4 | PASS | S1–S8；`cos(δp,+p_f)=1.00000`、amp `1.0049`、末步 `926.55 Pa` vs 解析 `924.30 Pa` |
+| 4.5 | PASS | T1–T8；`E(1)/E(50)=334.98`、`E(50)/E_an=0.937`、`cos(W,W_an)=0.99998` |
+| 4.6 | PASS | V1–V8；`perm(visc)/perm(ctrl)=2.364413` vs 解析 `2.364413`、`max\|perm·μ/k−1\|=0` |
+| 4.7 | **PASS** | **X1–X8**；`A(t)=5e-8(1+0.8t)` 逐记录零误差、末步比 `1.800000`、`permF=1.8`/`storF=1.4`、时变 BE `relL2(50)=0.0368` `cos=1.00000` `ratio=0.9633`、分离 `0.360/0.782/0.577` |
+| 4.8 | PASS | U1–U8；能量残差 `≤0.0112`、质量残差 `≤0.00976`、Darcy 速度相对误差 `3.11e-16` |
+| 4.10 | PASS | W1–W8；93 个归档 git-blob sha256 全匹配、`mismatched=none` |
+
+**4.7 生产隔离（零扰动证明）**：与 #109 的 9 组 verdict 对比，`gate41/42/44/45/46/48/41b` 共 7 组**逐字节 IDENTICAL**；`terzaghi_verdict.log` 与 `gate33_verdict.log` 的唯一差异是 solver log 字节数（`290933/291011 → 297823/297901`，因每步多打印一行 `Gate 4.7:`），**所有物理判据数值逐位一致**。求解器健康：`PETSC ERROR=0`、segfault=0、7 条 damage SNES `-5`（信息性）、51 步完整。
+
+**代码修改核查（本轮静态审查，零本地编译）**：工作树与 `HEAD=ef6ee2a` 一致，无未提交源码改动。4.7 的 6 个 bag 字段按 CI #50 教训加在类型/注册末尾且一一对应，默认 `MEF90Scaling_CST` 严格 no-op；`SetTransients → UpdateMu → UpdatePerm → UpdateStorativity` 调用顺序正确；两个 factor Vec 生命周期完整；`g47_rc` 延迟 `exit 1`（CI #82 教训），artifact 三项齐备。判据脚本 `--selftest` 离线重放 **1 正例 + 9 负例全 PASS**。另确认 4.1b 的两处历史隐患均已闭环：`INTENT(IN)→INTENT(INOUT)`（`f20fa18`，CI #97 编译通过）、单位张量改 `MEF90_MATS_IDENTITY`（CI #99，2D/3D 双编译 + LTE=0 防回归 deck），E2 判据亦已由错误的「位移逐位等价」更正为 8 项物理签名。
+
+**结论：4.7（时间相关材料参数入口）已收口，闸门 4 累计 10 项完成。** 仍在册：4.9 逐单元 IS 装配性能、`pressurePreviousStep` 死写、标准 Newton 残差平台 `3~13` 根因、damage SNES 7 条 `-5`（信息性）。
