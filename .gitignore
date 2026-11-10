@@ -38,6 +38,7 @@ mef90version.h
 !!! Local CI diagnostic downloads and watcher output (never commit)
 /ci*_diag.zip
 /ci*_art.zip
+/ci*_joblogs.zip
 /ci*_summary.txt
 /ci*_watch_stdout.txt
 /ci*_log_raw.bin
