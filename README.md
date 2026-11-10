@@ -15,7 +15,10 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   regime scalings do NOT apply to the pre-initiation storage-dominated window
   (Lecampion et al. 2017, doi:10.1002/2016JB013183), and bedding anisotropy is
   likewise NOT identifiable in the surface energy before initiation (CI #127
-  measured only a 0.41% shift). No Fortran solver changes at any stage.
+  measured only a 0.41% shift). Sec. 14 recomputes tables A-C as A'-C' from
+  published China continental shale-oil parameters (S01-S20) and documents why
+  a field rate-optimization table CANNOT be delivered from a pre-initiation
+  storage-dominated window. No Fortran solver changes at any stage.
 * `vDef/data/terzaghi415_scale.yaml` / `terzaghi415_inject.yaml` — Stage B0
   similarity-calibrated zero-source control and constant-rate injection decks
   (T = 1.57e-7, storage-dominated); 4-line / 1-line code-diff contracts.
@@ -30,6 +33,16 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   has a discrete t^2 anchor (CI #127: dp10 = 5.5e4 Pa = 0.55 x B0); 3D tetra4
   consistency. L4 is now a falsifiable NULL proposition for pre-initiation
   anisotropy: wired but not identifiable (two-sided band + ds < damage_dev).
+* `vDef/data/shale_oil_params.json` / `check_shale_oil_params.py` — shale-oil
+  literature parameter table and the M1-M8 recomputation verdict. Reproduces
+  the first-edition tables A/B/C at printed precision as a calibration anchor,
+  then recomputes A'-C' with three independent formula implementations
+  (reference / literal / expanded power law) so any exponent drift is
+  falsifiable. Keeps k_core (core gas permeability) strictly separate from
+  k_eff (pressure-decline inverted permeability, ~37.5x smaller at rep) and
+  derives S from phi*(c_pore+c_fluid). Pure post-processing: no Fortran, no
+  deck, no solver run; `--md` regenerates the published tables, `--selftest`
+  runs 1 positive + 33 mutations + 3 invariances.
 * `vDef/data/check_gate*.py` — 19 falsifiable verdict scripts, each with a
   positive/negative offline selftest.
 * `.github/workflows/build.yml` — build, diagnostic decks and deferred gate exit.

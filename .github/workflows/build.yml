@@ -1450,6 +1450,15 @@ jobs:
           python3 data/check_gate415_b2_extension.py --gate /tmp/gate415b2 \
             2>&1 | tee /tmp/gate415_b2_verdict.log
           gb2_rc=${PIPESTATUS[0]}
+          # --- Shale-oil literature parameter recomputation (M1-M8) ---------
+          # Pure post-processing: no Fortran, no deck, no solver. Reproduces
+          # first-edition tables A-C from roadmap 4.2 as the calibration
+          # anchor, then recomputes A'-C' from shale_oil_params.json. M2
+          # compares three independent formula implementations so any silent
+          # exponent/prefactor drift is falsifiable. Verdict is DEFERRED.
+          python3 data/check_shale_oil_params.py \
+            2>&1 | tee /tmp/shale_oil_params_verdict.log
+          gso_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1676,6 +1685,15 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.15 B2 PASS: f(t)=f0*t quadratic ramp, bedding anisotropy, 3D consistency ==="
+          if [ "$gso_rc" -ne 0 ]; then
+            echo "=== FAIL: shale-oil literature parameter recomputation rejected (rc=$gso_rc) ==="
+            echo "    Check /tmp/shale_oil_params_verdict.log: M1 table integrity,"
+            echo "    M2 three-way formula identity, M3 tables A/B/C reproduction,"
+            echo "    M4 k_core/k_eff separation, M5 exponent monotonicity,"
+            echo "    M6 regime, M7 similitude envelope, M8 state discipline."
+            exit 1
+          fi
+          echo "=== Shale-oil params PASS: tables A'-C' recomputed, B0 anchor reproduced ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1831,6 +1849,7 @@ jobs:
             /tmp/gate415_verdict.log
             /tmp/gate415_b1_verdict.log
             /tmp/gate415_b2_verdict.log
+            /tmp/shale_oil_params_verdict.log
             /tmp/gate415b1
             /tmp/gate415b2
             /tmp/terzaghi_415_scale.log
