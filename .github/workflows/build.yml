@@ -952,6 +952,56 @@ jobs:
           else
             echo "=== WARN: 3D run produced no result mesh; Gate 4.14 must FAIL ==="
           fi
+          # --- Gate 4.15 / Stage B0 (hard): rate/fracability similitude -----
+          # FIRST real exercise of a NON-ZERO flow.source under a shale-like
+          # poroelastic time scale.  Two NEW 2D decks, NO Fortran change:
+          #   terzaghi415_scale.yaml = production deck + 4 code lines
+          #       (numstep 51->11, k 5e-11->2.35e-18, kmax 1e-9->4.70e-17,
+          #        S 4.6e-10->1.50e-10) => c_v=1.5667e-5, T(1s)=1.5667e-7
+          #   terzaghi415_inject.yaml = scale deck + ONE code line
+          #       (cs0001.source 0.0->1.5e-5 [1/s])
+          # At T~1.6e-7 the Darcy term is frozen over 1 s (4 mm boundary
+          # layer), so the discrete balance is S dp/dt = f and the analytical
+          # anchor is p(t) = p0 + (f/S)t with f/S = 1e5 Pa/s.  V4 measures
+          # S_eff = f/slope from the real EXO and settles the [1/s] vs [Pa/s]
+          # unit ambiguity (PetscBag registers 1/s; an old deck said Pa/s).
+          # B0 uses a CONSERVATIVE f so the response stays linear/damage-free;
+          # the field-rate window is scanned later in Stage B1.  Production
+          # 2D decks and the 3D diagnostic keep their ORIGINAL configuration.
+          echo "=== Gate 4.15 B0 similitude-calibrated ZERO-SOURCE control run ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi415_scale.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_scale.log
+          s415_scale_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B0 control mpirun exit code: $s415_scale_rc ==="
+          if [ -s data/Beam1x10-tri3_out.gen ]; then
+            cp -f data/Beam1x10-tri3_out.gen /tmp/out_415_scale.gen
+            echo "=== saved B0 control result mesh -> /tmp/out_415_scale.gen ==="
+          else
+            echo "=== WARN: B0 control produced no result mesh; Gate 4.15 must FAIL ==="
+          fi
+          echo "=== Gate 4.15 B0 constant-rate INJECTION run (f=1.5e-5 1/s) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 \
+            -options_file_yaml data/terzaghi415_inject.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_inject.log
+          s415_inject_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B0 injection mpirun exit code: $s415_inject_rc ==="
+          echo "=== Gate 4.15: Flow CellSet source as parsed by PetscBag ==="
+          grep -aE "^[[:space:]]*source = " /tmp/terzaghi_415_inject.log | sort -u | head -5 || true
+          if [ -s data/Beam1x10-tri3_out.gen ]; then
+            cp -f data/Beam1x10-tri3_out.gen /tmp/out_415_inject.gen
+            echo "=== saved B0 injection result mesh -> /tmp/out_415_inject.gen ==="
+          else
+            echo "=== WARN: B0 injection produced no result mesh; Gate 4.15 must FAIL ==="
+          fi
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
           # artifact stay the main-run output (diagnostic variants overwrite it).
           if [ -s /tmp/out_main.gen ]; then
@@ -1214,6 +1264,18 @@ jobs:
             data/Beam1x10-tetra4.gen data/Beam1x10-tri3.gen \
             2>&1 | tee /tmp/gate414_verdict.log
           g414_rc=${PIPESTATUS[0]}
+          # --- Gate 4.15 / Stage B0 (hard): similitude + source unit --------
+          # V1 data integrity, V2 frozen T/c_v/k/S from the decks, V3
+          # storage-dominated zero-source control, V4 linear ramp f/S and
+          # S_eff = f/slope, V5 Gate 4.5 injection work, V6 per-step KSP,
+          # V7 static/deck/CI contracts, V8 production isolation.
+          # Verdict printed here; exit 1 DEFERRED (CI #82 / #120 lessons).
+          python3 data/check_gate415_rate_fracability.py --gate \
+            /tmp/terzaghi_415_scale.log /tmp/out_415_scale.gen \
+            /tmp/terzaghi_415_inject.log /tmp/out_415_inject.gen \
+            data/Beam1x10-tri3.gen /tmp/terzaghi.log \
+            2>&1 | tee /tmp/gate415_verdict.log
+          g415_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1365,6 +1427,27 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.14 PASS: 3D twin dispatched, MEF90MatS3DIdentity exercised, consolidation matches the 2D benchmark ==="
+          # Gate 4.15 / Stage B0 deferred verdict.
+          # CI #120 lesson: BOTH mpirun exit codes must be judged.  A timeout
+          # (rc=124) that leaves a half-written EXO must never reach a PASS.
+          if [ "$s415_scale_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B0 control run did not complete (mpirun rc=$s415_scale_rc) ==="
+            echo "    Check /tmp/terzaghi_415_scale.log for the last TS/KSP row."
+            exit 1
+          fi
+          if [ "$s415_inject_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B0 injection run did not complete (mpirun rc=$s415_inject_rc) ==="
+            echo "    Check /tmp/terzaghi_415_inject.log for the last TS/KSP row."
+            exit 1
+          fi
+          if [ "$g415_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 rejected the B0 similitude / source-unit calibration (rc=$g415_rc) ==="
+            echo "    Check /tmp/gate415_verdict.log: V1 data, V2 T/c_v,"
+            echo "    V3 frozen control, V4 slope f/S + S_eff, V5 injection"
+            echo "    work, V6 KSP, V7 deck/CI contracts, V8 isolation."
+            exit 1
+          fi
+          echo "=== Gate 4.15 B0 PASS: T=1.57e-7 storage-dominated, source unit [1/s] calibrated, S_eff recovered ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1517,6 +1600,11 @@ jobs:
             /tmp/gate412_verdict.log
             /tmp/gate413_verdict.log
             /tmp/gate414_verdict.log
+            /tmp/gate415_verdict.log
+            /tmp/terzaghi_415_scale.log
+            /tmp/terzaghi_415_inject.log
+            /tmp/out_415_scale.gen
+            /tmp/out_415_inject.gen
             /tmp/terzaghi_dim3.log
             /tmp/out_dim3.gen
             /tmp/terzaghi_viscosity.log

@@ -8,8 +8,14 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
 * `RESEARCH_POSITIONING.md` — comparison with prior work, capability matrix,
   honest limitations and citation leads.
 * `RATE_FRACABILITY_ROADMAP.md` — injection-rate / shale-fracability matching:
-  literature survey, code entry-point audit, similarity mapping and the
-  proposed Gate 4.15 route (research design only, no solver changes).
+  literature survey, code entry-point audit, similarity mapping, the Gate 4.15
+  route, and the Stage B0 similitude-calibration + source-unit calibration
+  record (no Fortran solver changes at any stage).
+* `vDef/data/terzaghi415_scale.yaml` / `terzaghi415_inject.yaml` — Stage B0
+  similarity-calibrated zero-source control and constant-rate injection decks
+  (T = 1.57e-7, storage-dominated); 4-line / 1-line code-diff contracts.
+* `vDef/data/check_gate415_rate_fracability.py` — Stage B0 V1-V8 hard verdict,
+  including the `[1/s]` vs `[Pa/s]` source-unit falsification test.
 * `vDef/data/check_gate*.py` — 15+ falsifiable verdict scripts, each with a
   positive/negative offline selftest.
 * `.github/workflows/build.yml` — build, diagnostic decks and deferred gate exit.
