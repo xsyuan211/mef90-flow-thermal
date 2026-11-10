@@ -9,7 +9,8 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   honest limitations and citation leads.
 * `RATE_FRACABILITY_ROADMAP.md` — injection-rate / shale-fracability matching:
   literature survey, code entry-point audit, similarity mapping, the Gate 4.15
-  route, Stage B0 acceptance (CI #125), Stage B1 acceptance (CI #127) and the
+  route, Stage B0 acceptance (CI #125), Stage B1 acceptance (CI #127),
+  Stage B2 acceptance (CI #128; 19 verdict groups green in one run) and the
   B1/B2 identifiability record (sec. 12-13). Two corrections: propagation-
   regime scalings do NOT apply to the pre-initiation storage-dominated window
   (Lecampion et al. 2017, doi:10.1002/2016JB013183), and bedding anisotropy is
@@ -24,7 +25,7 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
 * `vDef/data/check_gate415_rate_fracability.py` — Stage B0 V1-V8 hard verdict,
   including the `[1/s]` vs `[Pa/s]` source-unit falsification test.
 * `vDef/data/check_gate415_b1_identifiability.py` (A1-A8, CI #127 PASS) /
-  `check_gate415_b2_extension.py` (L1-L8) — Stage B1/B2 verdicts: beta = f/S
+  `check_gate415_b2_extension.py` (L1-L8, CI #128 PASS) — Stage B1/B2 verdicts: beta = f/S
   sees only (f,S), Gc is visible in the phase-field surface energy; f(t)=f0*t
   has a discrete t^2 anchor (CI #127: dp10 = 5.5e4 Pa = 0.55 x B0); 3D tetra4
   consistency. L4 is now a falsifiable NULL proposition for pre-initiation
