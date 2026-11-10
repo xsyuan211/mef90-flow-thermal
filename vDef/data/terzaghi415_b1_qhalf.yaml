@@ -1,0 +1,183 @@
+# ============================================================================
+# Gate 4.15 / Stage B1-B2 -- RATE / FRACABILITY IDENTIFIABILITY DECK
+#
+# Literature anchor (verified 2026-11-10):
+#   Lecampion, B., Desroches, J., Jeffrey, R.G., Bunger, A.P. (2017),
+#   "Experiments versus theory for the initiation and propagation of radial
+#   hydraulic fractures in low-permeability materials", JGR: Solid Earth,
+#   doi:10.1002/2016JB013183.
+#   Quote: "Prior to fracture initiation, the flow rate entering the fracture
+#   Qin is negligible, which for a constant injection rate Q0 results in a
+#   linear pressurization rate. The injection system compliance U can thus be
+#   directly obtained from the slope of the pressurization phase ... knowing
+#   Q0."  They also distinguish INITIATION pressure from BREAKDOWN pressure.
+#
+# Mapping onto vDef: the storativity S plays the role of U/Q0, i.e.
+#   beta = dp_bulk/dt = f/S,  f = cs0001.source [1/s].
+# B0 (CI #125) measured beta = 1.000000e+05 Pa/s and S_eff = 1.500000e-10.
+# The B0 EXO has Damage_max = 1.48e-4 << 1: this is the PRE-INITIATION,
+# storage-dominated window.  Consequently the propagation-regime scalings
+# (Detournay 2016: p_net ~ (E'^2 mu'/t)^(1/3), dln p_net / dln Q -> -1/3)
+# DO NOT APPLY here; R4 of RATE_FRACABILITY_ROADMAP.md sec. 5.2 is corrected.
+#
+# Falsifiable B1 hypothesis (identifiability LAYERING):
+#   Level 1  p_bulk slope beta : identifiable in f and S ONLY; invariant to
+#            Gc, k, mu while T = c_v t / H^2 << 1.
+#   Level 2  phase-field surface energy (m_MEF90_DefMechAssembly.F90:2340-2341,
+#            C1 ~ Gc/ell, C2 ~ Gc*ell*toughnessAnisotropyMatrix) and damage
+#            field: respond to Gc, to Q, and to the anisotropy matrix.
+# Energy rows are read from the solver log:
+#   "======= Total: elastic energy: ... work: ... cohesive: ... surface: ..."
+# NOTE: the damage SNES can report reason -5 (known residual plateau, CI #84).
+# Energies here are deterministic integrals of the current field, used ONLY as
+# relative/falsifiable observables -- never as a converged fracture solution.
+#
+# Deck contract: exactly ONE code line differs from terzaghi415_inject.yaml
+# (comments carry no YAML semantics; verified by code_lines() in the gate).
+# ============================================================================
+verbose: 2
+# CI #51 belt-and-braces: if a PETSc 3.3 YAML build flattens the 'flow:' block
+# without its prefix, this top-level alias still activates the transient enum.
+# The Flow bag itself reads -flow_timestepping_type (prefix 'flow_').
+timestepping_type: Transient
+time:
+    min: 0.0
+    max: 1.0
+    numstep: 11
+    interpolation: linear        # Gate 3.1: BE uses a fixed dt = time(2)-time(1); 11 records x dt=0.1 s span t=0..1 s
+
+# ----------- HEAT TRANSFER (disabled) -----------
+heatxfer:
+    timestepping:
+        type: null
+
+# ----------- DEFECT MECHANICS (quasi-static poroelasticity) -----------
+defmech:
+    timestepping:
+        type: quasistatic
+    solver:
+        type: AltMin
+    disp:
+        addNullSpace: true
+    disp_offset: 3
+    damage_offset: 2
+
+# ----------- DARCY FLOW (Biot coupled) -----------
+# These keys map to -flow_<key> (global PetscBag prefix 'flow_').
+# Enum values must match MEF90ScalingList: constant / linear / file / null
+# ('CST' is the Fortran enumerator name, NOT a legal PetscBag option value).
+flow:
+    timestepping_type: Transient        # exact match for MEF90Flow_timeSteppingTypeList(3)='Transient' (gate-3.1 TS path)
+    perm_min: 2.35e-18              # k_num [m2] -- Table C, class II; T=c_v*t/H^2 ~ 1.57e-7 at t=1 s
+    perm_max: 4.70e-17              # k_max [m2] -- 20x broken, same ratio as the production deck
+    viscosity: 1.0e-03             # mu [Pa.s] -- water
+    storativity: 1.50e-10           # S_num [1/Pa] -- Table C, 0.326 x S_deck
+    biot_coeff: 1.0                 # alpha = 1.0 -- full Biot coupling
+    residual_damage: 0.0
+    p0: 1.0e5                       # initial pore pressure sigma_0 (B0 storage-dominated: p stays ~p0 when f=0)
+    source_scaling: constant
+    bc_pressure_scaling: constant
+    pressure_atol: 1.0e-08
+    pressure_rtol: 1.0e-05
+    pressure_maxit: 500
+    pressure_offset: 1
+    source_offset: 2
+    # CI #68: 3 collided with DefMech's disp_offset=3. ViewEXO is called
+    # DefMech first, Flow second, so boundaryPressure used to OVERWRITE the
+    # Displacement_X field. bc_pressure is a known constant (0.0, see cs0010)
+    # and needs no output slot; disable it (0 = do not write / do not name).
+    # If bc_pressure_scaling is ever switched to 'file', give this a slot that
+    # does not collide with any DefMech nodal offset, or the read will be wrong.
+    boundary_pressure_offset: 0
+    pressure_previous_step_offset: 6   # must not collide with source_offset (default was 2)
+    perm_field_offset: 4
+    darcy_velocity_offset: 5
+
+# ================================================================
+# CELL SET OPTIONS -- combined material + DefMech + Flow per set
+# cs0001/cs0010/cs0020 are mesh labels (Beam1x10-tri3 mesh cell block IDs)
+# ================================================================
+
+# ----------- cs0001: Domain (TRI3, x in [-5,5], y in [-0.5,0.5]) -----------
+# Poroelastic material: E=1GPa, nu=0.25, plane-strain
+# Body-force free: Terzaghi consolidation has no gravity (CI #85).
+# No Flow BC here (domain interior)
+cs0001:
+    # ------ Material properties (DefMech) ------
+    hookeslaw:
+        type: Isotropic
+        YoungsModulus: 1.0e9
+        PoissonRatio: 0.25
+        planeStress: false
+    fracturetoughness: 27000.0
+    residualstiffness: 1.0e-03
+    internalLength: 0.2
+    # Gate 4.1b regression guard: the effective-stress Biot term must use the
+    # module-level identity tensor, NOT LinearThermalExpansion. Zeroing this
+    # material tensor is safe here (heatxfer: null -> the thermal-strain branch
+    # never runs) and makes the fix falsifiable: with the old code the stress
+    # run's displacement collapses to ~0 and Gate 4.1b E2 FAILs; with
+    # MEF90_MATS_IDENTITY the physics is unchanged and E2 still PASSes.
+    # Same key/format as terzaghi1D_advection.yaml (CI #90 precedent).
+    LinearThermalExpansion: 0,0,0
+
+    # ------ DefMech options ------
+    damage:
+        type: AT2
+    plasticity:
+        type: NONE
+    # CI #82: Terzaghi is a PURE poroelastic consolidation benchmark; a strain
+    # energy split (unilateral contact) does not belong to this physics.
+    # Worse, with damage.type AT2/AT2Elastic (cellIsElastic=TRUE) the residual
+    # unconditionally calls Split%DEED (Assembly.F90:287) while the Jacobian
+    # uses the full constant HookesLaw (Assembly.F90:649-650) -> J != dR/du,
+    # Newton step is wrong, line search collapses alpha to 0 and the residual
+    # plateaus at O(8) -> -5 / false SNORM_RELATIVE convergence. 'None' makes
+    # DEED and D2EED both degenerate to linear Hooke so R/J are consistent.
+    unilateralContact:
+        type: None
+    # CI #85: PETSc 3.3 RealArray keeps only the FIRST element when a
+    # comma is followed by a space, so the old "0, -9.81, 0" silently
+    # evaluated to 0 0 0. Write the zero explicitly. A NON-ZERO body
+    # force is exercised only in terzaghi1D_bodyforce.yaml (B3/B4).
+    Force: 0,0,0
+
+    # ------ Flow options ------
+    source: 7.5e-6                  # B1: Q = 0.5 x Q0
+    perm_override: 0.0              # use global perm_min/perm_max
+    storativity_override: -1        # use global S
+    flowBC: false                   # domain interior, no pressure BC
+
+# ----------- cs0010: Drained surface (x = -5, z = H = 10) -----------
+# Flow Dirichlet BC: p = 0 (atmospheric -- fully drained)
+# The 6 nodes at x=-5 carry p=0 in every output record.
+# FIX (2026-11-07): both displacement components are pinned (u_x AND u_y).
+# ROOT CAUSE of the old non-convergence: MEF90/PETSc's YAML BoolArray reader only
+# honours the FIRST element when there is a SPACE after the comma, so the original
+# `displacementBC: 1, 1, 1` was parsed as TRUE FALSE FALSE -> u_y was NEVER
+# constrained, leaving a free rigid translation under gravity and a singular
+# DefMech matrix (51x SNES_DIVERGED_MAX_IT). Removing the spaces after commas
+# (i.e. `1,1,1`, matching the format PetscBagView writes and the repo's other
+# decks) makes the reader accept all three components, so u_x and u_y are both
+# pinned. Drainage (p=0) is unchanged.
+cs0010:
+    displacementBC: 1,1,1
+    boundaryDisplacement: 0,0,0
+    damageBC: 0
+    boundaryDamage: 0
+    # ------ Flow Dirichlet BC on this surface ------
+    source: 0.0
+    flowBC: true
+    bc_pressure: 0.0
+
+# ----------- cs0020: Closed end (x = +5, z = 0) -----------
+# Full displacement fix (0, 0, 0) -- no-slip impermeable end
+# No-flow by default (natural Neumann BC)
+cs0020:
+    displacementBC: 1,1,1
+    boundaryDisplacement: 0,0,0
+    damageBC: 0
+    boundaryDamage: 0
+    # ------ Flow: natural Neumann (no explicit BC) ------
+    source: 0.0
+    flowBC: false

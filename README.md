@@ -9,14 +9,23 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   honest limitations and citation leads.
 * `RATE_FRACABILITY_ROADMAP.md` — injection-rate / shale-fracability matching:
   literature survey, code entry-point audit, similarity mapping, the Gate 4.15
-  route, and the Stage B0 similitude-calibration + source-unit calibration
-  record (no Fortran solver changes at any stage).
+  route, Stage B0 acceptance (CI #125) and the Stage B1/B2 identifiability
+  record (sec. 12). Includes the correction that propagation-regime scalings
+  do NOT apply to the pre-initiation storage-dominated window (Lecampion et al.
+  2017, doi:10.1002/2016JB013183). No Fortran solver changes at any stage.
 * `vDef/data/terzaghi415_scale.yaml` / `terzaghi415_inject.yaml` — Stage B0
   similarity-calibrated zero-source control and constant-rate injection decks
   (T = 1.57e-7, storage-dominated); 4-line / 1-line code-diff contracts.
+* `vDef/data/terzaghi415_b1_*.yaml` / `terzaghi415_b2_*.yaml` — Stage B1
+  Q x S x Gc x k x mu one-factor identifiability matrix, and Stage B2
+  variable-rate / bedding-anisotropy decks (each one code line from B0).
 * `vDef/data/check_gate415_rate_fracability.py` — Stage B0 V1-V8 hard verdict,
   including the `[1/s]` vs `[Pa/s]` source-unit falsification test.
-* `vDef/data/check_gate*.py` — 15+ falsifiable verdict scripts, each with a
+* `vDef/data/check_gate415_b1_identifiability.py` (A1-A8) /
+  `check_gate415_b2_extension.py` (L1-L8) — Stage B1/B2 verdicts: beta = f/S
+  sees only (f,S), Gc is visible in the phase-field surface energy; f(t)=f0*t
+  has a discrete t^2 anchor; 3D tetra4 consistency.
+* `vDef/data/check_gate*.py` — 17+ falsifiable verdict scripts, each with a
   positive/negative offline selftest.
 * `.github/workflows/build.yml` — build, diagnostic decks and deferred gate exit.
 

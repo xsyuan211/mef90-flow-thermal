@@ -1014,6 +1014,138 @@ jobs:
           else
             echo "=== WARN: B0 injection produced no result mesh; Gate 4.15 must FAIL ==="
           fi
+          # --- Gate 4.15 / Stage B1: Q x S x Gc x k x mu one-factor matrix --
+          # Literature: Lecampion, Desroches, Jeffrey & Bunger (2017),
+          # JGR Solid Earth, doi:10.1002/2016JB013183. BEFORE fracture
+          # initiation Q_in ~ 0 and a constant rate produces a LINEAR
+          # pressurisation whose slope Q0/U is set by the injection-system
+          # compliance; rock parameters are invisible on that curve. In vDef
+          # the compliance is the storativity S, so beta = f/S (CI #125).
+          # The six decks are ONE code-line deltas of terzaghi415_inject.yaml;
+          # A2-A6 test identifiability LAYERING: beta sees only (f,S), while
+          # the phase-field surface energy (C1/C2 ~ Gc) responds to Gc and Q.
+          # Each 11-step run MUST delete the result mesh first: CI #124 showed
+          # MEF90CtxOpenEXO APPENDS to an existing _out.gen and leaves the
+          # 51-record production tail behind. NO Fortran was changed.
+          mkdir -p /tmp/gate415b1 /tmp/gate415b2
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B1: qhalf (Q = 0.5 x Q0) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b1_qhalf.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b1_qhalf.log
+          sb1_qhalf_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B1 qhalf mpirun exit code: $sb1_qhalf_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b1/qhalf.gen || true
+          cp -f /tmp/terzaghi_415_b1_qhalf.log /tmp/gate415b1/qhalf.log || true
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B1: qdouble (Q = 2 x Q0) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b1_qdouble.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b1_qdouble.log
+          sb1_qdouble_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B1 qdouble mpirun exit code: $sb1_qdouble_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b1/qdouble.gen || true
+          cp -f /tmp/terzaghi_415_b1_qdouble.log /tmp/gate415b1/qdouble.log || true
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B1: stor (S = 2 x S_num) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b1_stor.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b1_stor.log
+          sb1_stor_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B1 stor mpirun exit code: $sb1_stor_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b1/stor.gen || true
+          cp -f /tmp/terzaghi_415_b1_stor.log /tmp/gate415b1/stor.log || true
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B1: gc (Gc = 0.5 x G_c0) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b1_gc.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b1_gc.log
+          sb1_gc_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B1 gc mpirun exit code: $sb1_gc_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b1/gc.gen || true
+          cp -f /tmp/terzaghi_415_b1_gc.log /tmp/gate415b1/gc.log || true
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B1: perm (k x 10, T = 1.57e-6 still << 1) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b1_perm.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b1_perm.log
+          sb1_perm_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B1 perm mpirun exit code: $sb1_perm_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b1/perm.gen || true
+          cp -f /tmp/terzaghi_415_b1_perm.log /tmp/gate415b1/perm.log || true
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B1: visc (mu x 2 -> c_v halves) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b1_visc.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b1_visc.log
+          sb1_visc_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B1 visc mpirun exit code: $sb1_visc_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b1/visc.gen || true
+          cp -f /tmp/terzaghi_415_b1_visc.log /tmp/gate415b1/visc.log || true
+          # --- Gate 4.15 / Stage B2: variable-rate + bedding anisotropy ----
+          # source_scaling: linear gives f(t) = f0*t, so backward Euler gives
+          # Delta_p_n = (f0/S) dt^2 n(n+1)/2 = 55% of the constant-rate ramp.
+          # toughnessAnisotropyMatrix 2,0.5,0 changes C2 (surface-energy
+          # integrand) but must NOT change the compliance-controlled beta.
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B2: linear variable-rate run ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b2_linear.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b2_linear.log
+          sb2_linear_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B2 linear mpirun exit code: $sb2_linear_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b2/linear.gen || true
+          cp -f /tmp/terzaghi_415_b2_linear.log /tmp/gate415b2/linear.log || true
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B2: anisotropic toughness run ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b2_aniso.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b2_aniso.log
+          sb2_aniso_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B2 aniso mpirun exit code: $sb2_aniso_rc ==="
+          grep -aE "^[[:space:]]*toughnessAnisotropyMatrix[[:space:]]*=" /tmp/terzaghi_415_b2_aniso.log | sort -u | head -3 || true
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b2/aniso.gen || true
+          cp -f /tmp/terzaghi_415_b2_aniso.log /tmp/gate415b2/aniso.log || true
+          # --- Gate 4.15 / Stage B2: 3D tetra4 injection consistency ------
+          # Dimension dispatch is by -prefix, not a YAML key (Gate 4.14).
+          # Reuse CI #121's single-rank direct-LU diagnostic PC to avoid the
+          # CI #120 3D timeout, and rebuild the 3D EXO before the 11-step run.
+          rm -f data/Beam1x10-tetra4_out.gen
+          echo "=== Gate 4.15 B2: 3D injection on Beam1x10-tetra4 ==="
+          timeout -k 10s 1800 mpirun --allow-run-as-root -np 1 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tetra4 \
+            -options_file_yaml data/terzaghi415_inject.yaml \
+            -flow_ts_view -flow_ts_monitor \
+            -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -flow_pc_type bjacobi -flow_sub_pc_type lu \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b2_dim3.log
+          sdim3_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B2 3D mpirun exit code: $sdim3_rc ==="
+          cp -f data/Beam1x10-tetra4_out.gen /tmp/gate415b2/dim3.gen || true
+          cp -f /tmp/terzaghi_415_b2_dim3.log /tmp/gate415b2/dim3.log || true
+          # Gate 4.14 already saved its 3D mesh; restore it so the delivered
+          # 3D artifact stays the Gate 4.14 output, not the B2 injection run.
+          if [ -s /tmp/out_dim3.gen ]; then
+            cp -f /tmp/out_dim3.gen data/Beam1x10-tetra4_out.gen
+            echo "=== restored Gate 4.14 3D result mesh ==="
+          fi
           # Restore the PRODUCTION mesh so Gates 3.1/3.2 and the delivered
           # artifact stay the main-run output (diagnostic variants overwrite it).
           if [ -s /tmp/out_main.gen ]; then
@@ -1288,6 +1420,36 @@ jobs:
             data/Beam1x10-tri3.gen /tmp/terzaghi.log \
             2>&1 | tee /tmp/gate415_verdict.log
           g415_rc=${PIPESTATUS[0]}
+          # --- Gate 4.15 / Stage B1 (hard): identifiability layering ------
+          # A1 data, A2 beta~f, A3 beta~1/S, A4 Gc/k/mu invisible on beta,
+          # A5 Gc visible in surface energy, A6 rate monotonicity, A7 static
+          # contracts, A8 B0 (CI #125) + production isolation.
+          cp -f /tmp/terzaghi_415_scale.log  /tmp/gate415b1/b0_scale.log
+          cp -f /tmp/out_415_scale.gen      /tmp/gate415b1/b0_scale.gen
+          cp -f /tmp/terzaghi_415_inject.log /tmp/gate415b1/b0_inject.log
+          cp -f /tmp/out_415_inject.gen     /tmp/gate415b1/b0_inject.gen
+          cp -f /tmp/gate415_verdict.log   /tmp/gate415b1/b0_verdict.log
+          cp -f /tmp/terzaghi.log          /tmp/gate415b1/main.log
+          cp -f data/Beam1x10-tri3.gen     /tmp/gate415b1/mesh.gen
+          python3 data/check_gate415_b1_identifiability.py --gate /tmp/gate415b1 \
+            2>&1 | tee /tmp/gate415_b1_verdict.log
+          gb1_rc=${PIPESTATUS[0]}
+          # --- Gate 4.15 / Stage B2 (hard): variable rate / aniso / 3D ----
+          # L1 data, L2 discrete t^2 anchor, L3 injection work, L4 aniso
+          # decoupling, L5 deck/bag/source contracts, L6 3D dispatch, L7
+          # static wiring, L8 B0 + B1 + production isolation.
+          cp -f /tmp/terzaghi_415_inject.log /tmp/gate415b2/b0_inject.log
+          cp -f /tmp/out_415_inject.gen     /tmp/gate415b2/b0_inject.gen
+          cp -f /tmp/terzaghi_415_scale.log  /tmp/gate415b2/b0_scale.log
+          cp -f /tmp/out_415_scale.gen      /tmp/gate415b2/b0_scale.gen
+          cp -f /tmp/gate415_verdict.log   /tmp/gate415b2/b0_verdict.log
+          cp -f /tmp/gate415_b1_verdict.log /tmp/gate415b2/b1_verdict.log
+          cp -f /tmp/terzaghi.log          /tmp/gate415b2/main.log
+          cp -f data/Beam1x10-tri3.gen     /tmp/gate415b2/mesh2.gen
+          cp -f data/Beam1x10-tetra4.gen   /tmp/gate415b2/mesh3.gen
+          python3 data/check_gate415_b2_extension.py --gate /tmp/gate415b2 \
+            2>&1 | tee /tmp/gate415_b2_verdict.log
+          gb2_rc=${PIPESTATUS[0]}
           # Gate 4.1 deferred verdict (see the deferred-exit note above).
           if [ "$g41_rc" -ne 0 ]; then
             echo "=== FAIL: Gate 4.1 rejected the Biot superposition (rc=$g41_rc) ==="
@@ -1460,6 +1622,60 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.15 B0 PASS: T=1.57e-7 storage-dominated, source unit [1/s] calibrated, S_eff recovered ==="
+          # Gate 4.15 B1/B2 deferred verdicts. CI #120 lesson: EVERY mpirun
+          # exit code must be judged -- a timeout (rc=124) that leaves a
+          # half-written EXO must never reach a PASS.
+          if [ "$sb1_qhalf_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B1 qhalf run did not complete (rc=$sb1_qhalf_rc) ==="
+            exit 1
+          fi
+          if [ "$sb1_qdouble_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B1 qdouble run did not complete (rc=$sb1_qdouble_rc) ==="
+            exit 1
+          fi
+          if [ "$sb1_stor_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B1 stor run did not complete (rc=$sb1_stor_rc) ==="
+            exit 1
+          fi
+          if [ "$sb1_gc_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B1 gc run did not complete (rc=$sb1_gc_rc) ==="
+            exit 1
+          fi
+          if [ "$sb1_perm_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B1 perm run did not complete (rc=$sb1_perm_rc) ==="
+            exit 1
+          fi
+          if [ "$sb1_visc_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B1 visc run did not complete (rc=$sb1_visc_rc) ==="
+            exit 1
+          fi
+          if [ "$sb2_linear_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B2 linear run did not complete (rc=$sb2_linear_rc) ==="
+            exit 1
+          fi
+          if [ "$sb2_aniso_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B2 aniso run did not complete (rc=$sb2_aniso_rc) ==="
+            exit 1
+          fi
+          if [ "$sdim3_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B2 3D injection run did not complete (rc=$sdim3_rc) ==="
+            echo "    Check /tmp/terzaghi_415_b2_dim3.log for the last TS/KSP row."
+            exit 1
+          fi
+          if [ "$gb1_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B1 rejected the identifiability-layering matrix (rc=$gb1_rc) ==="
+            echo "    Check /tmp/gate415_b1_verdict.log: A2 beta~f, A3 beta~1/S,"
+            echo "    A4 rock params invisible on p(t), A5 Gc visible in surface energy."
+            exit 1
+          fi
+          echo "=== Gate 4.15 B1 PASS: beta sees only (f,S); Gc is identifiable in the phase field ==="
+          if [ "$gb2_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B2 rejected variable rate / anisotropy / 3D (rc=$gb2_rc) ==="
+            echo "    Check /tmp/gate415_b2_verdict.log: L2 discrete t^2 anchor,"
+            echo "    L4 aniso decoupling, L6 3D beta and Displacement_Z."
+            exit 1
+          fi
+          echo "=== Gate 4.15 B2 PASS: f(t)=f0*t quadratic ramp, bedding anisotropy, 3D consistency ==="
           # Only Flow/TS and process-level fatal signatures are hard failures.
           # 'SNESolve failed' / 'error code meaning' were removed: they made
           # #58 red even though the transient Darcy solve fully succeeded.
@@ -1613,6 +1829,10 @@ jobs:
             /tmp/gate413_verdict.log
             /tmp/gate414_verdict.log
             /tmp/gate415_verdict.log
+            /tmp/gate415_b1_verdict.log
+            /tmp/gate415_b2_verdict.log
+            /tmp/gate415b1
+            /tmp/gate415b2
             /tmp/terzaghi_415_scale.log
             /tmp/terzaghi_415_inject.log
             /tmp/out_415_scale.gen

@@ -284,9 +284,23 @@
   - 提交前离线复核（零本地编译 / 零本地求解器）：`git diff --check`、`py_compile`、PyYAML workflow、三份 deck 的 4 行 / 1 行代码契约、`rm -f` 出现位置、判据 `--selftest`；并用 `ci124_diag.zip` 的**真实 EXO + 日志**做端到端回放：**原样 51 记录 → 只剩 V1 FAIL**；模拟重建后 11 记录 → **V1–V8 全 PASS**，`bulk slope=1.000000e5 Pa/s`、`S_eff=1.500000e-10`、线性残差 `1.8e-8`、`p90 dev=0.379%`、局部峰值比 `2.9188`、`W/W_an=1.005`。
   - **CI #125 实跑验收（`603ce0b`，`success`）**：`GATE415_RESULT: PASS`，V1–V8 全绿；`g415_slope_measured=1.000000e+05`（精确 `f/S`）、`g415_S_eff=1.500000e-10`、`g415_peak_ratio=2.918774`、`g415_p90_dev=3.787269e-03`、`g415_w_last=3.016054e+01`；`out_415_scale.gen` / `out_415_inject.gen` 均为**干净 11 记录**（`pmax` 末值 `100036.8` / `391877.6`），`out_main.gen` 仍为 51 记录（`9055.7`），生产 artifact 未被破坏。**原有 16 组 verdict 日志与 #124 逐字节 IDENTICAL**，唯一变化就是 `gate415_verdict.log` 由 FAIL 转 PASS —— 零物理扰动。
 
+- [ ] **4.15 / Stage B1 排量×可压性参数可辨识性主实验**（已落地接线，**待首轮 CI 验收**；`check_gate415_b1_identifiability.py` A1–A8）
+  - **文献前提更正**：路线稿第 5.2 节原 R4 用「黏性主导 $\partial\ln p_{net}/\partial\ln Q\approx0$ / 向 $-1/3$ 移动」做判据，属**裂缝传播段**标度。B0 实测 `Damage_max=1.48e-4≪1`，是**起裂前存储主导**窗口。Lecampion, Desroches, Jeffrey & Bunger (2017), *JGR Solid Earth*, doi:`10.1002/2016JB013183` 明确：起裂前 $Q_{in}\approx0$，恒排量给出**线性加压**，斜率 $=Q_0/U$（$U$ 为注入系统柔度），岩石参数在压力曲线上不可辨识；起裂压力 ≠ 破裂压力。在 vDef 中 `S` 扮演 $U/Q_0$，$\beta=f/S$（B0 实测 $1e5$ Pa/s）。Santillán (2018) 三类排量模式与 Detournay (2016) M–K 顶点均属传播段，**本轮不主张验证**。
+  - **可证伪命题（R4′ 可辨识性分层）**：Level 1 压力曲线 $\beta$ 只对 $(f,S)$ 敏感（$G_c/k/\mu$ 偏差 <6%）；Level 2 相场表面能 `C1 ∝ Gc/ℓ`、`C2 ∝ Gc·ℓ·toughnessAnisotropyMatrix`（`m_MEF90_DefMechAssembly.F90:2340-2341,2355`）对 $G_c$、$Q$、$A$ 有可测响应。B0 真实日志 `======= Total: ... surface:` 从 `1.20334E-06` 升到 `6.49012E-04`（539×），零源对照几乎冻结。
+  - 交付：6 个**单行代码差异** deck（`terzaghi415_b1_{qhalf,qdouble,stor,gc,perm,visc}.yaml`：$Q$ 0.5×/2×、$S$ 2×、$G_c$ 0.5×、$k$ ×10、$\mu$ ×2）+ 6 个 11 步 2D 诊断 run + `A1–A8` 判据 + `gb1_rc` 延迟硬裁决 + 6 个 mpirun 退出码裁决；`--selftest` **1 正例 + 20 变异（含 1 不变性）全 PASS**。
+  - A1 数据完整性（含 EXO↔`Gate 3.2` 逐位交叉、11 行能量分解）；A2 $\beta(0.5/1/2\times Q)$ 比值与 $S_{eff}$ 恒定；A3 $2S\Rightarrow\beta$ 减半并显式拒绝「β 只依赖 f」；A4 **Lecampion 数值验证**（$G_c/k/\mu$ 不扰动 $\beta$）；A5 $G_c$ 在表面能可辨识且与 A4 解耦；A6 $Q$ 单调性（$W$、表面能、$damage_{max}$）；A7 deck/源码/CI 静态契约（含 ≥8 次 EXO 重建）；A8 B0 CI #125 数值与生产隔离。
+
+- [ ] **4.15 / Stage B2 变排量 / 层理各向异性 / 3D 一致性**（已落地接线，**待首轮 CI 验收**；`check_gate415_b2_extension.py` L1–L8）
+  - `terzaghi415_b2_linear.yaml`（`source_scaling: constant → linear`）：`MEF90FlowSetTransients`（`m_MEF90_FlowAssembly.F90:873-875`）`SetSourceCst` 后 `VecScale(source,timeVal)` ⇒ $f(t)=f_0t$；transient 模式下 `vDef.F90:661` 的第二次调用被 `If (.not. flowTransient)` 保护，唯一时间值是 `time(step)`。**BE 离散精确锚** $\Delta p_n=(f_0/S)dt^2n(n+1)/2$，$n=10\Rightarrow5.5e4$ Pa $=0.55\times$ B0；L2 拟合二次系数并要求线性模型残差 $>3\times$ 二次残差（工程类比 step-rate test，但连续斜坡 ≠ 阶梯）。
+  - `terzaghi415_b2_aniso.yaml`（inject **+1 行** `toughnessAnisotropyMatrix: 2,0.5,0`）：`MatS2D=(XX,YY,XY)`、identity `=(1,1,0)`（`m_MEF90_LinAlg.F90:50-54,107`），两个主方向同时偏离 ⇒ 表面能必变；L4 同时要求 $\beta$ 不变。逗号后**无空格**（CI #85 RealArray 坑）。页岩层理平行方向 $K_{Ic}$ 通常弱 2–3×，$G_c$ 各向异性对裂缝轨迹控制最强。
+  - 3D 通道：复用 `terzaghi415_inject.yaml` + `-prefix data/Beam1x10-tetra4`（维度由 mesh prefix 分派，Gate 4.14），复用 #121 的 `-np 1` + `bjacobi/LU` + `timeout 1800` 避免 #120 超时；L6 要求 3D $\beta$ 与 2D 差 <12%、6 个 nodal vars 含 `Displacement_Z`、无超时。3D run 后从 `/tmp/out_dim3.gen` 恢复 Gate 4.14 的结果 mesh。
+  - 交付：2 个新 deck + 2 个 2D run + 1 个 3D run + `L1–L8` 判据 + `gb2_rc` 延迟硬裁决；`--selftest` **1 正例 + 19 变异（含 1 不变性）全 PASS**。
+  - **物理诚实边界**：B0 注入日志含 5 条 `damage field SNESSolve failed ... -5`（既有已知残差平台，CI #84）；能量行是当前场的确定性积分，只作**相对 / 可证伪**观测量，不表述为已收敛断裂解，不报缝长 / 缝网面积 / 起裂压力绝对值。全部结论限定在起裂前、存储主导、无裂缝扩展窗口。
+  - **提交前离线复核全通过**：`git diff --check`、两个判据 `ast.parse`、PyYAML（workflow + 10 份 415 deck）、`Run Terzaghi` 整块 `bash -n`（1384 行）、B1/B2 `--selftest`、**#125 真实 artifact 混合回放**（A1–A8 / L1–L8 全 PASS，真实读数 `pbulk[-1]=199999.9999999968`、`surface_last=6.49012e-4`、`damage_max=1.4803e-4`、tri3 356 节点 / tetra4 2635 节点 `num_dim=3`）、B0 判据在新 workflow 下仍 `GATE415_RESULT: PASS`。详见 `RATE_FRACABILITY_ROADMAP.md` 第 12 节。
+
 ---
 
-## 进度跟踪（按 CI #125 实测，2026-11-10）
+## 进度跟踪（按 CI #125 实测 + B1/B2 落地待验收，2026-11-10）
 
 **代码进度（以清单条目计）**
 - 闸门 1（不崩+边界）：**4 / 4**。1.1 / 1.2 / 1.3 已落地；1.4 经核实是 `use-rename` 分离设计、无需改动。CI #47 首次完整编译，此后由 Gate 3.3 / 4.x 持续回归。
@@ -294,7 +308,8 @@
 - 闸门 3（瞬态+符号）：**2 / 2**。3.1 TS 瞬态主循环已实际运行（`Gate 3.1` / `Gate 3.2` 诊断行）；3.2 由 **Gate 3.3 P1–P8** 硬判据验收 —— P6「L2 err vs BE series」CI #99 实测 `0.03206 ≤ 0.05`，衰减方向与量级正确，**无需改算子符号**（该结论与源项符号无关，见 3.2 / 4.4）。
 - 闸门 4（物理+工程）：**15 项收口 / 15 项在册（全部验收通过）**。4.1a（CI #86）、4.1b（CI #98 判据收口 + CI #99 Fortran 解耦，2D/3D 双编译通过）、4.2（CI #87）、4.3（CI #94）全绿；4.4 源项符号（CI #101 `GATE44_RESULT: PASS`，`G+F → G−F`，含非零源解析诊断 deck 与 S1–S8 硬判据）；4.5 能量诊断已修好并接线（section 填充 / 累加器清零 / `DMScal` / MPI 归约 / 时间步层输出；**CI #102 `GATE45_RESULT: PASS`**，T1–T8 全绿且与 #101 真实场离线预测逐位吻合）；4.8 守恒性后处理（**CI #104 `GATE48_RESULT: PASS`**，U1–U8 全绿；纯后处理零扰动）；4.6 μ(T) 别名加固（**CI #106 `GATE46_RESULT: PASS`**，V1–V8 全绿，三例程私有 section + `cellMuField` 往返）；4.10 根目录旧副本清理（**CI #109 `GATE410_RESULT: PASS`**，W1–W8 全绿，93 个文件 100% rename 归档、根目录 tracked `.F90` 归零、原有十组 verdict 与 #106 逐位一致）；4.7 时变材料入口（**CI #111 `GATE47_RESULT: PASS`**，X1–X8 全绿、`A(t)`/`S(t)` 双通道可证伪、生产物理场逐位不变）；4.9 逐单元 IS 批量装配（**CI #114 `GATE49_RESULT: PASS`**，Y1–Y8 全绿、O(N)→O(1) 300× 归约、物理场逐位一致、生产零扰动）；4.12 `pressurePreviousStep` 死写转步间压降活诊断（**CI #117 `GATE412_RESULT: PASS`**，Z1–Z6）；4.13 标准 Newton 残差平台 `3~13` 根因定性为 Dirichlet 单位对角 / 弹性刚度尺度失衡（**CI #117 `GATE413_RESULT: PASS`**，Q1–Q5）；4.14 三维维度分派真实验证（**CI #121 `GATE414_RESULT: PASS`**，W1–W7，首次在 3D `Beam1x10-tetra4` 上跑满 11 步固结，实证 `Displacement_Z`、6 分量 `MEF90MatS3DIdentity` 与门面 2D/3D 分派）；4.15 B0 施工排量–可压性相似校准 + 源项量纲标定（**CI #125 `GATE415_RESULT: PASS`**，2 个新 deck + V1–V8 判据 + 两次 EXO 重建 + 两个 `s415_*_rc` 与 `g415_rc` 延迟硬裁决，零 Fortran 改动；#124 首轮暴露 EXO 追加残留与 `pmax` 局部过冲两个独立缺陷，均已修复，见上方 4.15 条目）。
 - 合计：**25 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 15 项），**0 项在册待做**。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代；4.11 为总括性描述，已由硬判据体系覆盖。
-- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)、4.10 (W1–W8，根目录清零 + 归档 blob 校验 + 构建隔离)；**十一组判据在 CI #109 全绿**（4.10 已验收）；此后追加 4.7 (X1–X8)、4.9 (Y1–Y8)、4.12 (Z1–Z6)、4.13 (Q1–Q5)，**CI #117 十五组判据同轮全绿**；再追加 4.14 (W1–W7，含每步 KSP 收敛与求解器配置反回归)，**CI #121 十六组判据同轮全绿**；再追加 4.15 B0 (V1–V8，相似校准 + 源项量纲标定 + 双 mpirun rc 裁决)，**CI #125 十七组判据同轮全绿**（`gate415_verdict.log` 由 #124 的 FAIL 转 PASS，其余 16 组逐字节 IDENTICAL）；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。
+- **本轮新增研究项（不计入上述修复闸门）**：4.15 Stage B1 / B2 两条 `- [ ]` **已落地接线、待首轮 CI 验收**，属于研究路线扩展而非缺陷修复，故不并入「25 项已落地 / 0 项在册待做」的修复计数。两者均**零 Fortran 改动**，共 8 个单行差异 deck、2 个新判据脚本（A1–A8 / L1–L8）、9 个新诊断 run、11 次 2D + 1 次 3D EXO 重建、11 个延迟硬裁决。验收后需补「19 组 verdict 同轮全绿 + 原有 17 组逐字节 IDENTICAL」证据，才勾 `[x]`。
+- **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)、4.10 (W1–W8，根目录清零 + 归档 blob 校验 + 构建隔离)；**十一组判据在 CI #109 全绿**（4.10 已验收）；此后追加 4.7 (X1–X8)、4.9 (Y1–Y8)、4.12 (Z1–Z6)、4.13 (Q1–Q5)，**CI #117 十五组判据同轮全绿**；再追加 4.14 (W1–W7，含每步 KSP 收敛与求解器配置反回归)，**CI #121 十六组判据同轮全绿**；再追加 4.15 B0 (V1–V8，相似校准 + 源项量纲标定 + 双 mpirun rc 裁决)，**CI #125 十七组判据同轮全绿**（`gate415_verdict.log` 由 #124 的 FAIL 转 PASS，其余 16 组逐字节 IDENTICAL）；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。**本轮待验收新增** 4.15 B1 (A1–A8) 与 B2 (L1–L8) 两组 verdict，若 CI 全绿则体系由 17 组扩到 **19 组**；新增的 9 个 mpirun 退出码（`sb1_*` ×6、`sb2_*` ×2、`sdim3_rc` ×1）与 `gb1_rc` / `gb2_rc` 全部接入延迟 fail。
 - **最近六次 CI**：#125 `success`（`603ce0b`，Gate 4.15 B0 修复：两次 EXO 重建 + `pbulk` 物理锚；**17 组判据同轮全绿**，原有 16 组 verdict 与 #124 逐字节 IDENTICAL）；#124 `failure`（`ff614fc`，B0 首轮；编译与 16 组原有判据全绿，仅 `GATE415_RESULT: FAIL (V1,V3,V4)`，根因是 EXO 追加残留 + `pmax` 局部过冲，已由 #125 修复）；#123 `success`（`3a819ab`，排量–可压性文献调研与集成路线稿）；#122 `success`（`027fa86`，Gate 4.14 文档收尾）；#121 `success`（`c95a605`，Gate 4.14 3D 维度分派验收，16 组判据全绿）；#120 `failure`（`39444b8`，3D 诊断求解器超时，已由 #121 用 direct diagnostic PC 修复）。（更早的 #97 `failure` 为旧 E2「位等价」前提错误，已由 #98 改物理签名判据修复。）
 
 **历史提交 / CI 记录（2026-11-07 09:55 快照，保留备查）**
@@ -2765,4 +2780,39 @@ artifact 增 `/tmp/gate43_verdict.log`。静态校验：PyYAML 6.0.3 解析、
 
 `build.yml` 两次 `rm -f`；判据 `exo_fields` 增 `pbulk/p90/pmean`，V1 加 EXO↔`Gate 3.2` 逐位交叉验证，V3/V4 改用 `pbulk[:11]`，V4 另加 `p90` 局域性（≤5%）与峰值/体相斜率比 `[1,6]`。**零 Fortran 改动**。`GATE415_RESULT: PASS`，十七组判据同轮全绿：`g415_slope_measured=1.000000e+05`、`g415_S_eff=1.500000e-10`、`g415_peak_ratio=2.918774`、`g415_p90_dev=3.787269e-03`、`g415_w_last=3.016054e+01`。`out_415_scale.gen` / `out_415_inject.gen` = **11 记录**，`out_main.gen` = 51 记录；原有 16 组 verdict 与 #124 **逐字节 IDENTICAL**。离线回放：`ci124_diag.zip` 原样 → 只剩 V1 FAIL；模拟重建 11 记录 → V1–V8 全 PASS；`--selftest` 1 正例（刻意带 2.9184× 真实过冲）+ 25 变异（含 1 不变性）全 PASS。
 
-**结论：4.15 B0 收口，闸门 4 累计 15 项完成、合计 25 项已落地，0 项在册待做。** 阶段 B 的准入冒烟从「接线完成」升级为「有真实存储主导场、有可证伪的 `f/S` 与 `S_eff` 标定、有 EXO 生命周期护栏」。B1 现场排量窗口扫描、B2 是否允许新增 Fortran 仍待用户确认。
+**结论：4.15 B0 收口，闸门 4 累计 15 项完成、合计 25 项已落地，0 项在册待做。** 阶段 B 的准入冒烟从「接线完成」升级为「有真实存储主导场、有可证伪的 `f/S` 与 `S_eff` 标定、有 EXO 生命周期护栏」。B1/B2 已由用户「通过文献调研实现B1和B2」立项并落地，见下一节。
+
+---
+
+## Gate 4.15 B1 / B2 落地（2026-11-10，待首轮 CI 验收）
+
+### 文献复核推翻了原 R4 判据
+
+用户要求「通过文献调研实现B1和B2」。复核 Lecampion, Desroches, Jeffrey & Bunger (2017), *JGR: Solid Earth*, doi:`10.1002/2016JB013183` 全文页后确认：**起裂前**进入裂缝的流量 $Q_{in}\approx0$，恒排量 $Q_0$ 下井筒压力**线性**上升，斜率 $=Q_0/U$（$U$ 为注入系统柔度），可直接由加压段斜率反解 $U$；岩石力学参数在这条曲线上不可辨识；且**起裂压力 ≠ 破裂（峰值）压力**。B0 的 `Damage_max=1.48e-4≪1` 证明当前窗口正是这一段。
+
+因此路线稿第 5.2 节 R4 的「黏性主导 $\partial\ln p_{net}/\partial\ln Q\approx0$ / 提高 $G_c,\mu$ 后向 $-1/3$ 移动」属于 Detournay (2016) / Savitski & Detournay (2002) 的**裂缝传播段**标度，Santillán et al. (2018) 的三类排量模式同样属传播段，**都不能拿来做 B1 判据**。R4 已撤回并改为 **R4′ 参数可辨识性分层**：$\beta=f/S$ 只可辨识 $(f,S)$；$G_c$ 在表面能（$C_1\propto G_c/\ell$、$C_2\propto G_c\ell A$）上可辨识。这既与文献一致，又保留「可压性」的研究价值。
+
+### 本轮交付（零 Fortran 改动）
+
+| 类别 | 文件 / 变更 |
+|---|---|
+| 新增 deck ×8 | `terzaghi415_b1_{qhalf,qdouble,stor,gc,perm,visc}.yaml`（各 1 行代码差异）、`terzaghi415_b2_linear.yaml`（1 行）、`terzaghi415_b2_aniso.yaml`（+1 行 `toughnessAnisotropyMatrix: 2,0.5,0`） |
+| 新增判据 ×2 | `check_gate415_b1_identifiability.py`（A1–A8）、`check_gate415_b2_extension.py`（L1–L8）；纯标准库、`--gate <dir>` / `--selftest` |
+| `build.yml` | +9 个诊断 run（B1 6×2D、B2 2×2D + 1×3D）、11 次 tri3 / 1 次 tetra4 EXO 重建、2 个 verdict 目录装配、`gb1_rc` / `gb2_rc` 与 9 个 mpirun rc 的延迟硬裁决、4 个新 artifact 条目 |
+| 文档 | `RATE_FRACABILITY_ROADMAP.md` 第 0 / 2.3 / 5.1 / 5.2 / 5.4 / 9 / 11 / **新增 12 节**；本清单 4.15 B1/B2 条目与进度段；`README.md` 索引；工作日志 |
+
+### 三个解析锚（可证伪）
+
+1. **排量/柔度**：$\beta=f/S$，B1 的 0.5×/1×/2× $Q$ 给出 `0.5/1/2` 比值且 $S_{eff}=f/\beta$ 恒为 $1.5\times10^{-10}$；$2\times S$ 给出 $\beta$ 减半、$S_{eff}=3\times10^{-10}$。
+2. **不可辨识 + 解耦**：$G_c/k/\mu$ 三臂的 $\beta$ 偏差 <6%，但 $G_c$ 臂的表面能显著变化 >5% —— **A4 不变、A5 变**的组合才是可证伪命题，单独一条都容易被「参数没接上」蒙混。
+3. **变排量离散锚**：$f(t)=f_0t \Rightarrow \Delta p_n=(f_0/S)dt^2n(n+1)/2$，$\Delta p_{10}=5.5\times10^4$ Pa $=0.55\times$ B0；已核实 transient 模式下 `vDef.F90:661` 的第二次 `SetTransients` 被 `If (.not. flowTransient)` 保护，`timeVal=time(step)` 唯一生效。
+
+### 离线复核（全部通过，零编译 / 零求解器）
+
+`git diff --check`；`ast.parse` ×2；PyYAML 解析 workflow + 10 份 415 deck；`Run Terzaghi` 整块 `bash -n`（1384 行，11 次 tri3 重建、1 次 tetra4 重建、全部 rc / verdict token 齐全）；B1 `--selftest` **1 正例 + 20 变异**、B2 **1 正例 + 19 变异**（各含 1 个不变性：damage SNES `-5` 不得误判）；**#125 真实 artifact 混合回放** A1–A8 / L1–L8 全 PASS（真实 `pbulk[-1]=199999.9999999968 Pa`、11 行能量分解、`surface_last=6.49012e-4`、`damage_max=1.4803e-4`、tri3 356 节点 / tetra4 2635 节点 `num_dim=3`）；B0 判据在新 workflow 下仍 `GATE415_RESULT: PASS`（`β=1.000000e+05`、`S_eff=1.500000e-10`）。
+
+### 状态纪律
+
+B1/B2 数值均为**离线解析预测**，不是求解器结论。首轮 CI 后必须按真实 `gate415_b1_verdict.log` / `gate415_b2_verdict.log` 复核；若阈值与真实数值有系统性偏差，**应修正判据的解析锚或容差并记录理由，不得改 deck 去凑解析解**（#124→#125 原则）。验收通过需补「19 组 verdict 同轮全绿 + 原有 17 组逐字节 IDENTICAL」，再把两条 `- [ ]` 勾为 `- [x]`。
+
+**能力边界**：全部结论限定在起裂前、存储主导、无裂缝扩展窗口；不主张验证传播段标度，不报缝长 / 缝网面积 / 起裂压力绝对值 / 现场排量优选表。若要进入传播窗口，需降低 `fracturetoughness`（现 27000 N/m）、提高排量或延长时间，并先解决 damage SNES 的 `-5` 残差平台 —— 这是物理前提的改变，需单独立项。
