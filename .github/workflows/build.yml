@@ -968,6 +968,16 @@ jobs:
           # B0 uses a CONSERVATIVE f so the response stays linear/damage-free;
           # the field-rate window is scanned later in Stage B1.  Production
           # 2D decks and the 3D diagnostic keep their ORIGINAL configuration.
+          # CI #124 ROOT CAUSE: MEF90CtxOpenEXO (MEF90/m_MEF90_EXO.F90:125)
+          # uses Inquire(file=...,exist=...): when data/Beam1x10-tri3_out.gen
+          # already exists it calls EXOPEN(EXWRIT) and APPENDS to the 51-record
+          # production file, so an 11-step B0 run leaves 40 stale records after
+          # its own 11.  Delete the result mesh before EACH B0 run so vDef takes
+          # the EXCRE(EXCLOB) + EXCOPY branch and writes a clean 11-record EXO.
+          # /tmp/out_main.gen is restored right after the two runs, so the
+          # delivered production artifact is unchanged.
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15: rebuilt a clean 11-record EXO for the control run ==="
           echo "=== Gate 4.15 B0 similitude-calibrated ZERO-SOURCE control run ==="
           timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \
@@ -984,6 +994,8 @@ jobs:
           else
             echo "=== WARN: B0 control produced no result mesh; Gate 4.15 must FAIL ==="
           fi
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15: rebuilt a clean 11-record EXO for the injection run ==="
           echo "=== Gate 4.15 B0 constant-rate INJECTION run (f=1.5e-5 1/s) ==="
           timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
             -prefix data/Beam1x10-tri3 \

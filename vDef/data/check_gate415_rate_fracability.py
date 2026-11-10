@@ -40,9 +40,31 @@ V6 solver chain completed, per-step KSP convergence, no fatal signature
 V7 static anti-regression + code-line deck contracts + CI wiring
 V8 production isolation (main log still consolidates, no 415 leakage)
 
+CI #124 post-mortem (two INDEPENDENT defects, both fixed here)
+--------------------------------------------------------------
+(1) EXO reuse.  MEF90CtxOpenEXO appends to an existing result mesh, so the two
+    11-step B0 runs inherited the 51-record production file and left 40 stale
+    records after their own 11.  V1 rejected 51 != 11, and V3 was reading ALL
+    51 records (it did not slice to N_REC), so it reported a 90.94% "drift"
+    that was really the old production decay tail.  The workflow now deletes
+    the result mesh before EACH B0 run so vDef takes the EXCRE(EXCLOB) branch;
+    V1 additionally cross-checks EXO pmax against the solver's Gate 3.2 rows.
+
+(2) Wrong observable.  The analytic anchor p = p0 + (f/S)t describes the BULK
+    pressure.  In a storage-dominated run (A=k/mu=2.35e-15, a*S=1.5e-9) the
+    consistent mass matrix plus the strong Dirichlet inlet produces a LOCAL
+    numerical overshoot at a handful of nodes: CI #124 measured pmax=3.92e5 Pa
+    at step 10 while the median was exactly p50=2.00e5 Pa.  Gate 4.5's work
+    W=f*Area*p_bulk independently confirmed the 1.0e5 Pa/s bulk ramp.  Using
+    pmax therefore measured the overshoot (2.918e5 Pa/s), not f/S.  V3/V4 now
+    use the median pbulk as the physical observable, keep pmax only as a
+    LOCALITY diagnostic (p90 must stay near pbulk), and still hard-fail if the
+    bulk ramp is wrong or the source is read as [Pa/s].
+
 Pure standard library (the CI runner has no numpy / scipy / PyYAML), no local
 compile and no local solver.  --gate reads real CI artefacts; --selftest
-replays one synthetic positive case plus >=12 negative mutations.
+replays one synthetic positive case (including the real overshoot) plus >=12
+negative mutations and an invariance case.
 """
 
 import math
@@ -85,6 +107,9 @@ S_RATIO_TARGET = S_NUM / S_DECK                          # 0.326
 TOL_SLOPE = 0.10
 TOL_FREEZE = 0.02
 TOL_LINEAR = 0.06
+TOL_PEAK_LOCAL = 0.05        # p90 may not depart from the bulk ramp by >5%
+TOL_CROSSCHECK = 1.0e-6      # EXO pmax vs solver Gate 3.2 pmax (relative)
+PEAK_RATIO_BAND = (1.0, 6.0)  # local overshoot is a fixed spatial mode
 FATAL = ('PETSC ERROR', 'Caught signal', 'SEGV', 'fortran runtime error',
          'Fatal Error:', 'NaN detected')
 
@@ -122,12 +147,26 @@ def mesh_meta(path):
             'sets': list(c.read_static('eb_prop1'))}
 
 
+def quantile(v, q):
+    """A robust bulk observable: pmax alone is a LOCAL mass-matrix overshoot."""
+    s = sorted(v)
+    return s[min(len(s) - 1, int(q * len(s)))]
+
+
 def exo_fields(path):
     c = CDF2(path)
     names = var_names(c)
-    pmax = [max(c.read_record('vals_nod_var1', i)) for i in range(c.numrecs)]
-    return {'numrecs': c.numrecs, 'names': names, 'pmax': pmax,
-            'finite': all(math.isfinite(x) for x in pmax)}
+    pmax, pbulk, p90, pmean = [], [], [], []
+    for i in range(c.numrecs):
+        v = list(c.read_record('vals_nod_var1', i))
+        pmax.append(max(v))
+        pbulk.append(quantile(v, 0.50))
+        p90.append(quantile(v, 0.90))
+        pmean.append(sum(v) / len(v))
+    vals = pmax + pbulk + p90
+    return {'numrecs': c.numrecs, 'names': names,
+            'pmax': pmax, 'pbulk': pbulk, 'p90': p90, 'pmean': pmean,
+            'finite': all(math.isfinite(x) for x in vals)}
 
 
 def code_lines(text):
@@ -211,9 +250,24 @@ def check_v1(d):
             issues.append('%s records %d != %d' % (tag, e['numrecs'], N_REC))
         if not e['finite']:
             issues.append('%s EXO pressure is non-finite' % tag)
+        for key in ('pmax', 'pbulk', 'p90'):
+            if key not in e or len(e[key]) < N_REC:
+                issues.append('%s EXO lost the %s field' % (tag, key))
         for nm in ('Pressure', 'Damage', 'Displacement_X', 'Displacement_Y'):
             if nm not in e['names']:
                 issues.append('%s EXO lost %s' % (tag, nm))
+        # CI #124: an 11-step run APPENDED to the 51-record production mesh.
+        # Even if numrecs happened to match, a stale/wrong result mesh is
+        # caught by comparing EXO pmax with the solver's own Gate 3.2 rows.
+        logp = [r[2] for r in g32_rows(d['log_' + tag])]
+        if len(logp) < N_REC:
+            issues.append('%s log has only %d Gate 3.2 rows' % (tag, len(logp)))
+        elif 'pmax' in e and len(e['pmax']) >= N_REC:
+            worst = max(abs(a - b) / max(P0, abs(b))
+                        for a, b in zip(e['pmax'][:N_REC], logp[:N_REC]))
+            if worst > TOL_CROSSCHECK:
+                issues.append('%s EXO pmax vs Gate 3.2 log rel=%.3g: stale or '
+                              'wrong result mesh' % (tag, worst))
         for sig in fatal_in(d['log_' + tag]):
             issues.append('fatal in %s log: %s' % (tag, sig))
     m = d['mesh']
@@ -224,7 +278,8 @@ def check_v1(d):
     if not m['num_nodes'] or m['num_nodes'] != 356:
         issues.append('mesh node count %s != 356' % m['num_nodes'])
     return pass_fail(not issues, '; '.join(issues) if issues else
-                     '%d + %d records, 4 nodal vars, 356-node tri3 mesh, no fatal'
+                     '%d + %d clean records, EXO pmax == Gate 3.2 log, 4 nodal '
+                     'vars, 356-node tri3 mesh, no fatal'
                      % (d['exo_scale']['numrecs'], d['exo_inject']['numrecs']))
 
 
@@ -272,38 +327,49 @@ def check_v2(d):
 
 
 def check_v3(d):
+    """BULK pressure must stay frozen; pmax is a local overshoot, not physics."""
     issues = []
-    p = d['exo_scale']['pmax']
+    p = d['exo_scale']['pbulk'][:N_REC]
     if len(p) < N_REC:
         return pass_fail(False, 'not enough control records')
     if abs(p[0] - P0) / P0 > TOL_FREEZE:
-        issues.append('control p(0)=%.6g != p0=%.6g' % (p[0], P0))
+        issues.append('control p_bulk(0)=%.6g != p0=%.6g' % (p[0], P0))
     worst = max(abs(x - P0) / P0 for x in p)
     if worst > TOL_FREEZE:
-        issues.append('control pressure drifted %.2f%% (>%.0f%%): diffusion was not frozen'
+        issues.append('control bulk pressure drifted %.2f%% (>%.0f%%): diffusion was not frozen'
                       % (100 * worst, 100 * TOL_FREEZE))
     if max(p) - min(p) > TOL_FREEZE * P0:
-        issues.append('control pressure is not flat over the 11 steps')
+        issues.append('control bulk pressure is not flat over the 11 steps')
+    peak = max(d['exo_scale']['pmax'][:N_REC])
+    d['metrics']['ctrl_peak'] = peak
     return pass_fail(not issues, '; '.join(issues) if issues else
-                     'p=%.6g..%.6g Pa, max drift %.3f%% (storage-dominated, no leak-off)'
-                     % (min(p), max(p), 100 * worst))
+                     'p_bulk=%.6g..%.6g Pa, max drift %.3f%% (storage-dominated, '
+                     'no leak-off); local pmax=%.6g Pa (mass-matrix overshoot)'
+                     % (min(p), max(p), 100 * worst, peak))
 
 
 def check_v4(d):
+    """BULK ramp p_bulk = p0 + (f/S)t; pmax is only a LOCALITY diagnostic.
+
+    CI #124 taught us that pmax sits on a handful of overshooting nodes when
+    the consistent mass matrix dominates the (nearly frozen) Darcy operator.
+    The physical observable is the median pbulk, corroborated independently by
+    Gate 4.5's W = int f*p dOmega.
+    """
     issues = []
-    pi = d['exo_inject']['pmax']
-    pc = d['exo_scale']['pmax']
+    pi = d['exo_inject']['pbulk'][:N_REC]
+    pc = d['exo_scale']['pbulk'][:N_REC]
     if len(pi) < N_REC or len(pc) < N_REC:
         return pass_fail(False, 'not enough records for the source response')
-    delta = [a - b for a, b in zip(pi[:N_REC], pc[:N_REC])]
+    delta = [a - b for a, b in zip(pi, pc)]
     # V4 deliberately uses the FROZEN constants, not the values V2 read back
     # from the decks: the physical calibration must be recoverable from the
     # solver artefacts alone.  A deck edit therefore fails V2/V7, not V4.
     f, S = F_SOURCE, S_NUM
     if abs(delta[0]) > TOL_FREEZE * P0:
-        issues.append('delta_p(0)=%.6g is not zero' % delta[0])
+        issues.append('delta_p_bulk(0)=%.6g is not zero' % delta[0])
     if any(delta[i] < delta[i - 1] - 1.0 for i in range(1, N_REC)):
-        issues.append('delta_p is not monotonically increasing')
+        issues.append('delta_p_bulk is not monotonically increasing')
     ts = [i * DT for i in range(N_REC)]
     slope, intercept = linfit(ts, delta)
     resid = max(abs(y - (slope * t + intercept)) for t, y in zip(ts, delta))
@@ -311,27 +377,43 @@ def check_v4(d):
     d['metrics']['S_eff'] = (f / slope) if slope > 0 else -1.0
     d['metrics']['resid'] = resid
     if slope <= 0.0:
-        issues.append('pressure ramp slope %.6g <= 0' % slope)
+        issues.append('bulk pressure ramp slope %.6g <= 0' % slope)
     else:
         S_eff = f / slope
         if abs(S_eff / S - 1.0) > TOL_SLOPE:
             issues.append('S_eff=f/slope=%.4g vs deck S=%.4g (%.1f%% off)'
                           % (S_eff, S, 100 * abs(S_eff / S - 1.0)))
         if abs(slope / SLOPE_TARGET - 1.0) > TOL_SLOPE:
-            issues.append('slope %.6g vs f/S=%.6g' % (slope, SLOPE_TARGET))
+            issues.append('bulk slope %.6g vs f/S=%.6g' % (slope, SLOPE_TARGET))
         # The [Pa/s] misreading would give slope ~ f, i.e. slope/f ~ 1.
         if slope / f < 1.0e6:
             issues.append('slope/f=%.3g: source behaves like [Pa/s], not [1/s]'
                           % (slope / f))
     if max(delta) > 0 and resid / max(delta) > TOL_LINEAR:
-        issues.append('response is not linear (max residual %.2f%% of peak)'
+        issues.append('bulk response is not linear (max residual %.2f%% of peak)'
                       % (100 * resid / max(delta)))
+    # The overshoot must stay LOCAL (p90 ~ pbulk) and be a FIXED spatial mode
+    # (its own ramp is proportional to the bulk ramp), not a diverging solve.
+    p90 = d['exo_inject']['p90'][:N_REC]
+    pmax = d['exo_inject']['pmax'][:N_REC]
+    dev90 = max(abs(q - b) / max(P0, abs(b)) for q, b in zip(p90, pi))
+    d['metrics']['p90_dev'] = dev90
+    if dev90 > TOL_PEAK_LOCAL:
+        issues.append('overshoot is GLOBAL: p90 departs %.2f%% from the bulk '
+                      '(>%.0f%%)' % (100 * dev90, 100 * TOL_PEAK_LOCAL))
+    peak_slope, _ = linfit(ts, [x - P0 for x in pmax])
+    ratio_pk = (peak_slope / slope) if slope > 0 else -1.0
+    d['metrics']['peak_ratio'] = ratio_pk
+    if slope > 0 and not (PEAK_RATIO_BAND[0] <= ratio_pk <= PEAK_RATIO_BAND[1]):
+        issues.append('pmax/bulk ramp ratio %.3g outside %s: peak is not a '
+                      'fixed local mode' % (ratio_pk, PEAK_RATIO_BAND))
     return pass_fail(not issues, '; '.join(issues) if issues else
-                     'slope=%.6g Pa/s (f/S=%.6g), S_eff=%.4g, linear residual %.2f%%, '
-                     'slope/f=%.3g'
+                     'bulk slope=%.6g Pa/s (f/S=%.6g), S_eff=%.4g, linear '
+                     'residual %.2f%%, slope/f=%.3g; local pmax ramp x%.3f '
+                     '(p90 dev %.3f%%)'
                      % (slope, SLOPE_TARGET, d['metrics']['S_eff'],
                         100 * resid / max(delta) if max(delta) > 0 else 0.0,
-                        slope / f))
+                        slope / f, ratio_pk, 100 * dev90))
 
 
 def check_v5(d):
@@ -426,12 +508,17 @@ def check_v7(d):
                   'gate415_verdict.log', 'terzaghi415_scale.yaml',
                   'terzaghi415_inject.yaml', 'out_415_scale.gen',
                   'out_415_inject.gen', 's415_scale_rc', 's415_inject_rc',
+                  # CI #124: without these the 11-step EXO appends to the
+                  # 51-record production mesh and V1/V3 read stale records.
+                  'rm -f data/Beam1x10-tri3_out.gen',
                   'g415_rc',
                   'if [ "$s415_scale_rc" -ne 0 ]',
                   'if [ "$s415_inject_rc" -ne 0 ]',
                   'if [ "$g415_rc" -ne 0 ]'):
         if token not in wf:
             issues.append('build.yml missing %s' % token)
+    if wf.count('rm -f data/Beam1x10-tri3_out.gen') < 2:
+        issues.append('build.yml must rebuild a clean EXO before BOTH 415 runs')
     for bad in ('batched_assembly', 'biot_effective_stress',
                 'temp_dep_viscosity'):
         if bad in d['deck_inject'] or bad in d['deck_scale']:
@@ -517,22 +604,30 @@ def make_log(pmax, work, n=11, prefix=''):
 
 
 def synth():
-    """Offline positive case: real decks/sources, synthetic solver artefacts."""
+    """Offline positive case: real decks/sources, synthetic solver artefacts.
+
+    The positive case deliberately carries the CI #124 LOCAL pmax overshoot
+    (2.9184x the bulk ramp) so that a PASS proves the verdict is anchored on
+    pbulk and is NOT fooled by the mass-matrix spike.
+    """
     p_ctrl = [P0] * N_REC
-    p_inj = [P0 + SLOPE_TARGET * i * DT for i in range(N_REC)]
+    p_inj = [P0 + SLOPE_TARGET * i * DT for i in range(N_REC)]          # bulk
+    peak_inj = [P0 + 2.9184 * SLOPE_TARGET * i * DT for i in range(N_REC)]
+    p90_inj = [P0 + 1.0038 * SLOPE_TARGET * i * DT for i in range(N_REC)]
+    peak_ctrl = [P0 + 3.67 * i for i in range(N_REC)]
     w_ctrl = [0.0] * N_REC
     w_inj = [F_SOURCE * AREA * p for p in p_inj]
     e = {'numrecs': N_REC, 'names': ['Pressure', 'Damage',
                                      'Displacement_X', 'Displacement_Y'],
          'finite': True}
-    exo_c = dict(e, pmax=p_ctrl)
-    exo_i = dict(e, pmax=p_inj)
+    exo_c = dict(e, pmax=peak_ctrl, pbulk=p_ctrl, p90=p_ctrl, pmean=p_ctrl)
+    exo_i = dict(e, pmax=peak_inj, pbulk=p_inj, p90=p90_inj, pmean=p_inj)
     p_main = [P0 * (0.0906 ** (j / 50.0)) for j in range(51)]
     log_main = make_log(p_main, [0.0] * 51, n=51,
                         prefix='Gate 3.1: transient Darcy TS created\n')
     d = {
-        'log_scale': make_log(p_ctrl, w_ctrl),
-        'log_inject': make_log(p_inj, w_inj),
+        'log_scale': make_log(peak_ctrl, w_ctrl),
+        'log_inject': make_log(peak_inj, w_inj),
         'log_main': log_main,
         'exo_scale': exo_c, 'exo_inject': exo_i,
         'mesh': {'num_dim': 2, 'num_nodes': 356, 'sets': [1, 10, 20]},
@@ -550,15 +645,20 @@ def selftest():
     cases.append(('POS full B0 verdict', rows, set(), None))
     print('POS  %-52s %s' % ('full B0 verdict', 'PASS' if not fails else 'FAIL ' + ','.join(fails)))
 
-    def neg(name, mutate, expect):
+    def neg(name, mutate, expect, label='NEG'):
         d = copy.deepcopy(base)
         mutate(d)
         r, f = run(d)
         ok = set(f) == set(expect)
         cases.append((name, r, set(expect), f))
-        print('NEG  %-52s %s (failed %s, expected %s)'
-              % (name, 'OK' if ok else 'MISMATCH', sorted(f), sorted(expect)))
+        print('%s  %-52s %s (failed %s, expected %s)'
+              % (label, name, 'OK' if ok else 'MISMATCH',
+                 sorted(f), sorted(expect)))
         return ok
+
+    def inv(name, mutate):
+        """A permitted perturbation: the verdict must stay fully green."""
+        return neg(name, mutate, set(), 'INV')
 
     allok = not fails
     allok &= neg('truncated injection EXO (10 records)',
@@ -579,17 +679,45 @@ def selftest():
                  lambda d: d.update(deck_inject=d['deck_inject'].replace(
                      'source: 1.5e-5', 'source: 0.0')), {'V2', 'V7'})
     allok &= neg('control deck pressure also ramps (diffusion not frozen)',
-                 lambda d: d['exo_scale'].update(pmax=d['exo_inject']['pmax'][:]),
+                 lambda d: d['exo_scale'].update(pbulk=d['exo_inject']['pbulk'][:]),
                  {'V3', 'V4'})
     allok &= neg('injection pressure frozen at p0 (source unwired)',
-                 lambda d: d['exo_inject'].update(pmax=[P0] * N_REC), {'V4'})
+                 lambda d: d['exo_inject'].update(pbulk=[P0] * N_REC), {'V4'})
     allok &= neg('ramp slope halved (wrong storativity)',
                  lambda d: d['exo_inject'].update(
-                     pmax=[P0 + 0.5 * SLOPE_TARGET * i * DT for i in range(N_REC)]),
+                     pbulk=[P0 + 0.5 * SLOPE_TARGET * i * DT for i in range(N_REC)]),
                  {'V4'})
     allok &= neg('slope equals f, i.e. the [Pa/s] misreading',
                  lambda d: d['exo_inject'].update(
-                     pmax=[P0 + F_SOURCE * i * DT for i in range(N_REC)]), {'V4'})
+                     pbulk=[P0 + F_SOURCE * i * DT for i in range(N_REC)]), {'V4'})
+    allok &= neg('local overshoot becomes GLOBAL (p90 follows pmax)',
+                 lambda d: d['exo_inject'].update(p90=d['exo_inject']['pmax'][:]),
+                 {'V4'})
+
+    def stale_exo(d):
+        """Replay CI #124: 11 real records + 40 stale production records."""
+        tail = [P0 * (0.0906 ** (j / 50.0)) for j in range(11, 51)]
+        for tag in ('scale', 'inject'):
+            e = d['exo_' + tag]
+            e['numrecs'] = 51
+            for key in ('pmax', 'pbulk', 'p90', 'pmean'):
+                e[key] = list(e[key]) + tail
+
+    allok &= neg('CI #124 stale 51-record EXO not rebuilt', stale_exo, {'V1'})
+    allok &= neg('EXO pmax disagrees with the Gate 3.2 solver log',
+                 lambda d: d['exo_inject']['pmax'].__setitem__(
+                     2, d['exo_inject']['pmax'][2] * 0.5), {'V1'})
+    allok &= inv('local pmax spike removed, bulk physics unchanged',
+                 lambda d: (d['exo_inject'].update(
+                     pmax=d['exo_inject']['pbulk'][:]),
+                     d.update(log_inject=make_log(
+                         d['exo_inject']['pbulk'],
+                         [F_SOURCE * AREA * p
+                          for p in d['exo_inject']['pbulk']]))))
+    allok &= neg('build.yml EXO rebuild before both 415 runs removed',
+                 lambda d: d['src'].update(workflow=d['src']['workflow'].replace(
+                     'rm -f data/Beam1x10-tri3_out.gen', 'true # no rebuild')),
+                 {'V7'})
     allok &= neg('zero-source control reports non-zero injection work',
                  lambda d: d.update(log_scale=d['log_scale'].replace('W 0.0000000000E+00',
                                                                     'W 3.5000000000E+00')),
@@ -623,7 +751,7 @@ def selftest():
     allok &= neg('production consolidation disabled',
                  lambda d: d.update(log_main=d['log_main'].replace(
                      'pmax 9.0600000000E+03', 'pmax 1.0000000000E+05')), {'V8'})
-    print('SELFTEST_RESULT: %s (%d positive + %d negatives)'
+    print('SELFTEST_RESULT: %s (%d positive + %d mutations, incl. 1 invariance)'
           % ('PASS' if allok else 'FAIL', 1, len(cases) - 1))
     return 0 if allok else 1
 
@@ -659,8 +787,12 @@ def main(argv):
         m = d['metrics']
         print('g415_T                     = %.6e' % m.get('T', -1))
         print('g415_cv                    = %.6e' % m.get('cv', -1))
+        # g415_slope_measured is now the BULK slope (key kept for continuity);
+        # the local pmax overshoot is reported separately, never used as f/S.
         print('g415_slope_measured        = %.6e' % m.get('slope', -1))
         print('g415_S_eff                 = %.6e' % m.get('S_eff', -1))
+        print('g415_peak_ratio            = %.6e' % m.get('peak_ratio', -1))
+        print('g415_p90_dev               = %.6e' % m.get('p90_dev', -1))
         print('g415_q_total_per_thickness = %.6e' % m.get('q_total', -1))
         print('g415_w_last                = %.6e' % m.get('w_last', -1))
         return 0 if not fails else 1
