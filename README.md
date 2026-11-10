@@ -18,7 +18,8 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   measured only a 0.41% shift). Sec. 14 recomputes tables A-C as A'-C' from
   published China continental shale-oil parameters (S01-S20) and documents why
   a field rate-optimization table CANNOT be delivered from a pre-initiation
-  storage-dominated window. No Fortran solver changes at any stage.
+  storage-dominated window (CI #130 accepted this recomputation as the 20th
+  verdict group). No Fortran solver changes at any stage.
 * `vDef/data/terzaghi415_scale.yaml` / `terzaghi415_inject.yaml` — Stage B0
   similarity-calibrated zero-source control and constant-rate injection decks
   (T = 1.57e-7, storage-dominated); 4-line / 1-line code-diff contracts.
@@ -42,7 +43,11 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   k_eff (pressure-decline inverted permeability, ~37.5x smaller at rep) and
   derives S from phi*(c_pore+c_fluid). Pure post-processing: no Fortran, no
   deck, no solver run; `--md` regenerates the published tables, `--selftest`
-  runs 1 positive + 33 mutations + 3 invariances.
+  runs 1 positive + 33 mutations + 3 invariances. CI #130 `success`:
+  SHALE_OIL_PARAMS_RESULT: PASS (M1-M8), 20 verdict groups green in one run.
+  Acceptance is inference-level (run/job/step success + deferred exit-1 on
+  gso_rc), NOT byte-level log replay: the logs/artifact endpoints returned 401
+  in that run; see roadmap sec. 14.9.
 * `vDef/data/check_gate*.py` — 19 falsifiable verdict scripts, each with a
   positive/negative offline selftest.
 * `.github/workflows/build.yml` — build, diagnostic decks and deferred gate exit.

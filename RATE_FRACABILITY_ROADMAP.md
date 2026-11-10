@@ -729,3 +729,18 @@ $\Delta p$ 是全表**唯一无文献约束**的量，仍固定为 3 MPa 单点�
 ### 14.8 状态纪律
 
 本节所有数值均为**离线复算**（`check_shale_oil_params.py` 的纯 Python 计算），不是求解器验证结论；B0 冻结常数与 CI #125/#128 的真实求解器结果逐位不变。文献参数是**公开区间，不是区块实测**；$k_{core}$ 与 $k_{eff}$、static 与 dynamic 模量均不可混用。**不得用于现场配产或施工排量优选**。
+
+### 14.9 CI #130 验收记录（`37bc756`，`success`）
+
+run `42807197140`，`2026-11-10T11:24:25Z → 11:50:40Z`（26 min 15 s）。job `Build + Terzaghi` `conclusion=success`；step 14 `Build MEF90 + m_Flow + vDef` / step 15 `Run Terzaghi` / step 16 `Upload diagnostics` / step 17 `Upload Terzaghi result mesh` 全部 `success`。
+
+**证据等级须诚实标注**：本轮 `actions/runs/{id}/logs`、`actions/jobs/{id}/logs` 与 `actions/artifacts/{id}/zip` 三个端点均返回 `401`（`Must have admin rights to Repository` / `Server failed to authenticate the request`），本机 git 凭据亦无 `actions:read` 权限，因此**无法像 #128 那样逐字节复核 verdict 文本与 `so_*` 指标**。本轮验收是**逻辑蕴含级**，不是日志逐字节级：
+
+1. `gso_rc` 在 `Run Terzaghi` 末尾以 `if [ "$gso_rc" -ne 0 ]; then ... exit 1; fi` 参与延迟硬裁决（第 1450 行后的判据调用 `PIPESTATUS[0]` 捕获的是 `check_shale_oil_params.py` 的真实退出码，不是 `tee`）⇒ step 15 `success` **蕴含** `SHALE_OIL_PARAMS_RESULT: PASS` 且 M1–M8 全绿；
+2. 其余 18 组 `GATE*_RESULT` 的延迟裁决（`g41_rc`、`g43_rc`、`gb1_rc`、`gb2_rc`、9 个 mpirun rc 等）与致命签名扫描都在**同一个 step 15** 内 ⇒ 该 step `success` 同时蕴含原有判据全绿、生产路径零扰动；
+3. 判据 M8 静态检查 `build.yml` 确实含 `check_shale_oil_params.py` 与 `gate415_b2_verdict.log`，M7 检查 B0 deck 的 5 个冻结 token ⇒ 接线与冻结常数未被绕过；
+4. 本地离线 `SHALE_OIL_PARAMS_RESULT: PASS`（M1–M8）+ `--selftest` 1 正例 + 33 变异全拒 + 3 不变性保持 + `--md` 与本节表格一致。
+
+体系规模由 **19 组 verdict 同轮全绿**扩到 **20 组**（新增 `SHALE_OIL_PARAMS_RESULT`；前 18 条为 `GATE*_RESULT`，第 19 条为 `terzaghi_verdict` 汇总口径）。本轮 **零 Fortran / 零 deck / 零新增求解器运行 / 零生产 run 改动**，B0 冻结常数（$k_{num}=2.35\times10^{-18}$ m²、$S_{num}=1.50\times10^{-10}$ Pa⁻¹、$\beta=1\times10^{5}$ Pa/s、$Q_{total}=1.5\times10^{-4}$ m²/s）逐位不变。
+
+> 若后续取得具备 `actions:read` 的凭据，应补做一次 verdict 文本的逐字节比对（重点：`SHALE_OIL_PARAMS_RESULT: PASS`、8 条 `=== M* ... PASS`、`so_T_span_decades=6.477121e+00`、`so_knum_rep_over_b0=1.667390e+01`），把本轮证据等级提升到 #128 的水平。这不改变验收结论，只补齐证据链。
