@@ -14,35 +14,29 @@ jobs:
         uses: actions/checkout@v4
       - name: Install deps
         run: |
-          # CI #137 annotation gave the exact root cause:
-          #   E: Failed to fetch https://security.ubuntu.com/.../cmake-data...deb
-          #      Temporary failure resolving 'security.ubuntu.com'
-          # apt-get update SUCCEEDS, but the refreshed index points at packages
-          # hosted on security.ubuntu.com, whose DNS is failing on these runners.
-          # GitHub runner images already ship gcc/gfortran/cmake/make/git/...,
-          # so do NOT refresh the index: install only what is genuinely missing
-          # from the image-local index, and fall back to a reachable mirror if
-          # that host is still unresolvable. No solver / deck / verdict change.
+          # These are the EXACT commands from CI #133, the last green run.
+          # CI #134-#138 all failed here with the same RUNNER-SIDE DNS fault:
+          #   "Temporary failure resolving 'security.ubuntu.com'"
+          # while downloading cmake/dos2unix .debs. Trying a pinned runner,
+          # apt retries, skipping the index refresh and swapping mirrors all
+          # failed identically, so NO workflow-side fix is justified: wait for
+          # the runner network to recover and rerun. Nothing here touches the
+          # solver, decks or verdicts. The ::error:: annotations are pure
+          # diagnostics (readable anonymously via check-run annotations).
           set +e
-          missing=""
-          for p in gcc g++ gfortran cmake make perl m4 git patch wget curl dos2unix libtool automake tar; do
-            dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"
-          done
-          echo "Packages missing from the runner image:${missing:- NONE}"
-          if [ -n "$missing" ]; then
-            if ! getent hosts security.ubuntu.com >/dev/null 2>&1; then
-              echo "security.ubuntu.com unresolvable; switching to azure.archive.ubuntu.com"
-              sudo sed -i 's|security.ubuntu.com|azure.archive.ubuntu.com|g' \
-                /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
-                /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-            fi
-            sudo apt-get install -y -qq -o Acquire::Retries=5 $missing \
-              2>&1 | tee /tmp/apt_install.log
-            rc=${PIPESTATUS[0]}
-            if [ "$rc" -ne 0 ]; then
-              echo "::error::apt-get install FAILED rc=$rc :: $(tail -25 /tmp/apt_install.log | tr '\n' ' ' | cut -c1-900)"
-              exit "$rc"
-            fi
+          sudo apt-get update -qq 2>&1 | tee /tmp/apt_update.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::apt-get update FAILED rc=$rc :: $(tail -25 /tmp/apt_update.log | tr '\n' ' ' | cut -c1-900)"
+            exit "$rc"
+          fi
+          sudo apt-get install -y -qq \
+            gcc g++ gfortran cmake make perl m4 git patch wget curl dos2unix \
+            libtool automake tar 2>&1 | tee /tmp/apt_install.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::apt-get install FAILED rc=$rc :: $(tail -25 /tmp/apt_install.log | tr '\n' ' ' | cut -c1-900)"
+            exit "$rc"
           fi
       - name: Cache OpenMPI
         id: cache-openmpi
