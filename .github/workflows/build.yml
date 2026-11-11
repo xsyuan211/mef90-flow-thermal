@@ -1140,6 +1140,65 @@ jobs:
           echo "=== Gate 4.15 B2 3D mpirun exit code: $sdim3_rc ==="
           cp -f data/Beam1x10-tetra4_out.gen /tmp/gate415b2/dim3.gen || true
           cp -f /tmp/terzaghi_415_b2_dim3.log /tmp/gate415b2/dim3.log || true
+          # --- Gate 4.15 / Stage B3: fracture-INITIATION access ladder -----
+          # This is a PHYSICAL PREMISE change (roadmap sec. 5.4 decision 3),
+          # implemented with ZERO Fortran changes.  AT2 damage residual:
+          #   C1 = Gc/(4*cw*ell), C3 = -2(1-alpha)*Psi + (Gc/ell)*alpha
+          #   => alpha_eq(Gc) = 2*Psi/(Gc/ell + 2*Psi).
+          # CI #125 REAL Damage_max = 1.480310e-4 at Gc0 = 27000 N/m gives
+          # 2*Psi = 1.998714e+01 Pa and Gc*(a(alpha)=1/2) = 9.650647 N/m.
+          # CI #127 independently confirmed the 1/Gc branch: halving Gc
+          # multiplies surface energy by 2.000410 (analytic 1.999408) while
+          # beta_dev_gc = 0 exactly.  Four one-line decks lower Gc by 1..4
+          # decades; everything else (f, S, k, mu, p0, time grid, law) is
+          # unchanged, so p(t) MUST stay the B0 compliance ramp.
+          # Each run MUST delete the result mesh first (CI #124: MEF90CtxOpenEXO
+          # APPENDS to an existing _out.gen and leaves the 51-record tail).
+          mkdir -p /tmp/gate415b3
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B3: gc2700 (Gc = 2700 N/m, alpha_eq ~ 1.48e-3) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b3_gc2700.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b3_gc2700.log
+          sb3_gc2700_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B3 gc2700 mpirun exit code: $sb3_gc2700_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b3/gc2700.gen || true
+          cp -f /tmp/terzaghi_415_b3_gc2700.log /tmp/gate415b3/gc2700.log || true
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B3: gc270 (Gc = 270 N/m, alpha_eq ~ 1.46e-2) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b3_gc270.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b3_gc270.log
+          sb3_gc270_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B3 gc270 mpirun exit code: $sb3_gc270_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b3/gc270.gen || true
+          cp -f /tmp/terzaghi_415_b3_gc270.log /tmp/gate415b3/gc270.log || true
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B3: gc27 (Gc = 27 N/m, alpha_eq ~ 1.29e-1) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b3_gc27.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b3_gc27.log
+          sb3_gc27_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B3 gc27 mpirun exit code: $sb3_gc27_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b3/gc27.gen || true
+          cp -f /tmp/terzaghi_415_b3_gc27.log /tmp/gate415b3/gc27.log || true
+          rm -f data/Beam1x10-tri3_out.gen
+          echo "=== Gate 4.15 B3: gc2p7 (Gc = 2.7 N/m, alpha_eq ~ 5.97e-1 > 0.2929) ==="
+          timeout -k 10s 600 mpirun --allow-run-as-root -np 2 -x LD_LIBRARY_PATH ../bin/$PETSC_ARCH/vDef \
+            -prefix data/Beam1x10-tri3 -options_file_yaml data/terzaghi415_b3_gc2p7.yaml \
+            -flow_ts_view -flow_ts_monitor -flow_ksp_rtol 1.0e-10 -flow_ksp_converged_reason -flow_ksp_monitor \
+            -disp_snes_type ksponly -disp_snes_converged_reason \
+            2>&1 | tee /tmp/terzaghi_415_b3_gc2p7.log
+          sb3_gc2p7_rc=${PIPESTATUS[0]}
+          echo "=== Gate 4.15 B3 gc2p7 mpirun exit code: $sb3_gc2p7_rc ==="
+          cp -f data/Beam1x10-tri3_out.gen /tmp/gate415b3/gc2p7.gen || true
+          cp -f /tmp/terzaghi_415_b3_gc2p7.log /tmp/gate415b3/gc2p7.log || true
           # Gate 4.14 already saved its 3D mesh; restore it so the delivered
           # 3D artifact stays the Gate 4.14 output, not the B2 injection run.
           if [ -s /tmp/out_dim3.gen ]; then
@@ -1450,6 +1509,27 @@ jobs:
           python3 data/check_gate415_b2_extension.py --gate /tmp/gate415b2 \
             2>&1 | tee /tmp/gate415_b2_verdict.log
           gb2_rc=${PIPESTATUS[0]}
+          # --- Gate 4.15 / Stage B3 (hard): initiation access --------------
+          # N1 data, N2 beta=f/S invariance, N3 AT2 analytic anchor (three
+          # independent implementations + CI #127 surface calibration),
+          # N4 initiation crossing + measured Gc* bracket, N5 localisation
+          # (a crack, not uniformly softened material) + -5 reporting,
+          # N6 surface ~ 1/Gc + W invariance, N7 static/deck/CI contracts,
+          # N8 state discipline + zero production perturbation.
+          # Reuse the EXISTING B0 inject and B1 gc artefacts as the two
+          # highest-Gc rungs: no extra solver runs are needed for them.
+          cp -f /tmp/terzaghi_415_inject.log  /tmp/gate415b3/b0_inject.log
+          cp -f /tmp/out_415_inject.gen      /tmp/gate415b3/b0_inject.gen
+          cp -f /tmp/gate415b1/gc.log        /tmp/gate415b3/gc_half.log
+          cp -f /tmp/gate415b1/gc.gen        /tmp/gate415b3/gc_half.gen
+          cp -f /tmp/gate415_verdict.log    /tmp/gate415b3/b0_verdict.log
+          cp -f /tmp/gate415_b1_verdict.log /tmp/gate415b3/b1_verdict.log
+          cp -f /tmp/gate415_b2_verdict.log /tmp/gate415b3/b2_verdict.log
+          cp -f /tmp/terzaghi.log           /tmp/gate415b3/main.log
+          cp -f data/Beam1x10-tri3.gen      /tmp/gate415b3/mesh.gen
+          python3 data/check_gate415_b3_initiation.py --gate /tmp/gate415b3 \
+            2>&1 | tee /tmp/gate415_b3_verdict.log
+          gb3_rc=${PIPESTATUS[0]}
           # --- Shale-oil literature parameter recomputation (M1-M8) ---------
           # Pure post-processing: no Fortran, no deck, no solver. Reproduces
           # first-edition tables A-C from roadmap 4.2 as the calibration
@@ -1685,6 +1765,35 @@ jobs:
             exit 1
           fi
           echo "=== Gate 4.15 B2 PASS: f(t)=f0*t quadratic ramp, bedding anisotropy, 3D consistency ==="
+          # Gate 4.15 / Stage B3 deferred verdicts. CI #120 lesson: EVERY
+          # mpirun exit code must be judged -- a timeout (rc=124) leaving a
+          # half-written EXO must never reach a PASS.
+          if [ "$sb3_gc2700_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B3 gc2700 run did not complete (rc=$sb3_gc2700_rc) ==="
+            exit 1
+          fi
+          if [ "$sb3_gc270_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B3 gc270 run did not complete (rc=$sb3_gc270_rc) ==="
+            exit 1
+          fi
+          if [ "$sb3_gc27_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B3 gc27 run did not complete (rc=$sb3_gc27_rc) ==="
+            exit 1
+          fi
+          if [ "$sb3_gc2p7_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B3 gc2p7 run did not complete (rc=$sb3_gc2p7_rc) ==="
+            exit 1
+          fi
+          if [ "$gb3_rc" -ne 0 ]; then
+            echo "=== FAIL: Gate 4.15 B3 rejected the fracture-initiation access ladder (rc=$gb3_rc) ==="
+            echo "    Check /tmp/gate415_b3_verdict.log: N2 beta invariant,"
+            echo "    N3 three-way AT2 anchor + CI #127 surface calibration,"
+            echo "    N4 crossing of alpha_stiff_half and the measured Gc* bracket,"
+            echo "    N5 damage localisation (uniform softening is NOT a crack),"
+            echo "    N6 surface ~ 1/Gc, N7/N8 wiring and state discipline."
+            exit 1
+          fi
+          echo "=== Gate 4.15 B3 PASS: initiation threshold reached and bracketed; NO propagation claim ==="
           if [ "$gso_rc" -ne 0 ]; then
             echo "=== FAIL: shale-oil literature parameter recomputation rejected (rc=$gso_rc) ==="
             echo "    Check /tmp/shale_oil_params_verdict.log: M1 table integrity,"
@@ -1849,9 +1958,11 @@ jobs:
             /tmp/gate415_verdict.log
             /tmp/gate415_b1_verdict.log
             /tmp/gate415_b2_verdict.log
+            /tmp/gate415_b3_verdict.log
             /tmp/shale_oil_params_verdict.log
             /tmp/gate415b1
             /tmp/gate415b2
+            /tmp/gate415b3
             /tmp/terzaghi_415_scale.log
             /tmp/terzaghi_415_inject.log
             /tmp/out_415_scale.gen

@@ -309,9 +309,17 @@
   - **离线自检**：`SHALE_OIL_PARAMS_RESULT: PASS`（M1–M8 全绿）；`--selftest` **1 正例 + 33 变异全被拒绝 + 3 不变性保持**；`--md` 表格与路线稿第 14.4 节一致性核对；`py_compile` / `ast.parse` / `json.load` / `yaml.safe_load` / `git diff --check` / `Run Terzaghi` 整块 `bash -n`（1402 行）全通过；B0 / B1 / B2 / 4.10 四个既有判据的 `--selftest` 回归全 PASS。详见 `RATE_FRACABILITY_ROADMAP.md` 第 14 节。
   - **CI #130 验收（`37bc756`，`success`）**：run `42807197140`，11:24:25 → 11:50:40 UTC（26 min 15 s）；job 与 step 14/15/16/17 全 `success`。⚠️ **证据等级为逻辑蕴含级，非日志逐字节级**：本轮 `runs/{id}/logs`、`jobs/{id}/logs`、`artifacts/{id}/zip` 三端点均 `401`（需 admin / `actions:read`），无法像 #128 那样逐字节复核 verdict 文本。验收依据：① `gso_rc` 由 `PIPESTATUS[0]` 捕获且在 step 15 末尾 `exit 1` 延迟裁决 ⇒ step 15 `success` **蕴含** M1–M8 全绿；② 其余 18 组 `GATE*_RESULT` 与 9 个 mpirun rc 的延迟裁决同在该 step ⇒ 原有判据与生产路径零扰动；③ M8 静态校验接线、M7 校验 B0 deck 冻结 token；④ 本地离线全绿。体系由 **19 组 → 20 组 verdict 同轮全绿**。若日后取得 `actions:read` 凭据，应补做 verdict 文本逐字节比对。
 
+- [ ] **研究项 / B3 起裂准入立项（AT2 韧性阶梯，N1–N8）**（**代码已落地，CI 待验收**；对应路线稿第 15 节与第 5.4 决策点 3）
+  - **物理前提改变**：B0/B1/B2 全部在起裂前（`Damage_max=1.480310e-4`）；B3 用零 Fortran 的单因子 `fracturetoughness` 阶梯把损伤推过 $a(\alpha)=1/2$ 的刚度半衰门槛。**仍不是裂缝传播段**，Santillán / Detournay 传播段标度与排量优选表在本阶段依然无定义。
+  - **解析锚（源码级）**：AT2 $c_w=1/2$（`m_MEF90_DefMechAT2.F90:33`）、$a=(1-\alpha)^2$、`w=\alpha^2`、`C_1=G_c/(2\ell)`、`C_2=G_c\ell/(2c_w)A`（`m_MEF90_DefMechAssembly.F90:1687-1688,2062-2063`）、$C_3=a'\Psi+C_1w'$（:1786）⇒ $\alpha_{eq}=2\Psi/(G_c/\ell+2\Psi)$。由 #125 真实 damage 反演 $2\Psi=1.998714\times10^{1}$ Pa、$G_c^*=9.650647$ N/m（$a=1/2$ 定义）；#127 独立实测 `gb1_surface_ratio_gc=2.000410` vs 解析 `1.999408`（差 0.05%）、`gb1_beta_dev_gc=0` 逐位。
+  - **交付**：4 个单行差异 deck（`2700 / 270 / 27 / 2.7` N/m，仅改 `fracturetoughness`）+ 复用 B0 注入 / B1 `gc` 两个既有 EXO 作为高档锚 + `check_gate415_b3_initiation.py`（N1–N8，`--gate` / `--selftest` / `--predict`）+ 4 个诊断 run、4 次 EXO 重建、`gb3_rc` 延迟硬裁决、verdict log 与 artifact。**零 Fortran / 零既有 deck / 零生产 run 改动**。
+  - **N5 是本阶段核心判别**：损伤必须**局域化**（$d_{max}/d_{mean}>1.5$，真实 B0 为 `6.996`）；若末档为全域均匀软化，必须 FAIL 并如实报告「不构成裂纹」，**不得为凑 PASS 放宽阈值**。`-5` 残差平台显式报告条数、不作硬判。
+  - **离线证据**：`--selftest` **1 正例 + 28 变异（含 3 不变性）全 PASS**（不变性含 `-5` 出现、deck 注释改写、末档 snap 到 $\alpha=1$）；**#125 真实 EXO/log 混合回放 N1–N8 全 PASS**（真实 `dmax_last=1.480309745e-4`、`dmax/dmean=6.996`、`\beta=1.000000e+5`、11 条 `Gate 3.2`/`Gate 4.5`/能量行、5 条 damage `-5`）；`git diff --check`、`py_compile`、PyYAML（workflow + 5 份 deck）、`Run Terzaghi` 整块 `bash -n`（1511 行）全通过。
+  - **状态纪律**：不主张传播段标度、缝长 / 缝网面积 / 起裂压力绝对值 / 排量优选表；能量行只作相对 / 可证伪观测量。验收以 `GATE415_B3_RESULT: PASS` 且原有 **20 组 verdict 保持全绿**为准；若首轮 FAIL 沿用 #124→#125 / #127→#128 原则：**先验算物理阶段，只改判据 + 补可证伪负例，不改 deck 去凑判据**。
+
 ---
 
-## 进度跟踪（按 CI #130 验收 + B0/B1/B2 + 文献参数重算全部收口，2026-11-10）
+## 进度跟踪（按 CI #130 验收 + B0/B1/B2 + 文献参数重算收口 + B3 已落地待 CI，2026-11-11）
 
 **代码进度（以清单条目计）**
 - 闸门 1（不崩+边界）：**4 / 4**。1.1 / 1.2 / 1.3 已落地；1.4 经核实是 `use-rename` 分离设计、无需改动。CI #47 首次完整编译，此后由 Gate 3.3 / 4.x 持续回归。

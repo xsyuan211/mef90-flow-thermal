@@ -48,7 +48,18 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   Acceptance is inference-level (run/job/step success + deferred exit-1 on
   gso_rc), NOT byte-level log replay: the logs/artifact endpoints returned 401
   in that run; see roadmap sec. 14.9.
-* `vDef/data/check_gate*.py` — 19 falsifiable verdict scripts, each with a
+* `vDef/data/terzaghi415_b3_*.yaml` / `check_gate415_b3_initiation.py` — Stage
+  B3 fracture-INITIATION access: four one-line-per-decade Gc decks
+  (27000 -> 2.7 N/m, only `cs0001.fracturetoughness`) plus two reused B0/B1
+  EXO anchors, and the N1-N8 hard verdict. AT2 analytic anchor
+  alpha_eq = 2*Psi/(Gc/ell + 2*Psi), calibrated on the CI #125 real damage
+  field (2*Psi = 1.998714e1 Pa, Gc* = 9.650647 N/m at a(alpha)=1/2) and
+  independently checked against CI #127's gb1_surface_ratio_gc = 2.000410.
+  Tests damage LOCALISATION (uniform softening is NOT a crack) while keeping
+  beta = f/S invariant. Zero Fortran changes. Initiation access ONLY: no
+  propagation-regime scaling, fracture length or rate-optimization claim.
+  `--selftest` 1 positive + 28 mutations + 3 invariances; CI verdict pending.
+* `vDef/data/check_gate*.py` — 20 falsifiable verdict scripts, each with a
   positive/negative offline selftest.
 * `.github/workflows/build.yml` — build, diagnostic decks and deferred gate exit.
 
