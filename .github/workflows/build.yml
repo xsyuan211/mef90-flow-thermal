@@ -6,14 +6,21 @@ on:
 jobs:
   compile:
     name: Build + Terzaghi
-    runs-on: ubuntu-latest
+    # CI #134 / #135 both died in "Install deps" (apt exit 100) after the
+    # ubuntu-latest label began migrating to Ubuntu 26 (runner-images#14748),
+    # while #133 succeeded on the previous image. Pin the 24.04 image that
+    # the PETSc/OpenMPI caches were built on. All cache keys below are STATIC
+    # strings (no runner.os / image version), so this pin cannot cause a
+    # cache miss or a PETSc rebuild. No solver / deck / verdict changes.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Install deps
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
+          # Acquire::Retries covers transient apt mirror / proxy hiccups.
+          sudo apt-get update -qq -o Acquire::Retries=3
+          sudo apt-get install -y -qq -o Acquire::Retries=3 \
             gcc g++ gfortran cmake make perl m4 git patch wget curl dos2unix \
             libtool automake tar
       - name: Cache OpenMPI
