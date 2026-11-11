@@ -1530,6 +1530,10 @@ jobs:
           python3 data/check_gate415_b3_initiation.py --gate /tmp/gate415b3 \
             2>&1 | tee /tmp/gate415_b3_verdict.log
           gb3_rc=${PIPESTATUS[0]}
+          # A PASS may be a NEGATIVE result; echo the classification so the
+          # log never lets "PASS" be misread as "a crack was produced".
+          grep -E '^(B3_REGIME|B3_INITIATION_ACCESS|GATE415_B3_RESULT):' \
+            /tmp/gate415_b3_verdict.log || true
           # --- Shale-oil literature parameter recomputation (M1-M8) ---------
           # Pure post-processing: no Fortran, no deck, no solver. Reproduces
           # first-edition tables A-C from roadmap 4.2 as the calibration
@@ -1785,15 +1789,15 @@ jobs:
             exit 1
           fi
           if [ "$gb3_rc" -ne 0 ]; then
-            echo "=== FAIL: Gate 4.15 B3 rejected the fracture-initiation access ladder (rc=$gb3_rc) ==="
+            echo "=== FAIL: Gate 4.15 B3 rejected the mechanism-classification ladder (rc=$gb3_rc) ==="
             echo "    Check /tmp/gate415_b3_verdict.log: N2 beta invariant,"
             echo "    N3 three-way AT2 anchor + CI #127 surface calibration,"
             echo "    N4 crossing of alpha_stiff_half and the measured Gc* bracket,"
-            echo "    N5 damage localisation (uniform softening is NOT a crack),"
+            echo "    N5 mechanism classification (LOCALISED / UNIFORM_SOFTENING; ambiguous band rejected),"
             echo "    N6 surface ~ 1/Gc, N7/N8 wiring and state discipline."
             exit 1
           fi
-          echo "=== Gate 4.15 B3 PASS: initiation threshold reached and bracketed; NO propagation claim ==="
+          echo "=== Gate 4.15 B3 PASS: mechanism classified, Gc* bracketed; NO propagation claim ==="
           if [ "$gso_rc" -ne 0 ]; then
             echo "=== FAIL: shale-oil literature parameter recomputation rejected (rc=$gso_rc) ==="
             echo "    Check /tmp/shale_oil_params_verdict.log: M1 table integrity,"

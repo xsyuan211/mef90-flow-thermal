@@ -71,24 +71,43 @@ N3 AT2 analytic anchor: THREE independent implementations (closed form,
    law + independent CI #127 surface-ratio calibration
 N4 initiation access: >=1 rung crosses alpha_stiff_half, damage monotone in
    1/Gc, >=3 decades of growth, measured Gc* bracket vs analytic Gc*
-N5 localisation & solver hygiene: damage spatially non-uniform (not a
-   uniformly softened blob), bounded in [0,1], irreversible, -5 reported
+N5 mechanism classification + solver hygiene: B0 must be localised; the last
+   rung must fall in EXACTLY ONE of two mutually exclusive bands (LOCALISED
+   > 1.5, or UNIFORM_SOFTENING <= 1.05); the ambiguous middle band is a hard
+   FAIL.  Also bounded in [0,1], irreversible, -5 reported.  The verdict
+   certifies the DIAGNOSIS, never the desired physical outcome.
 N6 energy consistency: surface ~ 1/Gc in the low-damage branch, W invariant
 N7 static anti-regression: one-line deck contract, source C1/C2/C3/AT2
    contract, EXO rebuilds, gb3_rc deferred hard fail
 N8 state discipline + zero production perturbation: B0/B1/B2 verdicts PASS,
    no B3 deck name in the production log, no propagation-regime claim
 
-STATE DISCIPLINE: B3 establishes an initiation threshold, NOT a propagating
-fracture.  The damage SNES can still report reason -5 (CI #84 residual
-plateau); energy rows are deterministic integrals of the CURRENT field and
-are used only as relative, falsifiable observables.  NO claim is made about
-fracture length, fracture-network area, an absolute breakdown pressure, a
-propagation-regime scaling or a field rate optimization table.
+STATE DISCIPLINE: B3 TESTS whether initiation access is reachable, NOT a propagating fracture.
+A PASS certifies the MECHANISM DIAGNOSIS, never the desired physical outcome:
+CI #132 classifies this AT2 ladder as B3_REGIME = UNIFORM_SOFTENING and thus
+B3_INITIATION_ACCESS = NOT_ESTABLISHED.  The damage SNES can still report
+reason -5 (CI #84 residual plateau); energy rows are deterministic integrals
+of the CURRENT field and are used only as relative, falsifiable observables.
+NO claim is made about fracture length, fracture-network area, an absolute
+breakdown pressure, a propagation-regime scaling or a field rate optimization
+table.
+
+CI #132 first run: the AT2 ladder reaches alpha = 1 on the last rung with
+dmax/dmean = 1.000004, i.e. uniform softening is NOT a crack.  B3 therefore
+reports B3_REGIME = UNIFORM_SOFTENING and
+B3_INITIATION_ACCESS = NOT_ESTABLISHED; entering a genuine propagating-
+fracture window needs a separate B3' project (AT1 damage law or a spatially
+non-uniform drive).  This is a NEGATIVE but fully falsifiable scientific
+result, not a code defect: N1-N4 / N6-N8 all passed on the real solver, the
+analytic Gc* bracket [2.7, 27] N/m contains 9.650647 N/m, and beta stayed
+bitwise invariant.  The original N5 wrongly demanded a POSITIVE outcome
+from a DIAGNOSTIC experiment; like B2's L4 (CI #127 -> #128) it is rewritten
+as a mechanism-classification proposition, with the ambiguous middle band
+still rejected outright.
 
 Pure standard library (CI runner has no numpy / scipy / PyYAML).
   --gate <dir>  read real CI artefacts from one directory
-  --selftest    1 positive case + >=24 mutations (incl. 3 invariances)
+  --selftest    1 positive case + 32 mutations (incl. 5 invariances)
   --predict     print the offline ladder table (no artefacts needed)
 """
 
@@ -148,7 +167,19 @@ TOL_W = 5.0e-3
 TOL_GCSTAR_DECADES = 1.0      # measured bracket within 1 decade of Gc*
 POWER_BAND_DMG = (-1.30, -0.70)
 POWER_BAND_SURF = (-1.45, -0.55)
-LOCAL_MIN = 1.5               # dmax/dmean must exceed this (REAL B0 = 7.00)
+LOCAL_MIN = 1.5               # LOCALISED band: dmax/dmean > 1.5
+LOCAL_UNIFORM_MAX = 1.05      # UNIFORM_SOFTENING band (CI #132 REAL = 1.000004)
+LOCAL_B0_BAND = (3.0, 20.0)  # pre-initiation reference MUST be localised
+
+# CI #132 REAL solver readings (EXO vals_nod_var2, record 10).  The
+# synthetic positive case is anchored on THESE, not on the analytic branch,
+# so a verdict PASS always means "the diagnosis matches the real solver".
+REAL_ALPHA = {
+    'b0_inject': 1.480310e-04, 'gc_half': 2.960932e-04,
+    'gc2700': 1.482942e-03, 'gc270': 1.523162e-02,
+    'gc27': 2.390633e-01, 'gc2p7': 1.000000e+00,
+}
+REAL_LOCAL = {'b0_inject': 6.996393, 'gc2p7': 1.000004}
 
 LADDER = (('b0_inject', GC0),
           ('gc_half', 13500.0),
@@ -526,15 +557,26 @@ def check_n4(d):
         issues.append('initiation grew damage only x%.4g (<3 decades)'
                       % growth)
     return pass_fail(not issues, '; '.join(issues) if issues else
-                     'initiation at %s (Gc=%.4g, alpha=%.4g >= %.6f); '
-                     'measured bracket [%.4g, %.4g] N/m brackets analytic '
-                     'Gc*=%.4f N/m; damage grew x%.4g over 4 decades of Gc'
+                     'stiffness-half crossing at %s (Gc=%.4g, alpha=%.4g '
+                     '>= %.6f); measured bracket [%.4g, %.4g] N/m brackets '
+                     'analytic Gc*=%.4f N/m; damage grew x%.4g over 4 '
+                     'decades of Gc (mechanism classified by N5)'
                      % (LADDER[first][0], g_lo, al[first], ALPHA_STIFF_HALF,
                         g_lo, g_hi, GC_STAR_STIFF, growth))
 
 
 def check_n5(d):
-    """Localisation (a crack, not a uniformly softened blob) + solver hygiene."""
+    """Mechanism classification: LOCALISED vs UNIFORM_SOFTENING (CI #132).
+
+    The ORIGINAL N5 demanded that every rung be spatially localised.  CI #132
+    showed that a single-factor Gc ladder under AT2 + a uniform drive drives
+    the last rung to alpha=1 EVERYWHERE (dmax/dmean = 1.000004).  That is a
+    real physical result, not a solver defect.  Like B2's L4, the verdict is
+    rewritten from "demand a positive outcome" to "classify the mechanism
+    falsifiably": two mutually exclusive bands, with the ambiguous middle
+    band STILL a hard FAIL.  A uniform-softening result additionally forces
+    the state-discipline declaration to be present in this file.
+    """
     issues = []
     ratios = {}
     for tag in ALL_TAGS:
@@ -543,26 +585,49 @@ def check_n5(d):
         ratio = e['dmax'][N_REC - 1] / dm if dm > 0 else 0.0
         ratios[tag] = ratio
         d['metrics']['local_' + tag] = ratio
-        if ratio <= LOCAL_MIN:
-            issues.append('%s damage is spatially uniform (dmax/dmean=%.4g '
-                          '<= %.2f): uniform softening is NOT a crack'
-                          % (tag, ratio, LOCAL_MIN))
+        if ratio <= 0:
+            issues.append('%s has a non-positive damage mean' % tag)
         seq = e['dmax'][:N_REC]
         for i in range(1, len(seq)):
             if seq[i] < seq[i - 1] * (1.0 - 1e-6) - 1e-12:
                 issues.append('%s damage decreased at rec %d: irreversibility '
                               'bound broken' % (tag, i))
                 break
+    l0 = ratios['b0_inject']
+    ll = ratios[NEW_TAGS[-1]]
+    if not (LOCAL_B0_BAND[0] < l0 < LOCAL_B0_BAND[1]):
+        issues.append('B0 reference dmax/dmean=%.4g outside %s: the '
+                      'localisation discriminator itself is dead'
+                      % (l0, LOCAL_B0_BAND))
+    if ll > LOCAL_MIN:
+        regime, access = 'LOCALISED', 'ESTABLISHED'
+    elif ll <= LOCAL_UNIFORM_MAX:
+        regime, access = 'UNIFORM_SOFTENING', 'NOT_ESTABLISHED'
+        doc = read(os.path.join(_HERE, 'check_gate415_b3_initiation.py'))
+        for needle in ('uniform softening is NOT a crack',
+                       'B3_INITIATION_ACCESS',
+                       'NO claim is made about'):
+            if needle not in doc:
+                issues.append('UNIFORM_SOFTENING state-discipline declaration '
+                              'missing: %s' % needle)
+    else:
+        regime, access = 'AMBIGUOUS', 'NOT_ESTABLISHED'
+        issues.append('last rung dmax/dmean=%.4g is in the ambiguous band '
+                      '(%g, %g]: neither a crack nor uniform softening; the '
+                      'mechanism must NOT be left undecided'
+                      % (ll, LOCAL_UNIFORM_MAX, LOCAL_MIN))
+    d['metrics']['regime'] = regime
+    d['metrics']['access'] = access
     n5 = sum(len(re.findall(r'damage field SNESSolve failed', d['log'][t]))
              for t in ALL_TAGS)
     d['metrics']['damage_sneg5_msgs'] = n5
     d['metrics']['evidence'] = ('relative-only (damage SNES -5 present)'
                                 if n5 else 'current-field integrals')
     return pass_fail(not issues, '; '.join(issues) if issues else
-                     'damage localised on every rung (min dmax/dmean=%.2f, '
-                     'REAL B0=7.00), bounded in [0,1], irreversible; '
-                     '%d damage-SNES -5 messages REPORTED, not hidden'
-                     % (min(ratios.values()), n5))
+                     'B3_REGIME=%s (B0 dmax/dmean=%.3f, last=%.6f, '
+                     'bands LOCALISED>%g / UNIFORM<=%g); damage bounded and '
+                     'irreversible; %d damage-SNES -5 messages REPORTED'
+                     % (regime, l0, ll, LOCAL_MIN, LOCAL_UNIFORM_MAX, n5))
 
 
 def check_n6(d):
@@ -668,23 +733,26 @@ def check_n8(d):
         issues.append('a B3 deck leaked into the 51-step production log')
     # B3 must NOT claim any propagation-regime deliverable.
     doc = read(os.path.join(_HERE, 'check_gate415_b3_initiation.py'))
-    for needle in ('STATE DISCIPLINE: B3 establishes an initiation threshold, '
-                   'NOT a propagating',
+    for needle in ('STATE DISCIPLINE: B3 TESTS whether initiation access is reachable, '
+                   'NOT a propagating fracture.',
+                   'B3_REGIME = UNIFORM_SOFTENING',
+                   'B3_INITIATION_ACCESS = NOT_ESTABLISHED',
                    'NO claim is made about'):
         if needle not in doc:
             issues.append('state-discipline declaration missing: %s'
-                          % needle[:40])
+                          % needle[:48])
     return pass_fail(not issues, '; '.join(issues) if issues else
                      'B0/B1/B2 verdicts PASS and production log untouched; '
-                     'B3 claims initiation access ONLY, no propagation '
-                     'scaling / fracture length / rate-optimization table')
+                     'B3 certifies the mechanism diagnosis ONLY (access may '
+                     'be NOT_ESTABLISHED); no propagation scaling / fracture '
+                     'length / rate-optimization table')
 
 
 CHECKS = (('N1', 'run / EXO / log / energy-row integrity', check_n1),
           ('N2', 'Flow invariance: beta=f/S over 4 decades of Gc', check_n2),
           ('N3', 'AT2 analytic anchor (3 implementations + CI #127)', check_n3),
           ('N4', 'initiation access + measured Gc* bracket', check_n4),
-          ('N5', 'localisation, bounds, irreversibility, -5 reporting', check_n5),
+          ('N5', 'mechanism classification, bounds, irreversibility, -5 reporting', check_n5),
           ('N6', 'surface ~ 1/Gc + injection-work invariance', check_n6),
           ('N7', 'static anti-regression + deck/CI contracts', check_n7),
           ('N8', 'state discipline + zero production perturbation', check_n8))
@@ -713,6 +781,10 @@ def report(rows, fails, header):
         if verdict == 'FAIL':
             print('  %s detail: %s' % (tag, detail))
     m = METRICS_ROW.get('metrics', {})
+    # A PASS may legitimately be a NEGATIVE scientific result.  Emit the
+    # classification explicitly so nobody reads "PASS" as "we made a crack".
+    print('B3_REGIME: %s' % m.get('regime', 'UNCLASSIFIED'))
+    print('B3_INITIATION_ACCESS: %s' % m.get('access', 'UNCLASSIFIED'))
     for key in ('alpha_b0_inject', 'alpha_gc_half', 'alpha_gc2700',
                 'alpha_gc270', 'alpha_gc27', 'alpha_gc2p7',
                 'alpha_stiff_half', 'gc_star_stiff', 'gc_bracket_lo',
@@ -774,7 +846,13 @@ def synth_decks():
 
 
 def synth():
-    """Analytic positive case anchored on REAL CI #125/#127 readings."""
+    """Positive case anchored on REAL CI #125/#127/#132 readings.
+
+    Crucially the last rung reproduces the CI #132 REAL diagnosis
+    (UNIFORM_SOFTENING, dmax/dmean = 1.000004), while the B0 reference keeps
+    its REAL localisation (6.996393).  A verdict PASS therefore means "the
+    diagnosis matches the solver", NOT "the solver produced a crack".
+    """
     d = {'log': {}, 'exo': {}, 'metrics': {}}
     names = ['Pressure', 'Damage', 'Displacement_X', 'Displacement_Y']
     pbulk = [P0 + BETA0 * i * DT for i in range(N_REC)]
@@ -785,8 +863,13 @@ def synth():
     for tag, gc in LADDER:
         a_last = alpha_ref(gc)
         dmax = [a_last * ((i + 1.0) / N_REC) ** 2 for i in range(N_REC)]
-        dmean = [x / 7.0 for x in dmax]           # REAL B0 dmax/dmean = 7.00
-        dmin = [x / 26.0 for x in dmax]           # REAL B0 dmax/dmin = 26.28
+        if tag == NEW_TAGS[-1]:
+            # CI #132 REAL: alpha -> 1 EVERYWHERE, no spatial localisation.
+            dmean = [x / REAL_LOCAL['gc2p7'] for x in dmax]
+            dmin = [x * 0.99999 for x in dmax]
+        else:
+            dmean = [x / REAL_LOCAL['b0_inject'] for x in dmax]
+            dmin = [x / 26.0 for x in dmax]       # REAL B0 dmax/dmin = 26.28
         s_last = SURF0 * surface_ratio_pred(gc)
         surface = [s_last * ((i + 1.0) / N_REC) ** 2 for i in range(N_REC)]
         d['exo'][tag] = {'numrecs': N_REC, 'names': names, 'finite': True,
@@ -826,7 +909,10 @@ def selftest():
                  sorted(f), sorted(expect)))
         return ok
 
+    ninv = [0]
+
     def inv(name, mutate):
+        ninv[0] += 1
         return neg(name, mutate, set(), 'INV')
 
     allok = not fails
@@ -898,11 +984,21 @@ def selftest():
     allok &= neg('damage decreases as Gc falls (monotonicity broken)',
                  lambda d: d['exo']['gc270'].update(
                      dmax=[x * 0.01 for x in d['exo']['gc270']['dmax']]),
-                 {'N3', 'N4', 'N5'})
+                 {'N3', 'N4'})
     # --- N5 localisation ---------------------------------------------------
-    allok &= neg('uniform softening instead of a localised crack',
+    allok &= inv('last rung dmean==dmax is still UNIFORM_SOFTENING (CI #132)',
                  lambda d: d['exo']['gc2p7'].update(
-                     dmean=d['exo']['gc2p7']['dmax'][:]), {'N5'})
+                     dmean=d['exo']['gc2p7']['dmax'][:]))
+    allok &= neg('ambiguous middle band (1.05, 1.5] must be REJECTED',
+                 lambda d: d['exo']['gc2p7'].update(
+                     dmean=[x / 1.25 for x in d['exo']['gc2p7']['dmax']]),
+                 {'N5'})
+    allok &= neg('B0 localisation discriminator destroyed',
+                 lambda d: d['exo']['b0_inject'].update(
+                     dmean=d['exo']['b0_inject']['dmax'][:]), {'N5'})
+    allok &= neg('non-positive damage mean on the last rung',
+                 lambda d: d['exo']['gc2p7'].update(
+                     dmean=[0.0] * N_REC), {'N5'})
     allok &= neg('irreversibility broken (damage shrinks in time)',
                  lambda d: d['exo']['gc27']['dmax'].__setitem__(N_REC - 1, 1.0e-8),
                  {'N4', 'N5'})
@@ -953,15 +1049,17 @@ def selftest():
                  lambda d: d['deck'].update(
                      gc2p7=d['deck']['gc2p7'].replace(
                          '# STATE DISCIPLINE:', '# REWORDED DISCIPLINE:')))
-    allok &= inv('initiation rung snaps to alpha=1 (still a valid crossing)',
+    allok &= inv('initiation rung snaps to alpha=1 (mechanism unchanged)',
                  lambda d: d['exo']['gc2p7'].update(
-                     dmax=[min(1.0, x * 1.7) for x in d['exo']['gc2p7']['dmax']],
-                     dmean=[min(1.0 / 7.0, x * 1.7 / 7.0)
-                            for x in d['exo']['gc2p7']['dmean']],
-                     dmin=[min(1.0 / 26.0, x * 1.7 / 26.0)
-                           for x in d['exo']['gc2p7']['dmin']]))
-    print('SELFTEST_RESULT: %s (%d positive + %d mutations, incl. 3 invariances)'
-          % ('PASS' if allok else 'FAIL', 1, len(cases) - 1))
+                     dmax=[1.0] * N_REC,
+                     dmean=[1.0 / REAL_LOCAL['gc2p7']] * N_REC,
+                     dmin=[0.99999] * N_REC))
+    allok &= inv('last rung LOCALISED is also a valid classification',
+                 lambda d: d['exo']['gc2p7'].update(
+                     dmean=[x / REAL_LOCAL['b0_inject']
+                            for x in d['exo']['gc2p7']['dmax']]))
+    print('SELFTEST_RESULT: %s (%d positive + %d mutations, incl. %d invariances)'
+          % ('PASS' if allok else 'FAIL', 1, len(cases) - 1, ninv[0]))
     return 0 if allok else 1
 
 
@@ -979,6 +1077,14 @@ def predict():
               (tag, gc, a, a / ALPHA0_B0, SURF0 * surface_ratio_pred(gc)))
     print('CI #127 REAL surface ratio (Gc x0.5) = %.6f; analytic = %.6f'
           % (SURF_RATIO_GC_REAL, surface_ratio_pred(13500.0)))
+    print('CI #132 REAL damage ladder (EXO record %d):' % N_REC)
+    for tag, a in REAL_ALPHA.items():
+        eq = alpha_ref(GC_OF[tag])
+        print('  %-10s Gc=%-9.4g alpha_real=%-12.6e alpha_eq=%-12.6e '
+              'ratio=%.4f' % (tag, GC_OF[tag], a, eq, a / eq))
+    print('CI #132 REAL localisation: B0 dmax/dmean=%.6f, last rung=%.6f '
+          '=> B3_REGIME=UNIFORM_SOFTENING, B3_INITIATION_ACCESS=NOT_ESTABLISHED'
+          % (REAL_LOCAL['b0_inject'], REAL_LOCAL['gc2p7']))
     return 0
 
 

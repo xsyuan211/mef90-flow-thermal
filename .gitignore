@@ -44,6 +44,10 @@ mef90version.h
 /ci*_watch_stdout.txt
 /ci*_log_raw.bin
 /ci*_extract/
+/ci*_diag_auth.zip
+/ci*_joblogs.raw
+/ci*_joblogs_auth.txt
+/ci*_runlogs.raw
 /_terz_art.zip
 /.trae/
 /vDef/data/terzaghi_pressure_field.csv

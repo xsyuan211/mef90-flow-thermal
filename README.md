@@ -19,7 +19,10 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   published China continental shale-oil parameters (S01-S20) and documents why
   a field rate-optimization table CANNOT be delivered from a pre-initiation
   storage-dominated window (CI #130 accepted this recomputation as the 20th
-  verdict group). No Fortran solver changes at any stage.
+  verdict group). Sec. 15 documents Stage B3: the AT2 toughness ladder DID
+  cross the stiffness-half threshold, but CI #132 classified the result as
+  UNIFORM_SOFTENING, i.e. B3_INITIATION_ACCESS = NOT_ESTABLISHED, NOT a
+  localised crack (sec. 15.9). No Fortran solver changes at any stage.
 * `vDef/data/terzaghi415_scale.yaml` / `terzaghi415_inject.yaml` — Stage B0
   similarity-calibrated zero-source control and constant-rate injection decks
   (T = 1.57e-7, storage-dominated); 4-line / 1-line code-diff contracts.
@@ -49,17 +52,30 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   gso_rc), NOT byte-level log replay: the logs/artifact endpoints returned 401
   in that run; see roadmap sec. 14.9.
 * `vDef/data/terzaghi415_b3_*.yaml` / `check_gate415_b3_initiation.py` — Stage
-  B3 fracture-INITIATION access: four one-line-per-decade Gc decks
+  B3 fracture-INITIATION ACCESS TEST: four one-line-per-decade Gc decks
   (27000 -> 2.7 N/m, only `cs0001.fracturetoughness`) plus two reused B0/B1
   EXO anchors, and the N1-N8 hard verdict. AT2 analytic anchor
   alpha_eq = 2*Psi/(Gc/ell + 2*Psi), calibrated on the CI #125 real damage
   field (2*Psi = 1.998714e1 Pa, Gc* = 9.650647 N/m at a(alpha)=1/2) and
   independently checked against CI #127's gb1_surface_ratio_gc = 2.000410.
-  Tests damage LOCALISATION (uniform softening is NOT a crack) while keeping
-  beta = f/S invariant. Zero Fortran changes. Initiation access ONLY: no
-  propagation-regime scaling, fracture length or rate-optimization claim.
-  `--selftest` 1 positive + 28 mutations + 3 invariances; CI verdict pending.
-* `vDef/data/check_gate*.py` — 20 falsifiable verdict scripts, each with a
+  CI #132 (first run) DID cross the stiffness-half threshold (alpha=1,
+  measured bracket [2.7,27] N/m) but classified the last rung as
+  UNIFORM_SOFTENING (dmax/dmean = 1.000004), NOT a localised crack. N5 was
+  therefore rewritten from "must localise" into a falsifiable mechanism
+  classification (LOCALISED > 1.5 / UNIFORM <= 1.05; the ambiguous middle
+  band is a hard FAIL). The verdict now emits B3_REGIME = UNIFORM_SOFTENING
+  and B3_INITIATION_ACCESS = NOT_ESTABLISHED: a PASS certifies the DIAGNOSIS,
+  never the desired physical outcome. beta = f/S stays bitwise invariant;
+  zero Fortran / zero deck / zero production changes. No propagation-regime
+  scaling, fracture length or rate-optimization claim.
+  `--selftest` 1 positive + 32 mutations + 5 invariances; a full replay of
+  the #132 real artefacts gives N1-N8 PASS with all 20 gb3_* metrics
+  bit-identical to the original job log. CI re-verification pending; see
+  roadmap sec. 15.9.
+* `vDef/data/check_gate*.py` / `check_shale_oil_params.py` — the CI hard-verdict
+  suite: 18 gate verdicts plus the M1-M8 literature recomputation (20 verdict
+  groups green in one run at CI #130; B3 is the 21st, pending re-verification),
+  plus two auxiliary Exodus / displacement checks. Each verdict has a
   positive/negative offline selftest.
 * `.github/workflows/build.yml` — build, diagnostic decks and deferred gate exit.
 

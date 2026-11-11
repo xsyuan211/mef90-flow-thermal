@@ -309,17 +309,17 @@
   - **离线自检**：`SHALE_OIL_PARAMS_RESULT: PASS`（M1–M8 全绿）；`--selftest` **1 正例 + 33 变异全被拒绝 + 3 不变性保持**；`--md` 表格与路线稿第 14.4 节一致性核对；`py_compile` / `ast.parse` / `json.load` / `yaml.safe_load` / `git diff --check` / `Run Terzaghi` 整块 `bash -n`（1402 行）全通过；B0 / B1 / B2 / 4.10 四个既有判据的 `--selftest` 回归全 PASS。详见 `RATE_FRACABILITY_ROADMAP.md` 第 14 节。
   - **CI #130 验收（`37bc756`，`success`）**：run `42807197140`，11:24:25 → 11:50:40 UTC（26 min 15 s）；job 与 step 14/15/16/17 全 `success`。⚠️ **证据等级为逻辑蕴含级，非日志逐字节级**：本轮 `runs/{id}/logs`、`jobs/{id}/logs`、`artifacts/{id}/zip` 三端点均 `401`（需 admin / `actions:read`），无法像 #128 那样逐字节复核 verdict 文本。验收依据：① `gso_rc` 由 `PIPESTATUS[0]` 捕获且在 step 15 末尾 `exit 1` 延迟裁决 ⇒ step 15 `success` **蕴含** M1–M8 全绿；② 其余 18 组 `GATE*_RESULT` 与 9 个 mpirun rc 的延迟裁决同在该 step ⇒ 原有判据与生产路径零扰动；③ M8 静态校验接线、M7 校验 B0 deck 冻结 token；④ 本地离线全绿。体系由 **19 组 → 20 组 verdict 同轮全绿**。若日后取得 `actions:read` 凭据，应补做 verdict 文本逐字节比对。
 
-- [ ] **研究项 / B3 起裂准入立项（AT2 韧性阶梯，N1–N8）**（**代码已落地，CI 待验收**；对应路线稿第 15 节与第 5.4 决策点 3）
+- [ ] **研究项 / B3 起裂准入立项（AT2 韧性阶梯，N1–N8）**（**代码已落地；CI #132 首轮 FAIL(N5)，N5 已按实测更正为机制分类判据，复验待 CI**；对应路线稿第 15 / 15.9 节与第 5.4 决策点 3）
   - **物理前提改变**：B0/B1/B2 全部在起裂前（`Damage_max=1.480310e-4`）；B3 用零 Fortran 的单因子 `fracturetoughness` 阶梯把损伤推过 $a(\alpha)=1/2$ 的刚度半衰门槛。**仍不是裂缝传播段**，Santillán / Detournay 传播段标度与排量优选表在本阶段依然无定义。
   - **解析锚（源码级）**：AT2 $c_w=1/2$（`m_MEF90_DefMechAT2.F90:33`）、$a=(1-\alpha)^2$、`w=\alpha^2`、`C_1=G_c/(2\ell)`、`C_2=G_c\ell/(2c_w)A`（`m_MEF90_DefMechAssembly.F90:1687-1688,2062-2063`）、$C_3=a'\Psi+C_1w'$（:1786）⇒ $\alpha_{eq}=2\Psi/(G_c/\ell+2\Psi)$。由 #125 真实 damage 反演 $2\Psi=1.998714\times10^{1}$ Pa、$G_c^*=9.650647$ N/m（$a=1/2$ 定义）；#127 独立实测 `gb1_surface_ratio_gc=2.000410` vs 解析 `1.999408`（差 0.05%）、`gb1_beta_dev_gc=0` 逐位。
   - **交付**：4 个单行差异 deck（`2700 / 270 / 27 / 2.7` N/m，仅改 `fracturetoughness`）+ 复用 B0 注入 / B1 `gc` 两个既有 EXO 作为高档锚 + `check_gate415_b3_initiation.py`（N1–N8，`--gate` / `--selftest` / `--predict`）+ 4 个诊断 run、4 次 EXO 重建、`gb3_rc` 延迟硬裁决、verdict log 与 artifact。**零 Fortran / 零既有 deck / 零生产 run 改动**。
-  - **N5 是本阶段核心判别**：损伤必须**局域化**（$d_{max}/d_{mean}>1.5$，真实 B0 为 `6.996`）；若末档为全域均匀软化，必须 FAIL 并如实报告「不构成裂纹」，**不得为凑 PASS 放宽阈值**。`-5` 残差平台显式报告条数、不作硬判。
-  - **离线证据**：`--selftest` **1 正例 + 28 变异（含 3 不变性）全 PASS**（不变性含 `-5` 出现、deck 注释改写、末档 snap 到 $\alpha=1$）；**#125 真实 EXO/log 混合回放 N1–N8 全 PASS**（真实 `dmax_last=1.480309745e-4`、`dmax/dmean=6.996`、`\beta=1.000000e+5`、11 条 `Gate 3.2`/`Gate 4.5`/能量行、5 条 damage `-5`）；`git diff --check`、`py_compile`、PyYAML（workflow + 5 份 deck）、`Run Terzaghi` 整块 `bash -n`（1511 行）全通过。
-  - **状态纪律**：不主张传播段标度、缝长 / 缝网面积 / 起裂压力绝对值 / 排量优选表；能量行只作相对 / 可证伪观测量。验收以 `GATE415_B3_RESULT: PASS` 且原有 **20 组 verdict 保持全绿**为准；若首轮 FAIL 沿用 #124→#125 / #127→#128 原则：**先验算物理阶段，只改判据 + 补可证伪负例，不改 deck 去凑判据**。
+  - **N5 → N5′ 机制分类（CI #132 实测后更正）**：旧 N5 要求「每个 rung 都必须局域化」，等于向**诊断实验**索要**期望的物理结果**；#132 实测末档 `alpha=1.000000` 但 `dmax/dmean=1.000004`，是**全域均匀软化、不是裂纹**，属真实物理解而非代码缺陷。新 N5′：B0 参考必须局域化（`3<ratio<20`，实测 `6.996393`）；末档必须落入 `LOCALISED(>1.5)` 或 `UNIFORM_SOFTENING(<=1.05)` 两个互斥带之一，**中间模糊带 $(1.05,1.5]$ 一律 FAIL**；UNIFORM 分支强制状态纪律声明在位。`-5` 残差平台显式报告条数（#132 为 26 条）、不作硬判。**这不是放宽阈值**：模糊带仍硬拒，且 `PASS` 只证明诊断与求解器一致。
+  - **离线证据（两轮）**：立项轮 `--selftest` 1 正例 + 28 变异（含 3 不变性）全 PASS、**#125 真实 EXO/log 混合回放 N1–N8 全 PASS**；更正轮 `--selftest` **1 正例 + 32 变异（含 5 不变性）全 PASS**（新增负例：中间带 / B0 判别器失效 / damage 均值非正；新增不变性：末档 `dmean=dmax` 仍 UNIFORM、末档 LOCALISED 也合法），**#132 真实 artifact 全量回放 N1–N8 全 PASS**，产出 `GATE415_B3_RESULT: PASS` / `B3_REGIME: UNIFORM_SOFTENING` / `B3_INITIATION_ACCESS: NOT_ESTABLISHED`，**20 个 `gb3_*` 指标与 #132 原始 job logs 逐位一致、零漂移**；`git diff --check`、`py_compile`、workflow 关键串、`bash -n` 全通过。
+  - **状态纪律**：`PASS` ≠ 起裂已建立。不主张传播段标度、缝长 / 缝网面积 / 起裂压力绝对值 / 排量优选表；能量行只作相对 / 可证伪观测量。两项硬约束：不得把 $\alpha\to1$ 说成裂纹，也不得因结论是否定的就让诊断 FAIL。复验以 `GATE415_B3_RESULT: PASS` + 日志显式回显 `B3_REGIME` / `B3_INITIATION_ACCESS` + 原有 **20 组 verdict 保持全绿**为准；处置沿用 #124→#125 / #127→#128：**先验算物理阶段，只改判据 + 补可证伪负例，不改 deck / 不改 Fortran 去凑判据**。
 
 ---
 
-## 进度跟踪（按 CI #130 验收 + B0/B1/B2 + 文献参数重算收口 + B3 已落地待 CI，2026-11-11）
+## 进度跟踪（按 CI #132 首轮 + B3 N5 机制分类更正待复验，2026-11-11）
 
 **代码进度（以清单条目计）**
 - 闸门 1（不崩+边界）：**4 / 4**。1.1 / 1.2 / 1.3 已落地；1.4 经核实是 `use-rename` 分离设计、无需改动。CI #47 首次完整编译，此后由 Gate 3.3 / 4.x 持续回归。
@@ -329,7 +329,7 @@
 - 合计：**25 项已落地**（闸门 1–3 共 10 项 + 闸门 4 的 15 项），**0 项修复在册待做**（研究项单列于下条）。damage SNES 的 7 条 `-5` 为信息性，已由 Gate 3.3 P8 用损伤场有界替代；4.11 为总括性描述，已由硬判据体系覆盖。
 - **研究项（不计入上述修复闸门，现已全部收口）**：4.15 Stage **B1 由 CI #127 验收**（`GATE415_B1_RESULT: PASS`）、Stage **B2 由 CI #128 验收**（`GATE415_B2_RESULT: PASS`），两条均勾 `[x]`。B2 的 #127 首轮 L4 判据物理前提错误已按实测更正并复验通过。两者均**零 Fortran 改动**，共 8 个单行差异 deck、2 个新判据脚本（A1–A8 / L1–L8）、9 个新诊断 run、11 次 2D + 1 次 3D EXO 重建、11 个延迟硬裁决，属于研究路线扩展而非缺陷修复，故不并入「25 项已落地」的修复计数。**CI #128 已补齐收口证据**：19 组 verdict 同轮全绿、18 条 `GATE*_RESULT` 全 PASS、17 条非 B2 verdict 与 #127 逐字节 IDENTICAL、无任何 `=== FAIL` 行。**新增研究项已由 CI #130 验收并勾 `[x]`**：页岩油文献参数重算表 A′–C′ + M1–M8 判据，纯后处理零 Fortran / 零 deck / 零求解器，`SHALE_OIL_PARAMS_RESULT: PASS` 与 1 正例 + 33 变异 + 3 不变性自测通过；结论是「不能交付排量优选表」，详见路线稿第 14 节与上方条目。证据等级为**逻辑蕴含级**（本轮日志/artifact 端点 `401`，无法逐字节复核 verdict 文本），详见 14.9。
 - **CI 硬判据体系**：Gate 3.3 (P1–P8)、4.1 (B1–B7)、4.2 (D1–D8)、4.3 (C1–C7)、4.1b (E1–E4，其中 E2 为 8 项物理签名)、4.4 (S1–S8，其中 S2 校验"两 deck 只差一行")、4.5 (T1–T8，能量非零/衰减 + 注入功零基线)、4.8 (U1–U8，能量/耗散平衡 + 质量平衡 + 流出量独立性)、4.6 (V1–V8，静态反别名 + μ(T) 物理解锚)、4.10 (W1–W8，根目录清零 + 归档 blob 校验 + 构建隔离)；**十一组判据在 CI #109 全绿**（4.10 已验收）；此后追加 4.7 (X1–X8)、4.9 (Y1–Y8)、4.12 (Z1–Z6)、4.13 (Q1–Q5)，**CI #117 十五组判据同轮全绿**；再追加 4.14 (W1–W7，含每步 KSP 收敛与求解器配置反回归)，**CI #121 十六组判据同轮全绿**；再追加 4.15 B0 (V1–V8，相似校准 + 源项量纲标定 + 双 mpirun rc 裁决)，**CI #125 十七组判据同轮全绿**（`gate415_verdict.log` 由 #124 的 FAIL 转 PASS，其余 16 组逐字节 IDENTICAL）；统一「延迟 exit 1」，避免单个闸门早退隐藏后续物理表。**CI #127 首轮**：原有 17 组 + `GATE415_B1_RESULT` 全绿，B2 仅 L4 因判据物理前提错误 FAIL ⇒ `gb2_rc=1` 使整轮 `failure`（编译、EXO、3D、生产隔离均无缺陷）。**CI #128 复验**：L4 重写后 `GATE415_B2_RESULT: PASS`，体系由 17 组正式扩到 **19 组 verdict 同轮全绿**（18 条 `GATE*_RESULT` 全 PASS + `terzaghi_verdict` 汇总），17 条非 B2 verdict 与 #127 逐字节 IDENTICAL、无任何 `=== FAIL` 行；新增的 9 个 mpirun 退出码（`sb1_*` ×6、`sb2_*` ×2、`sdim3_rc` ×1）与 `gb1_rc` / `gb2_rc` 全部接入延迟 fail。**CI #130**：新增第 20 组判据 `check_shale_oil_params.py` (M1–M8，页岩油文献参数重算；纯后处理、不跑求解器、不产生 EXO)，`gso_rc` 以 `PIPESTATUS[0]` 捕获并接入同一延迟裁决；`Run Terzaghi` step `success` 蕴含 M1–M8 与原有 18 组 verdict 全绿 ⇒ **20 组 verdict 同轮全绿**。该组不改动任何 deck / Fortran / 生产 run。
-- **最近十一次 CI**：#130 `success`（`37bc756`，页岩油文献参数重算表 A′–C′ + M1–M8 判据接入；**20 组 verdict 同轮全绿**，`SHALE_OIL_PARAMS_RESULT: PASS`，run 26 min 15 s，证据等级为逻辑蕴含级——本轮日志/artifact 端点 `401`，详见路线稿 14.9）；#129 `success`（`56c7b2a`，B2 文档收尾，18 条 verdict 与 #128 逐字节 IDENTICAL）；#128 `success`（`e6cce4b`，Gate 4.15 B2 L4 零位命题复验；**19 组判据同轮全绿**，`GATE415_B2_RESULT: PASS`，`gb2_surface_dev_aniso=4.064640e-03`，17 条非 B2 verdict 与 #127 逐字节 IDENTICAL）；#127 `failure`（`f07cf39`，B1/B2 首轮；编译 + 18 组 verdict 全绿，仅 `GATE415_B2_RESULT: FAIL (L4)` 判据物理前提错，已由 #128 修复）；#126 `success`（`e0f6bb4`，B0 文档收尾）；#125 `success`（`603ce0b`，Gate 4.15 B0 修复：两次 EXO 重建 + `pbulk` 物理锚；**17 组判据同轮全绿**，原有 16 组 verdict 与 #124 逐字节 IDENTICAL）；#124 `failure`（`ff614fc`，B0 首轮；编译与 16 组原有判据全绿，仅 `GATE415_RESULT: FAIL (V1,V3,V4)`，根因是 EXO 追加残留 + `pmax` 局部过冲，已由 #125 修复）；#123 `success`（`3a819ab`，排量–可压性文献调研与集成路线稿）；#122 `success`（`027fa86`，Gate 4.14 文档收尾）；#121 `success`（`c95a605`，Gate 4.14 3D 维度分派验收，16 组判据全绿）；#120 `failure`（`39444b8`，3D 诊断求解器超时，已由 #121 用 direct diagnostic PC 修复）。（更早的 #97 `failure` 为旧 E2「位等价」前提错误，已由 #98 改物理签名判据修复。）
+- **最近十三次 CI**：#132 `failure`（`a4424dc`，B3 首轮；编译 + 20 组既有 verdict + B3 N1–N4/N6–N8 全绿，仅 `GATE415_B3_RESULT: FAIL (N5)` 因旧「必须局域化」前提错误，已按 #132 实测更正为机制分类判据、复验待 CI，详见文末专节）；#131 `success`（`abd5821`，页岩油参数文档收尾）；#130 `success`（`37bc756`，页岩油文献参数重算表 A′–C′ + M1–M8 判据接入；**20 组 verdict 同轮全绿**，`SHALE_OIL_PARAMS_RESULT: PASS`，run 26 min 15 s，证据等级为逻辑蕴含级——本轮日志/artifact 端点 `401`，详见路线稿 14.9）；#129 `success`（`56c7b2a`，B2 文档收尾，18 条 verdict 与 #128 逐字节 IDENTICAL）；#128 `success`（`e6cce4b`，Gate 4.15 B2 L4 零位命题复验；**19 组判据同轮全绿**，`GATE415_B2_RESULT: PASS`，`gb2_surface_dev_aniso=4.064640e-03`，17 条非 B2 verdict 与 #127 逐字节 IDENTICAL）；#127 `failure`（`f07cf39`，B1/B2 首轮；编译 + 18 组 verdict 全绿，仅 `GATE415_B2_RESULT: FAIL (L4)` 判据物理前提错，已由 #128 修复）；#126 `success`（`e0f6bb4`，B0 文档收尾）；#125 `success`（`603ce0b`，Gate 4.15 B0 修复：两次 EXO 重建 + `pbulk` 物理锚；**17 组判据同轮全绿**，原有 16 组 verdict 与 #124 逐字节 IDENTICAL）；#124 `failure`（`ff614fc`，B0 首轮；编译与 16 组原有判据全绿，仅 `GATE415_RESULT: FAIL (V1,V3,V4)`，根因是 EXO 追加残留 + `pmax` 局部过冲，已由 #125 修复）；#123 `success`（`3a819ab`，排量–可压性文献调研与集成路线稿）；#122 `success`（`027fa86`，Gate 4.14 文档收尾）；#121 `success`（`c95a605`，Gate 4.14 3D 维度分派验收，16 组判据全绿）；#120 `failure`（`39444b8`，3D 诊断求解器超时，已由 #121 用 direct diagnostic PC 修复）。（更早的 #97 `failure` 为旧 E2「位等价」前提错误，已由 #98 改物理签名判据修复。）
 
 **历史提交 / CI 记录（2026-11-07 09:55 快照，保留备查）**
 
@@ -2889,3 +2889,49 @@ B1/B2 数值均为**离线解析预测**，不是求解器结论。首轮 CI 后
 | 体系规模 | **19 组判据同轮全绿**（18 条 `GATE*_RESULT` + `terzaghi_verdict` 汇总口径） |
 
 清单 4.15 B1 / B2 均已勾 `[x]`，进度段按 #128 重整。**0.4065% 仍只能解读为「起裂前该观测量不可辨识」，不能解读为「层理各向异性对裂缝轨迹无影响」**；要研究轨迹控制必须进入传播段（第 5.4 节决策点 3）。
+
+---
+
+## CI #132：B3 首轮否定结论与 N5 机制分类更正（2026-11-11）
+
+**一句话**：`a4424dc` 的 CI #132 `failure`，但**编译成功、既有 20 组 verdict 全绿、B3 的 N1–N4 / N6–N8 全部在真实求解器上 PASS**；唯一失败 `GATE415_B3_RESULT: FAIL (N5)` 是**判据向诊断实验索要期望的物理结果**，不是代码 bug。本轮按 #132 实测重写 N5 为「机制分类 + 模糊带硬拒 + 状态纪律强制」，并如实给出否定结论 `B3_REGIME = UNIFORM_SOFTENING` / `B3_INITIATION_ACCESS = NOT_ESTABLISHED`。**零 Fortran / 零 deck / 零物理观测量改动**。
+
+### 实测数值（CI #132 `Run Terzaghi`）
+
+| 判据 / 指标 | 真实读数 | 结论 |
+|---|---|---|
+| 既有 20 组 + `GATE415_RESULT` / B1 / B2 | 全 PASS | 生产与既有研究项零扰动 |
+| N1 / N2 / N3 / N4 / N6 / N7 / N8 | 全 PASS | 门槛跨过、$G_c^*$ 夹逼、$\beta=f/S$ 逐位不变 |
+| N5（旧） | `gc2p7 damage is spatially uniform (dmax/dmean=1 <= 1.50)` | **FAIL** ⇒ 延迟 `gb3_rc=1` |
+| `alpha_gc2p7` / `local_gc2p7` | `1.000000e+00` / `1.000004e+00` | 完全损伤但**全域均匀**，不是裂纹 |
+| `local_b0_inject` | `6.996393` | 起裂前参考场强局域化 ⇒ 判别器本身有效 |
+| `dmg_power_slope` / `surface_power_slope` | `-1.006199` / `-1.009178` | 解析 $-1$ 幂律在真实 solver 上成立 |
+| `gc_bracket_lo/hi` | `2.7 / 27` N/m | 包含解析 $G_c^*=9.650647$ N/m |
+| `beta_dev_gc2p7` | `0` | 降 $G_c$ 4 个数量级仍对压力曲线逐位不可辨识 |
+| `damage_sneg5_msgs` | `26` | 残差平台显式报告，未隐藏 |
+
+### 根因与排除
+
+旧 N5 要求「每个 rung 的 $d_{max}/d_{mean}>1.5$」，隐含前提是「门槛跨过必然产生局域化裂纹」。但 AT2 + 空间均匀驱动 + 单因子 $G_c$ 阶梯下，$C_3=a'(\alpha)\Psi+C_1w'(\alpha)$ 的均匀平衡解在各单元同时趋近 $\alpha=1$，力控制正反馈把整个场一起软化。**排除代码缺陷四类证据**：① N1 的 EXO ↔ `Gate 3.2` 逐位交叉验证、6 组各 11 记录、356 节点 tri3；② N2 压力斜坡全程 $\beta=f/S$ 不变；③ N3 三种独立 $\alpha_{eq}$ 实现差 $<10^{-10}$、$C_1/C_3$ 源码契约在位；④ N6 表面能幂律与注入功不变、能量行有限。`--predict` 进一步给出 $\alpha_{real}/\alpha_{eq}$ `1.0000 / 1.0003 / 1.0031 / 1.0440 / 1.8538 / 1.6754`，前四档贴合均匀平衡，末两档偏离正是 15.4 已声明的「$\alpha\sim O(1)$ 后 $\Psi$ 空间分布改变」，不是装配错。这是继 #124（`pmax` 局部过冲）、#127（L4 传播段标度错配）之后**第三次判据物理前提错误**，处置原则一致：只改判据 + 补可证伪负例，不改 deck 去凑判据。
+
+### 本轮交付（零 Fortran / 零 deck / 零物理量改动）
+
+| 文件 | 变更 |
+|---|---|
+| `vDef/data/check_gate415_b3_initiation.py` | N5 重写为机制分类（`LOCALISED>1.5` / `UNIFORM<=1.05` / 中间带硬 FAIL / B0 判别器 `3..20`）；`report()` 增 `B3_REGIME` 与 `B3_INITIATION_ACCESS` 显式输出；N5 标签、N8 状态纪律声明（4 个 needle）与 detail 同步；合成正例改为复现 #132 真实诊断；`--predict` 打印 #132 真实 $\alpha$ 阶梯对照；`--selftest` 扩到 **1 正例 + 32 变异（含 5 不变性）** |
+| `.github/workflows/build.yml` | `gb3_rc` 后显式 `grep` 回显三行分类，避免 `PASS` 被误读；FAIL / PASS 提示语由「起裂门槛已达到」改为「机制分类 / 无传播主张」 |
+| `RATE_FRACABILITY_ROADMAP.md` | 头部状态、5.4 决策点、研究路线表、第 15 节（15.1 / 15.5 / 15.6 / 15.7 / 15.8）全面订正，**新增 15.9 首轮实测否定结论与 15.10 B3′ 准入条件** |
+| `FLOW_FIX_CHECKLIST.md` | B3 条目、进度段标题与「最近十三次 CI」、本专节 |
+| `README.md` | B3 段落改为机制分类与否定结论，selftest 数字同步 |
+
+### 离线复核（零编译 / 零求解器）
+
+`git diff --check`、`py_compile`、workflow 关键串计数全通过；`--selftest` **PASS（1 正例 + 32 变异，含 5 不变性）**；**#132 真实 artifact 全量 `--gate` 回放 N1–N8 全 PASS**（截断 zip 用 local-header 流式解压恢复 80 个成员，仅 `gc_half.gen` 由同包 B1 `gc.gen` 补齐），得到 `GATE415_B3_RESULT: PASS`、`B3_REGIME: UNIFORM_SOFTENING`、`B3_INITIATION_ACCESS: NOT_ESTABLISHED`；**20 个 `gb3_*` 指标与 #132 原始 job logs 逐位一致、零漂移** ⇒ 只改判据语义、未触碰任何物理观测量。
+
+### 状态纪律
+
+`PASS` 只证明**诊断与求解器一致**，不证明起裂已建立。两项硬约束：不得把 $\alpha\to1$ / 刚度退化解读为「裂纹已形成」；也不得因结论是否定的就让诊断判据 FAIL。UNIFORM 分支强制 `B3_REGIME` / `B3_INITIATION_ACCESS` / `NO claim is made about` 声明在位（N5′ + N8 双重静态校验）。**科学价值**：明确排除「只降韧性就能进入裂缝传播窗口」这条捷径；要真正传播需 B3′（空间非均匀驱动 / AT1 损伤律 / 传播段观测量 / `-5` 收敛评估），见路线稿 15.10。
+
+### 复验收口条件
+
+下轮 push 后以 `GATE415_B3_RESULT: PASS` + 日志显式 `B3_REGIME` / `B3_INITIATION_ACCESS` + **原有 20 组 verdict 保持全绿**为准；若拿到真实 verdict 文本，还应核验 20 组非 B3 verdict 与 #132 逐字节 IDENTICAL，再把清单 B3 条目勾为 `[x]`。
