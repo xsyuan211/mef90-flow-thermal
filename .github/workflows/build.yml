@@ -6,23 +6,33 @@ on:
 jobs:
   compile:
     name: Build + Terzaghi
-    # CI #134 / #135 both died in "Install deps" (apt exit 100) after the
-    # ubuntu-latest label began migrating to Ubuntu 26 (runner-images#14748),
-    # while #133 succeeded on the previous image. Pin the 24.04 image that
-    # the PETSc/OpenMPI caches were built on. All cache keys below are STATIC
-    # strings (no runner.os / image version), so this pin cannot cause a
-    # cache miss or a PETSc rebuild. No solver / deck / verdict changes.
-    runs-on: ubuntu-24.04
+    # Pinning ubuntu-24.04 was tried in #136 and did NOT fix the apt failure,
+    # so the workflow is returned to the exact state that passed CI #133.
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Install deps
         run: |
-          # Acquire::Retries covers transient apt mirror / proxy hiccups.
-          sudo apt-get update -qq -o Acquire::Retries=3
+          # CI #134/#135/#136 all failed here with apt exit 100 while anonymous
+          # job-log access is blocked (403 admin / 401 auth). Surface the REAL
+          # apt error as a check-run annotation, which IS readable anonymously.
+          # No solver / deck / verdict change: this is pure diagnostics.
+          set +e
+          sudo apt-get update -qq -o Acquire::Retries=3 2>&1 | tee /tmp/apt_update.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::apt-get update FAILED rc=$rc :: $(tail -25 /tmp/apt_update.log | tr '\n' ' ' | cut -c1-900)"
+            exit "$rc"
+          fi
           sudo apt-get install -y -qq -o Acquire::Retries=3 \
             gcc g++ gfortran cmake make perl m4 git patch wget curl dos2unix \
-            libtool automake tar
+            libtool automake tar 2>&1 | tee /tmp/apt_install.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::apt-get install FAILED rc=$rc :: $(tail -25 /tmp/apt_install.log | tr '\n' ' ' | cut -c1-900)"
+            exit "$rc"
+          fi
       - name: Cache OpenMPI
         id: cache-openmpi
         uses: actions/cache/restore@v4
