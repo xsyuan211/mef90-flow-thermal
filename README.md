@@ -70,11 +70,13 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   scaling, fracture length or rate-optimization claim.
   `--selftest` 1 positive + 32 mutations + 5 invariances; a full replay of
   the #132 real artefacts gives N1-N8 PASS with all 20 gb3_* metrics
-  bit-identical to the original job log. CI re-verification pending; see
-  roadmap sec. 15.9.
+  bit-identical to the original job log. CI #133 `success`:
+  GATE415_B3_RESULT: PASS, 21 verdict groups green in one run. Acceptance is
+  inference-level only (artifact zip needs authentication, job logs need
+  admin), NOT byte-level log replay; see roadmap sec. 15.9 and 15.11.
 * `vDef/data/check_gate*.py` / `check_shale_oil_params.py` — the CI hard-verdict
   suite: 18 gate verdicts plus the M1-M8 literature recomputation (20 verdict
-  groups green in one run at CI #130; B3 is the 21st, pending re-verification),
+  groups green in one run at CI #130; B3 is the 21st, accepted at CI #133),
   plus two auxiliary Exodus / displacement checks. Each verdict has a
   positive/negative offline selftest.
 * `.github/workflows/build.yml` — build, diagnostic decks and deferred gate exit.

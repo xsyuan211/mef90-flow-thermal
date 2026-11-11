@@ -1,10 +1,10 @@
 # 施工排量–页岩可压性匹配：研究基础、代码接入可行性与技术路线
 
 **日期**：2026-11-10
-**基线版本**：立项基线 `HEAD=abd5821`（CI #131 收口）；**B0 落地与验收**见第 11 节及 `FLOW_FIX_CHECKLIST.md`；**B1/B2 落地**见第 12 节；**CI #127 首轮结果与 L4 物理前提更正**见第 13 节；**CI #128 复验收口**见 13.6；**页岩油文献参数重算**见第 14 节；**B3 起裂准入立项**见第 15 节；**CI #132 首轮否定结论与 N5 机制分类更正**见 15.9
+**基线版本**：立项基线 `HEAD=abd5821`（CI #131 收口）；**B0 落地与验收**见第 11 节及 `FLOW_FIX_CHECKLIST.md`；**B1/B2 落地**见第 12 节；**CI #127 首轮结果与 L4 物理前提更正**见第 13 节；**CI #128 复验收口**见 13.6；**页岩油文献参数重算**见第 14 节；**B3 起裂准入立项**见第 15 节；**CI #132 首轮否定结论与 N5 机制分类更正**见 15.9、**CI #133 复验收口与证据等级**见 15.8 / 15.11
 **依据**：公开文献与软件发布信息（2026-11-10 检索及二次核对）、项目源码静态阅读、CI #111–#125 真实 diagnostics artifact、CI #127 / #128 完整 job logs 文本（8,483,138 / 8,487,437 字符）与 `gb2_*` 实测指标、纯标准库离线标度计算
 **约束**：零本地编译、零本地求解器运行；B0–B2 全程**零 Fortran 改动**。本文的离线标度/网格元数据不是求解器结果，CI 实测数值另行标注。
-**状态**：阶段 A 研究设计稿 + **B0 已由 CI #125 验收** + **B1 已由 CI #127 验收** + **B2 已由 CI #128 验收（`GATE415_B2_RESULT: PASS`，19 组判据同轮全绿）** + **页岩油文献参数重算已由 CI #130 验收（20 组判据同轮全绿）** + **B3 已立项落地，CI #132 首轮给出否定结论 `B3_REGIME = UNIFORM_SOFTENING` / `B3_INITIATION_ACCESS = NOT_ESTABLISHED`（第 15.9 节）**；N5 已按实测重写为机制分类判据，复验待 CI。B0/B1/B2 **全部收口**。第 5.2 节 R4 与 R5 的物理前提已被文献与 CI 实测推翻并更正（R4′ / R5′）：起裂前存储主导窗口不适用传播段标度，详见第 12.1、13.2 节。B3 改变的是**物理前提**：从「起裂前存储主导」迈到「刚度显著退化的起裂窗口」，但**仍不等于裂缝传播段**。引用线索见第 9 节，投稿前需二次核对卷期与 DOI。
+**状态**：阶段 A 研究设计稿 + **B0 已由 CI #125 验收** + **B1 已由 CI #127 验收** + **B2 已由 CI #128 验收（`GATE415_B2_RESULT: PASS`，19 组判据同轮全绿）** + **页岩油文献参数重算已由 CI #130 验收（20 组判据同轮全绿）** + **B3 已立项落地，CI #132 首轮给出否定结论 `B3_REGIME = UNIFORM_SOFTENING` / `B3_INITIATION_ACCESS = NOT_ESTABLISHED`（第 15.9 节）**；N5 已按实测重写为机制分类判据，**CI #133 复验 `success`**（`GATE415_B3_RESULT: PASS`，21 组 verdict 同轮全绿；证据等级为逻辑蕴含级，见 15.11）。B0/B1/B2 **全部收口**。第 5.2 节 R4 与 R5 的物理前提已被文献与 CI 实测推翻并更正（R4′ / R5′）：起裂前存储主导窗口不适用传播段标度，详见第 12.1、13.2 节。B3 改变的是**物理前提**：从「起裂前存储主导」迈到「刚度显著退化的起裂窗口」，但**仍不等于裂缝传播段**。引用线索见第 9 节，投稿前需二次核对卷期与 DOI。
 
 ---
 
@@ -264,7 +264,7 @@ $\mathcal{K}$ 全部落在 **0.117–0.959**：无一进入韧性主导（$\math
 | **B0 校准冒烟（CI #125 验收通过）** | 表 C 的 $(k,S)$ | 2 个 2D deck（4 行 + 1 行差异，11 步）；V1–V8 + CI 延迟硬裁决 | 冻结 `[1/s]`、`Q_total=1.5e-4 m²/s`、`T=1.57e-7`、`β=1e5 Pa/s`、`S_eff=1.5e-10` | 体积守恒闭合、零源冻结、注入线性、KSP 每步收敛、生产零扰动 | 否 |
 | **B1 主实验（CI #127 验收通过）** | B0 + Lecampion (2017) 起裂前框架 | **6 个单行差异 deck**：$Q\times S\times G_c\times k\times\mu$ 单因子扫描；`A1–A8` 判据；CI 硬闸门 | 参数**可辨识性分层**图版：β 只可辨识 $(f,S)$，表面能可辨识 $G_c,Q$；能量分配曲线 | A1–A8 全 PASS、B0/生产零扰动 | 否 |
 | **B2 扩展（CI #128 验收通过，L1–L8 全绿）** | B1 判据设计 | `linear` 变排量（$f(t)=f_0t$、离散 $t^2$ 锚）、`toughnessAnisotropyMatrix: 2,0.5,0` 层理各向异性、3D tetra4 注入；`L1–L8` 判据 | 变排量解析锚（**#127 实测 $\Delta p_{10}=5.5\times10^4$ Pa $=0.55\times$ B0**）、起裂前各向异性**不可辨识**零位命题、3D 一致性（**#127 实测 $\beta_{3D}=10^5$ Pa/s**） | L1–L8 全 PASS、B0/B1/生产零扰动 | 否（`file` 程序需新增纯 Python CDF2 writer，本轮不做） |
-| **B3 起裂准入（已落地；CI #132 首轮 FAIL(N5)，判据已更正待复验）** | B0/B1/B2 的 AT2 残差契约 + CI #125/#127/#132 真实读数 | **4 个单行差异 deck**（仅 `cs0001.fracturetoughness`，$G_c$ 降 1–4 个数量级）+ 复用 B0 注入 / B1 `gc` 两个既有 EXO 作为高档锚；`N1–N8` 判据 + `gb3_rc` 延迟硬裁决 | 起裂门槛 $G_c^*=9.650647$ N/m（以 $a(\alpha)=1/2$ 定义）、实测夹逼区间 $[2.7,27]$ N/m、$\alpha\sim1/G_c$ 幂律；**损伤机制分类实测为全域均匀软化（$d_{max}/d_{mean}=1.000004$），不是裂纹** | #132 真实 solver：N1–N4 / N6–N8 全 PASS，旧 N5「必须局域化」前提错误；$\beta=f/S$ 全程逐位不变；产出 `B3_REGIME=UNIFORM_SOFTENING`、`B3_INITIATION_ACCESS=NOT_ESTABLISHED` | 否 |
+| **B3 起裂准入（CI #133 复验收口，证据为逻辑蕴含级）** | B0/B1/B2 的 AT2 残差契约 + CI #125/#127/#132 真实读数 | **4 个单行差异 deck**（仅 `cs0001.fracturetoughness`，$G_c$ 降 1–4 个数量级）+ 复用 B0 注入 / B1 `gc` 两个既有 EXO 作为高档锚；`N1–N8` 判据 + `gb3_rc` 延迟硬裁决 | 起裂门槛 $G_c^*=9.650647$ N/m（以 $a(\alpha)=1/2$ 定义）、实测夹逼区间 $[2.7,27]$ N/m、$\alpha\sim1/G_c$ 幂律；**损伤机制分类实测为全域均匀软化（$d_{max}/d_{mean}=1.000004$），不是裂纹** | #132 真实 solver：N1–N4 / N6–N8 全 PASS，旧 N5「必须局域化」前提错误；$\beta=f/S$ 全程逐位不变；产出 `B3_REGIME=UNIFORM_SOFTENING`、`B3_INITIATION_ACCESS=NOT_ESTABLISHED`。**CI #133 复验 `success`**：`GATE415_B3_RESULT: PASS`、21 组 verdict 同轮全绿（逻辑蕴含级，见 15.11） | 否 |
 | **C 现场与数据驱动** | 施工曲线、DFIT/G 函数、微地震、产剖、88 口井 | 反演 $C_L$ 与可压性；把 $\mathcal{K},\mathcal{L},p_{perf}/p_{net}$ 作为交互特征入产量模型；统计检验 | 排量优选表、论文验证段 | 现场数据闭合 | 否（本平台外） |
 
 ### 5.2 Gate 4.15 判据设计（可证伪，沿用现有硬闸门范式）
@@ -861,7 +861,8 @@ $$\texttt{B3\_REGIME}=\texttt{UNIFORM\_SOFTENING},\qquad \texttt{B3\_INITIATION\
 
 - `a4424dc` → **CI #132 `failure`**：编译通过、既有 20 组 verdict 全绿（`GATE415_RESULT` / `GATE415_B1_RESULT` / `GATE415_B2_RESULT` 全 PASS），B3 的 **N1–N4 / N6–N8 全 PASS**；唯一失败 `GATE415_B3_RESULT: FAIL (N5)`，原因 `gc2p7 damage is spatially uniform (dmax/dmean=1 <= 1.50)`，由 step 末尾延迟 `gb3_rc=1` 触发 `exit 1`。
 - 处置沿用 #124→#125 / #127→#128：**先验算物理阶段**（确认均匀软化是真实解而非装配 / 求解器缺陷），再改判据 + 补可证伪负例；**不改 deck、不改 Fortran、不改任何物理观测量**。更正轮离线证据见 15.6。
-- 复验以 `GATE415_B3_RESULT: PASS` + 日志显式 `B3_REGIME` / `B3_INITIATION_ACCESS` + 原有 20 组 verdict 保持全绿为准；复验结果在拿到真实 run 后补齐。
+- `1d4307e` → **CI #133 `success`**（run `43023824796`，12:50:29 → 13:20:14 UTC，约 29 min 45 s）：编译 step 14 `success`；step 15 `Run Terzaghi` 完成且未触发延迟 `exit 1`，蕴含 **`GATE415_B3_RESULT: PASS`（N1–N8 全绿）** 与其余 20 组 verdict 全绿 ⇒ 体系由 **20 组扩到 21 组 verdict 同轮全绿**。`gb3_rc` 之后新增的分类 `grep` 回显接线由整块 `bash -n`（1515 行）验证。**证据等级为逻辑蕴含级，不是逐字节级**（15.11）。
+- B3 由此收口，但结论仍是**否定的**：`PASS` 只证明机制诊断与求解器一致，不证明起裂已建立；`B3_REGIME = UNIFORM_SOFTENING`、`B3_INITIATION_ACCESS = NOT_ESTABLISHED` 不变。
 
 ### 15.9 CI #132 首轮实测：一个可证伪的否定结论
 
@@ -889,3 +890,19 @@ $$\texttt{B3\_REGIME}=\texttt{UNIFORM\_SOFTENING},\qquad \texttt{B3\_INITIATION\
 3. **传播段观测量**：缝长 / 缝高随时间、裂尖位置、$p_{net}$–$Q$ 标度、$\mathcal{K}$–$\mathcal{C}$ 分区；这些目前在 EXO 输出与能量诊断里都**没有定义**；
 4. **`-5` 残差平台**：真正传播段的 SNES 收敛不能只靠「报告而不隐藏」，需要评估是否影响裂尖推进；
 5. 上述任何一项落地前，B0/B1/B2 的 20 组 verdict 与 `beta=f/S` 解析锚必须保持零扰动。
+
+### 15.11 CI #133 的证据等级（诚实边界）
+
+CI #133 的 `conclusion=success` 与「verdict 文本逐字节复核」是**两件不同的事**，本轮只能给出前者蕴含后者，与 #130 的 14.9 同级：
+
+| 端点 / 途径 | 返回 | 说明 |
+|---|---|---|
+| `actions/runs/{id}` | `200`，`conclusion=success` | run 级事实；13 个 step 标记 `success` |
+| `actions/runs/{id}/jobs` | 先 `403 rate limit exceeded`（匿名 60 次/小时被后台轮询耗尽），重置后可用 | 取得 job id `130533369642` 与 step 状态 |
+| `actions/artifacts/{aid}/zip` | `401 Requires authentication` | 限流重置后仍因认证不足拿不到 `build-diagnostics`（38,125,641 B） |
+| `actions/jobs/{jid}/logs` | `403 Must have admin rights` | job logs 需 admin |
+| 网页 `suites/.../artifacts/...`、`checks/.../logs/15`、run `/logs` | `404` | 匿名页面显示 "Sign in to view logs" |
+
+**逻辑蕴含链**：`gb3_rc=${PIPESTATUS[0]}` 捕获判据退出码，step 15 末尾 `if [ "$gb3_rc" -ne 0 ]; then ... exit 1; fi`；其余 20 组 verdict、9+ 个 mpirun rc 与 `g*_rc` 全部在同一 step 延迟裁决。因此 **step 15 `success` ⇒ B3 N1–N8 全绿 + 原有 20 组全绿 + 生产零扰动**。补强证据：本地 `--selftest` 1 正例 + 32 变异全 PASS；#132 真实 artifact 全量 `--gate` 回放 N1–N8 全 PASS 且 20 个 `gb3_*` 指标逐位一致；N7/N8 静态契约校验 deck / workflow / 状态纪律接线在位。
+
+**待补**：若日后取得 `actions:read` 凭据或登录态，应下载 `gate415_b3_verdict.log` 与 20 组既有 verdict，与 #132 做逐字节 IDENTICAL 比对，并确认日志中三行分类回显。在此之前，21 组全绿的表述一律标注「逻辑蕴含级」。
