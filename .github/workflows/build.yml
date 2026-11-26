@@ -114,14 +114,16 @@ jobs:
           git clone --single-branch --branch mef90-3.3 https://gitlab.com/blaisebourdin/petsc.git $PETSC_DIR
           cd $PETSC_DIR
           echo "=== Configure ==="
-          # CI #146: on ubuntu-latest (24.04) the modern g++ cannot compile
-          # OpenMPI 3.1.3's legacy C++ MPI bindings during PETSc 3.3's
-          # CxxMPICheck, so it falsely reports "mpi.h could not be located"
-          # even though the header exists. PETSc itself only needs the C MPI
-          # API, so skip those bindings. Keep the error path verbose: on
-          # failure dump configure.log tail for a definitive g++ diagnostic.
+          # CI #146/#147: on ubuntu-latest (24.04) modern g++ cannot compile
+          # OpenMPI 3.1.3's legacy C++ MPI bindings. PETSc 3.3 CxxMPICheck
+          # does checkCompile('#include <mpi.h>') using self.compilers.CPPFLAGS,
+          # so the skip macro MUST be in CPPFLAGS (the configure-probe flags).
+          # CXXOPTFLAGS only reaches generated Makefiles, not the probe, which
+          # is why #147 (macro in CXXOPTFLAGS only) still reported mpi.h missing.
+          # PETSc needs only the C MPI API, so skip the C++ bindings entirely.
           set +e
           $PY27 ./configure \
+            CPPFLAGS='-DOMPI_SKIP_MPICXX' \
             COPTFLAGS='-O3' CXXOPTFLAGS='-O3 -DOMPI_SKIP_MPICXX' FOPTFLAGS='-O3' \
             FFLAGS='-Wno-aliasing -ffree-line-length-none -fallow-argument-mismatch -Wno-all' \
             --download-hdf5=$HOME/petsc-dl/hdf5-1.10.6.tar.gz \
@@ -138,9 +140,9 @@ jobs:
           cfg_rc=${PIPESTATUS[0]}
           set -e
           if [ "$cfg_rc" -ne 0 ]; then
-            echo "::error::PETSc configure FAILED rc=$cfg_rc; dumping configure.log tail"
-            tail -120 configure.log 2>&1 || true
-            tail -40 /tmp/petsc_configure.log 2>&1 || true
+            echo "::error::PETSc configure FAILED rc=$cfg_rc; dumping CxxMPICheck diagnostic"
+            grep -n -A45 -B5 "Checking for header mpi.h" configure.log 2>&1 | head -120 || true
+            tail -60 /tmp/petsc_configure.log 2>&1 || true
             exit "$cfg_rc"
           fi
           echo "=== Make PETSc ==="
