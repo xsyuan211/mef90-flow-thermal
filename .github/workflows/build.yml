@@ -43,11 +43,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/openmpi-3.1.3
-          key: openmpi-3.1.3-ubuntu-latest-v1
+          key: openmpi-3.1.3-ubuntu-latest-v2
       - name: Build OpenMPI 3.1.3
         if: steps.cache-openmpi.outputs.cache-hit != 'true'
         run: |
-          set -e
+          set -eo pipefail
           export MPI_HOME=$HOME/openmpi-3.1.3
           cd /tmp
           wget -q https://download.open-mpi.org/release/open-mpi/v3.1/openmpi-3.1.3.tar.gz
@@ -60,7 +60,18 @@ jobs:
         run: |
           export MPI_HOME=$HOME/openmpi-3.1.3
           export PATH=$MPI_HOME/bin:$PATH
+          # CI #143/#144: the v1 cache had bin/mpirun but no include/mpi.h,
+          # so "mpirun --version" passed while PETSc configure could not find
+          # the MPI headers. Hard-fail on a complete OpenMPI installation.
+          set -e
           mpirun --version
+          for f in include/mpi.h lib/libmpi.so; do
+            if [ ! -e "$MPI_HOME/$f" ]; then
+              echo "::error::OpenMPI install incomplete: missing $MPI_HOME/$f"
+              exit 1
+            fi
+          done
+          ls -l "$MPI_HOME/include/mpi.h" "$MPI_HOME/lib/libmpi.so"
       - name: Cache PETSc deps
         id: cache-petsc-dl
         uses: actions/cache/restore@v4
@@ -87,7 +98,7 @@ jobs:
       - name: Build PETSc-3.3
         if: steps.cache-petsc.outputs.cache-hit != 'true'
         run: |
-          set -e
+          set -eo pipefail
           export PETSC_DIR=$HOME/petsc-3.3-mef90
           export PETSC_ARCH=linux-gcc-openmpi-mef90-O
           export MPI_HOME=$HOME/openmpi-3.1.3
@@ -2037,21 +2048,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
       - name: Save cache OpenMPI
-        if: always()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: ~/openmpi-3.1.3
-          key: openmpi-3.1.3-ubuntu-latest-v1
+          key: openmpi-3.1.3-ubuntu-latest-v2
       - name: Save cache PETSc deps
-        if: always()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: ~/petsc-dl
           key: petsc-dl-v1
       - name: Save cache Miniconda + PETSc build
-        if: always()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
