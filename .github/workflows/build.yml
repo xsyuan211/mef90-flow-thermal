@@ -83,7 +83,7 @@ jobs:
           path: |
             ~/miniconda2
             ~/petsc-3.3-mef90
-          key: petsc-mef90-3.3-ubuntu-latest-v1
+          key: petsc-mef90-3.3-ubuntu-latest-v2
       - name: Build PETSc-3.3
         if: steps.cache-petsc.outputs.cache-hit != 'true'
         run: |
@@ -123,8 +123,24 @@ jobs:
         run: |
           export PETSC_DIR=$HOME/petsc-3.3-mef90
           export PETSC_ARCH=linux-gcc-openmpi-mef90-O
-          ls $PETSC_DIR/conf/variables
-          ls $PETSC_ARCH/conf/petscrules 2>&1 || echo "!! NO petscrules !!"
+          # CI #142 root cause: a stale/restored cache passed this step because
+          # the old check used a RELATIVE path ($PETSC_ARCH/conf/petscrules,
+          # resolved under the workspace) and only echoed a warning. The
+          # incomplete cache then made "Patch Makefiles" die with exit 2 on a
+          # missing petscvariables. Hard-fail here so a broken cache cannot
+          # silently reach the compile step again.
+          set -e
+          test -f "$PETSC_DIR/conf/variables"
+          for f in petscrules petscvariables; do
+            p="$PETSC_DIR/$PETSC_ARCH/conf/$f"
+            if [ ! -f "$p" ]; then
+              echo "::error::PETSc cache incomplete: missing $p"
+              exit 1
+            fi
+          done
+          ls -l "$PETSC_DIR/conf/variables" \
+                "$PETSC_DIR/$PETSC_ARCH/conf/petscrules" \
+                "$PETSC_DIR/$PETSC_ARCH/conf/petscvariables"
       - name: Debug PETSc TS module
         run: |
           set +e
@@ -2042,4 +2058,4 @@ jobs:
           path: |
             ~/miniconda2
             ~/petsc-3.3-mef90
-          key: petsc-mef90-3.3-ubuntu-latest-v1
+          key: petsc-mef90-3.3-ubuntu-latest-v2
