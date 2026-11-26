@@ -23,6 +23,10 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   cross the stiffness-half threshold, but CI #132 classified the result as
   UNIFORM_SOFTENING, i.e. B3_INITIATION_ACCESS = NOT_ESTABLISHED, NOT a
   localised crack (sec. 15.9). No Fortran solver changes at any stage.
+* `CI_130_133_ACCEPTANCE.md` — standalone compilation of the CI #130 and #133
+  acceptance records: run facts, M1-M8 / N1-N8 falsifiable propositions,
+  the two negative scientific conclusions, and the honest "logical-entailment"
+  evidence grade (byte-wise verdict replay still needs `actions:read`).
 * `vDef/data/terzaghi415_scale.yaml` / `terzaghi415_inject.yaml` — Stage B0
   similarity-calibrated zero-source control and constant-rate injection decks
   (T = 1.57e-7, storage-dominated); 4-line / 1-line code-diff contracts.
