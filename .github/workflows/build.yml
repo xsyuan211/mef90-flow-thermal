@@ -94,7 +94,7 @@ jobs:
           path: |
             ~/miniconda2
             ~/petsc-3.3-mef90
-          key: petsc-mef90-3.3-ubuntu-latest-v2
+          key: petsc-mef90-3.3-ubuntu-latest-v3
       - name: Build PETSc-3.3
         if: steps.cache-petsc.outputs.cache-hit != 'true'
         run: |
@@ -2066,4 +2066,4 @@ jobs:
           path: |
             ~/miniconda2
             ~/petsc-3.3-mef90
-          key: petsc-mef90-3.3-ubuntu-latest-v2
+          key: petsc-mef90-3.3-ubuntu-latest-v3
