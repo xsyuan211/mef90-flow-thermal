@@ -27,6 +27,11 @@ laws, conservation/energy diagnostics, and a CI-enforced hard-verdict system:
   acceptance records: run facts, M1-M8 / N1-N8 falsifiable propositions,
   the two negative scientific conclusions, and the honest "logical-entailment"
   evidence grade (byte-wise verdict replay still needs `actions:read`).
+* `FRACABILITY_TO_FIELD_CALIBRATION.md` — literature chain from shale
+  fracability to field pumping (Rickman SPE 115258, Marcellus MIP-3H DAS/DTS
+  SPE 209167, Gaoyou HY7 well, Haynesville hyper-calibration, DFIT/G-function),
+  typical-shale parameter tables, and an honest code-calibration matrix
+  (what can/cannot be calibrated without new Fortran).
 * `vDef/data/terzaghi415_scale.yaml` / `terzaghi415_inject.yaml` — Stage B0
   similarity-calibrated zero-source control and constant-rate injection decks
   (T = 1.57e-7, storage-dominated); 4-line / 1-line code-diff contracts.
